@@ -55,3 +55,21 @@ Traps likely to cause future mistakes. Each lists Problem / Avoid / Preferred / 
 - Avoid: don't rely on WebSocket alone for the live stream.
 - Preferred: dual-source the live stream (WS + `GET /api/events` polling fallback, deduped), add a keepalive that reconnects after ~3 silent windows, and surface live/polling status instead of a silently-empty list.
 - Evidence: `dashboard/app.js`, `src/api/ws.ts`, `tests/e2e-integration.test.ts`
+
+## Large WS frame sets the MASK bit (server→client)
+- Problem: `ws.ts` `encodeFrame` wrote `0xfe`/`0xff` for 16-/64-bit length frames, which sets the RFC6455 MASK bit that MUST be clear on unmasked server→client frames. Payloads >125 bytes (e.g. real `tool.call` telemetry events) made WS readers hang waiting for a parseable frame → e2e suite hung.
+- Avoid: never set bit 7 of the length octet on server→client frames.
+- Preferred: use `0x7e`/`0x7f` for the extended-length header; covered by the `tests/ws.test.ts` large-frame regression.
+- Evidence: `src/api/ws.ts` (`encodeFrame`), `tests/ws.test.ts`.
+
+## Don't emit tool.call from the policy stage / don't skip tracker.recordIssued
+- Problem: if the policy stage emits its own `tool.call` (without id/tokens) while context's emission+`recordIssued` is skipped whenever a policy is present, the pending set stays empty → NO real `tool.result`/duration/tokens on the policy path (a latent gap proven by `tests/e2e-policy.test.ts` Scenario 3).
+- Avoid: keep tool-call metrics emission+recording CENTRALIZED in `context.ts` (runs unconditionally); the policy stage emits ONLY `policy.intervention`.
+- Preferred: exactly one emitter per request; both default AND policy paths must yield one `tool.call`(id+tokens) + one real `tool.result`(durationMs) — verified in both e2e suites.
+- Evidence: `src/proxy/context.ts`, `src/policy/policyStage.ts`, `tests/e2e-policy.test.ts`, `tests/e2e-integration.test.ts`.
+
+## Tool-call duration pairing assumes sequential single-client
+- Problem: duration = result.at − issue.at relies on per-session request ordering via a per-instance "last request" session-key reference; concurrent multi-client traffic sharing one session key can mis-pair issue/result across clients.
+- Avoid: don't rely on duration/token metrics for concurrent-multi-client isolation.
+- Preferred: treat as sequential single-client (consistent with the existing session-key design); thread an explicit request context if true concurrency is required.
+- Evidence: `src/proxy/context.ts`, `knowledge/architecture.md` (session-key note), `tool-metrics.md`.

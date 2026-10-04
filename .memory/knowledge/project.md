@@ -9,7 +9,7 @@ A local, LiteLLM-style model proxy that is the single man-in-the-middle in the a
 - Default port **8787**.
 
 ## Status
-MVP complete & green: baseline **132 tests / 0 fail across 21 suites** (gate: `build && typecheck && test`). Covers foundation, OpenAI+Anthropic proxy, policy engine (matchers + actions + flagship loop rule + session key), pipeline wiring + wire-fix, telemetry + SQLite storage, dashboard + REST/WS API all wired into `createServer` with one shared bus/collector. Deferred v1.1 scope: see `decisions.md`.
+Complete & green: **151 tests / 0 fail** (gate: `build && typecheck && test`). Covers foundation, OpenAI+Anthropic proxy, policy engine (matchers + actions + flagship loop rule + session key), pipeline wiring + wire-fix, telemetry + SQLite storage + **tool-call metrics (per-call duration ms + tokens)**, dashboard + REST/WS API all wired into `createServer` with one shared bus/collector/tracker. See `tool-metrics.md` and `decisions.md`.
 
 ## Key directories
 - `src/server/` — HTTP server entry (`createServer`): routing + shared bus/collector + auto-start.
@@ -17,7 +17,7 @@ MVP complete & green: baseline **132 tests / 0 fail across 21 suites** (gate: `b
 - `src/pipeline/` — ordered stages (Chain-of-Responsibility).
 - `src/policy/` — rule engine + `matchers/` + `actions/` + feedbackStore + policyStage.
 - `src/session/` — stateless session key derivation.
-- `src/telemetry/` — typed events + event bus + collector.
+- `src/telemetry/` — typed events + event bus + collector + `toolMetrics.ts` (bounded cross-request duration/token pairing tracker; see `tool-metrics.md`).
 - `src/storage/` — schema + SQLite repository.
 - `src/api/` — rule store + rule specs + REST `/api/*` + WebSocket server.
 - `src/ports/` — core interfaces (domain, pipeline, strategy, event-bus, storage) + barrel.

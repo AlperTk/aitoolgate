@@ -62,6 +62,16 @@ Locked decisions (do not re-litigate without explicit sign-off). Each lists Deci
 - Reason: real access paths (tunnels/port-forwards/webviews) may not forward the `Upgrade: websocket` header, leaving a half-open socket that shows nothing while plain-HTTP fetch still works; polling guarantees records appear regardless of WS support.
 - Evidence: `dashboard/app.js` (polling + dedup + keepalive), `src/api/http.ts` (`/api/events`), `src/telemetry/collector.ts` (`getRecentEvents`), `tests/e2e-integration.test.ts`
 
+## Tool-call metrics = real cross-request pairing + real usage
+- Decision: per-tool-call **duration (ms)** = time from issuance (`tool_calls[].id` in response N) to result arrival (matching `role:'tool'`/`tool_result` in request N+1), paired by `(sessionKey, toolCallId)` via a bounded in-memory tracker (`src/telemetry/toolMetrics.ts`, no timers). **Tokens** = real upstream `usage` of the producing turn (OpenAI prompt/completion/total; Anthropic input/output), deduped per turn at aggregation; raw payload size exposed as `chars` (no tokenizer — zero-dep budget).
+- Reason: gives true "how long did this tool take + how many tokens it cost" without adding a dependency or fronting tools; reuses the existing telemetry → collector → `/api/stats` → dashboard flow.
+- Evidence: `src/telemetry/toolMetrics.ts`, `src/telemetry/collector.ts`, `src/proxy/context.ts`, `tests/e2e-integration.test.ts`, `tests/e2e-policy.test.ts` (Scenario 3), `tool-metrics.md`.
+
+## tool.call emission CENTRALIZED in context.ts (policy stage emits interventions only)
+- Decision: `emitResponseTelemetry` (context.ts) runs UNCONDITIONALLY on every path and is the SOLE emitter of `tool.call` (with `id`+`tokens`) and the SOLE caller of `tracker.recordIssued`. The policy stage emits ONLY `policy.intervention`; its own tool-call emission was removed. Real `tool.result` events come from request-phase detection.
+- Reason: previously, when a policy stage was present, context's emission was skipped and the policy stage emitted tool.calls without id/tokens and never recorded to the tracker → NO duration/tokens on the policy path. Centralizing makes default AND policy paths consistent and prevents double-count.
+- Evidence: `src/proxy/context.ts` (no `policyHandlesCallTelemetry` guard), `src/policy/policyStage.ts`, `tests/policy-stage-events.test.ts`.
+
 ## Deferred scope
 - **v1.1:** multi-model + per-client routing + fallback (full LiteLLM-lite); scripting hooks; LLM-as-policy matcher; streaming; Postgres option.
 - **Later:** MCP tool gateway; skills (injected via `ToolProvider` port).

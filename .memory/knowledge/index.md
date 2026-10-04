@@ -9,6 +9,7 @@
 - **`decisions.md`** — locked decisions (+ reason + evidence) and deferred / v1.1 scope. *Don't re-litigate locked items without sign-off.*
 - **`pitfalls.md`** — traps that cause future mistakes (Problem/Avoid/Preferred/Evidence).
 - **`api-reference.md`** — exact contracts: proxy endpoints, REST `/api/*`, WebSocket, RuleSpec, type signatures, config env vars.
+- **`tool-metrics.md`** — tool-call metrics (per-call duration ms + tokens): design, key files, business rules, ws large-frame fix, test count.
 
 ## "Read this when you need to…"
 | Need | File |
@@ -21,8 +22,9 @@
 | What's decided vs deferred? | `decisions.md` |
 | Avoid a known trap (test hang, wire regression…) | `pitfalls.md` |
 | Exact type shapes (PolicyRule, ActionEffect, events, contracts…) | `api-reference.md` |
+| Tool-call metrics (duration/tokens), tracker, assumptions | `tool-metrics.md` + `decisions.md` |
 
 ## Status snapshot
-MVP complete & green (**132 tests / 0 fail across 21 suites**). Foundation + OpenAI/Anthropic proxy + policy engine + pipeline/wire-fix + telemetry/SQLite + dashboard/REST/WS all wired into `createServer` with one shared bus/collector. See `decisions.md` for deferred v1.1 work.
+Complete & green (**151 tests / 0 fail**). Foundation + OpenAI/Anthropic proxy + policy engine + pipeline/wire-fix + telemetry/SQLite + dashboard/REST/WS all wired into `createServer` with one shared bus/collector, plus **tool-call metrics (per-call duration ms + tokens via cross-request pairing)** — see `tool-metrics.md`. See `decisions.md` for deferred v1.1 work.
 
 > Note: `.memory/handoff.md` (at the `.memory` root) is a prior-session handoff snapshot — it is NOT part of this knowledge set and is not maintained here.
