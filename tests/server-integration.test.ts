@@ -170,6 +170,38 @@ function readTextFrame(socket: net.Socket, initial?: Buffer): Promise<DecodedFra
   });
 }
 
+/**
+ * Send one raw HTTP/1.1 request over a fresh socket (bypasses client-side URL
+ * normalization so path-traversal targets reach the server verbatim). Resolves
+ * with the numeric status + response body.
+ */
+function rawGet(port: number, target: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request =
+      `GET ${target} HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${port}\r\n` +
+      `Connection: close\r\n` +
+      `\r\n`;
+    const socket = net.connect({ host: '127.0.0.1', port });
+    track(socket);
+    let data = '';
+    socket.on('data', (chunk: Buffer) => {
+      data += chunk.toString('binary');
+    });
+    socket.once('error', (err: Error) => reject(err));
+    socket.on('end', () => {
+      const headerEnd = data.indexOf('\r\n\r\n');
+      if (headerEnd === -1) {
+        reject(new Error('malformed http response'));
+        return;
+      }
+      const statusLine = data.split('\r\n')[0] ?? '';
+      resolve({ status: Number(statusLine.split(' ')[1]), body: data.slice(headerEnd + 4) });
+    });
+    socket.write(request);
+  });
+}
+
 // --- tests -------------------------------------------------------------------
 
 test('serves the dashboard index at GET / (text/html with an app marker)', async () => {
@@ -190,6 +222,25 @@ test('serves the dashboard assets /app.js and /styles.css', async () => {
   const css = await fetch(`http://127.0.0.1:${port}/styles.css`);
   assert.equal(css.status, 200);
   assert.match(css.headers.get('content-type') ?? '', /text\/css/);
+});
+
+test('serves a newly-added module asset by the general rule: GET /js/state.mjs (application/javascript)', async () => {
+  const { port } = await start();
+  const res = await fetch(`http://127.0.0.1:${port}/js/state.mjs`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /javascript/);
+  const body = await res.text();
+  assert.ok(body.length > 0, 'module asset body should be non-empty');
+});
+
+test('security: path-traversal / dot-segment requests are not served and leak nothing outside dashboardDir', async () => {
+  const { port } = await start();
+  for (const target of ['/../package.json', '/%2e%2e/%2e%2e/etc/passwd']) {
+    const { status, body } = await rawGet(port, target);
+    assert.ok(status !== 200, `traversal ${target} must not be served, got status ${status}`);
+    assert.ok(!body.includes('root:'), `must not leak /etc/passwd for ${target}`);
+    assert.ok(!body.includes('"name"'), `must not leak package.json for ${target}`);
+  }
 });
 
 test('regression: GET /health returns 200 {status:"ok"}', async () => {

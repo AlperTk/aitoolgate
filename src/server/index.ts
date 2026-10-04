@@ -51,15 +51,63 @@ export interface McmServerHandle {
 export type McmServer = http.Server & { readonly mcm?: McmServerHandle };
 
 /**
- * Known dashboard files served over the web root. Only these exact paths are
- * mapped to concrete file names, so arbitrary/relative path traversal is
- * impossible (unknown paths fall through to the proxy handler / 404).
+ * Content types for the dashboard asset extensions the server is allowed to serve.
+ * Serving is now general: any GET path whose final segment has one of these
+ * extensions — that stays inside the dashboard dir, contains no traversal, and
+ * actually exists on disk — is served. Adding new module files (e.g. `/js/*.mjs`)
+ * therefore needs no further change here.
  */
-const DASHBOARD_FILES: Record<string, { file: string; contentType: string }> = {
-  '/': { file: 'index.html', contentType: 'text/html' },
-  '/app.js': { file: 'app.js', contentType: 'application/javascript' },
-  '/styles.css': { file: 'styles.css', contentType: 'text/css' },
+const DASHBOARD_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
 };
+
+/**
+ * Resolve a GET request path to a safe dashboard asset ({ file, contentType }) or
+ * null when the path is unsafe or not an allowed static-asset type. Rejects
+ * traversal (`..`), absolute paths, null bytes, and any resolved path that escapes
+ * `dir`; only serves `.html` / `.css` / `.js` / `.mjs` files; and verifies the
+ * resolved file actually exists inside `dir`. The bare web root maps to `index.html`.
+ */
+function resolveDashboardAsset(
+  reqPath: string,
+  dir: string | undefined,
+): { file: string; contentType: string } | null {
+  if (dir === undefined) return null;
+  // Reject null bytes outright (guards against NUL truncation / raw-byte abuse).
+  if (reqPath.includes('\u0000')) return null;
+  // Decode URL-escaped sequences (%2e -> '.', etc.); malformed input is treated as unsafe.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(reqPath);
+  } catch {
+    return null;
+  }
+  if (decoded.includes('\u0000')) return null;
+
+  // The bare web root serves the directory index.
+  const rel = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
+  const segments = rel.split('/');
+  for (const seg of segments) {
+    if (seg === '') continue; // extra slashes / trailing slash are harmless
+    if (seg === '..') return null; // traversal attempt
+  }
+
+  // Only known-safe static asset extensions are served.
+  const last = segments[segments.length - 1];
+  const contentType = DASHBOARD_CONTENT_TYPES[path.extname(last).toLowerCase()];
+  if (contentType === undefined) return null;
+
+  // Rebuild the candidate relative path from the surviving segments, then verify it
+  // stays within `dir` and actually exists before serving it.
+  const file = segments.filter((seg) => seg !== '' && seg !== '.').join(path.sep);
+  const resolved = path.resolve(dir, file);
+  if (resolved !== dir && !resolved.startsWith(dir + path.sep)) return null;
+  if (!fs.existsSync(resolved)) return null;
+  return { file, contentType };
+}
 
 /**
  * Resolve the dashboard directory. Uses an explicit override if provided;
@@ -163,10 +211,10 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
         }
         // 2. REST API layer (/api/*) — `true` = handled, `false` = fall through.
         if (await api(req, res)) return;
-        // 3. Dashboard static files (known mapped GET paths only, no traversal).
+        // 3. Dashboard static files (any safe, allowed-asset GET path; no traversal).
         if (req.method === 'GET') {
-          const entry = DASHBOARD_FILES[url];
-          if (entry !== undefined) {
+          const entry = resolveDashboardAsset(url, dashboardDir);
+          if (entry !== null) {
             serveStaticFile(res, entry, dashboardDir);
             return;
           }

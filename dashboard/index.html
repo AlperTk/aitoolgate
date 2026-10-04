@@ -13,6 +13,10 @@
         <h1>mcp-manager</h1>
         <span class="subtitle">tool-monitoring &amp; policy engine</span>
       </div>
+      <nav class="app-nav" aria-label="Dashboard pages">
+        <a class="nav-link" href="#/">Dashboard</a>
+        <a class="nav-link" href="#/rules">Policy Rules</a>
+      </nav>
       <div id="conn-status" class="conn disconnected" title="WebSocket connection status">
         <span id="conn-dot" class="dot"></span>
         <span id="conn-label">disconnected</span>
@@ -51,9 +55,12 @@
       </div>
     </div>
 
-    <main class="dash-grid">
-      <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
-      <section id="stream-panel" class="card">
+    <main class="app-main">
+      <!-- Dashboard view: big live stream + counts + intervention log -->
+      <div id="view-dashboard" class="view is-active">
+        <div class="dash-grid">
+          <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
+          <section id="stream-panel" class="card">
         <h2>Live tool calls</h2>
         <!-- Shown (by app.js) only when no WebSocket is available; explains the polling fallback -->
         <div id="stream-status" class="stream-status" role="status" hidden
@@ -97,7 +104,6 @@
           <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>
         </div>
         <div class="stat-row">
-          <div class="stat"><span id="total-duration" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>total (ms)</label></div>
           <div class="stat"><span id="avg-duration" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>avg (ms)</label></div>
         </div>
         <div class="stat-row">
@@ -112,7 +118,7 @@
         </div>
         <table class="top-tools">
           <thead>
-            <tr><th scope="col">Tool</th><th scope="col" class="num-col">Calls</th><th scope="col" class="num-col" title="No data yet — appears once tool results arrive.">Avg (ms)</th><th scope="col" class="num-col" title="No data yet — appears once tool results arrive.">Max (ms)</th></tr>
+            <tr><th scope="col" class="sortable" data-sort="tool" aria-sort="none">Tool<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="calls" aria-sort="none">Calls<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="avg" aria-sort="none" title="No data yet — appears once tool results arrive.">Avg (ms)<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="max" aria-sort="none" title="No data yet — appears once tool results arrive.">Max (ms)<span class="sort-ind"></span></th></tr>
           </thead>
           <tbody id="top-tools">
             <tr><td colspan="4" class="muted" title="No data yet — appears once tool results arrive.">—</td></tr>
@@ -134,9 +140,12 @@
           </div>
         </div>
       </section>
+        </div>
+      </div>
 
-      <!-- Panel 4: rule authoring UI -->
-      <section id="rules-panel" class="card rules-card">
+      <!-- Policy-rules view: standalone rule authoring page -->
+      <div id="view-rules" class="view">
+        <section id="rules-panel" class="card rules-card">
         <h2>Policy rules</h2>
         <ul id="rule-list" class="rule-list"></ul>
         <div id="rule-empty" class="empty">No rules defined.</div>
@@ -197,9 +206,10 @@
           <div id="form-error" class="form-error" role="alert" hidden></div>
         </form>
       </section>
+      </div>
     </main>
 
     <!-- Classic (non-module) script; no bundler, no dependencies. -->
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

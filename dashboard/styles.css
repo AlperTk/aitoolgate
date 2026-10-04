@@ -55,6 +55,26 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .app-title h1 { font-size: 1.25rem; letter-spacing: 0.2px; }
 .subtitle { color: var(--muted); font-size: 0.9rem; }
 
+/* Header navigation: two client-side page links (Dashboard / Policy Rules).
+   The active link gets an accent background + underline so the current page
+   is obvious at a glance. */
+.app-nav { display: inline-flex; align-items: center; gap: 0.35rem; }
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.88rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 7px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.nav-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.nav-link.is-active {
+  color: var(--text);
+  background: rgba(76, 141, 255, 0.16);
+  border-bottom-color: var(--accent);
+}
+
 /* Connection status indicator (green = connected, red = disconnected). */
 .conn {
   display: inline-flex;
@@ -86,6 +106,13 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .notice[hidden] { display: none; }
 
 /* ------------------------------- layout ---------------------------- */
+/* Page views: only the active view is shown. The other stays in the DOM so
+   background data flow (WS / polling / timers) keeps running across pages. */
+.view { display: none; }
+.view.is-active { display: block; }
+
+/* Dashboard view: a big live stream alongside the stats column, with a
+   full-width intervention log beneath it. */
 .dash-grid {
   display: grid;
   gap: 1rem;
@@ -94,10 +121,25 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   max-width: 1400px;
   margin: 0 auto;
 }
-#stream-panel { grid-column: span 2; }
+/* Big live view: spans two columns and grows to most of the viewport height,
+   with its own internal scroll on the call list. */
+#stream-panel {
+  grid-column: span 2;
+  min-height: clamp(460px, 62vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+#stream-panel .list-wrap {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
 #stats-panel { grid-column: span 1; }
-#interventions-panel { grid-column: span 1; }
-#rules-panel { grid-column: span 2; }
+#interventions-panel { grid-column: span 3; }
+
+/* Rules view: a clean standalone card page centered like the dashboard grid. */
+#view-rules { padding: 1.5rem; max-width: 1400px; margin: 0 auto; }
 
 .card {
   background: var(--surface);
@@ -309,6 +351,15 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 /* Keep long tool names from forcing the (now wider) top-tools table to overflow its card. */
 .top-tools th:first-child, .top-tools td:first-child { min-width: 0; word-break: break-word; }
 .top-tools tbody tr:last-child td { border-bottom: none; }
+/* Sortable column headers */
+.top-tools th.sortable { cursor: pointer; user-select: none; transition: color 0.15s, background 0.15s; }
+.top-tools th.sortable:hover { color: var(--text); background: var(--surface-2); }
+.top-tools th.sortable.active { color: var(--accent); }
+.top-tools .sort-ind { display: inline-block; margin-left: 0.3rem; font-size: 0.7rem; opacity: 0.8; }
+.top-tools th.active { background: rgba(76, 141, 255, 0.08); }
+.top-tools th.active ~ * {} /* no-op to keep specificity simple */
+/* Highlight active sorted column cells via a class added by JS (optional) */
+.top-tools td.sorted-col { background: rgba(76, 141, 255, 0.04); }
 
 /* ------------------------------- rule list ------------------------- */
 .rule-list { list-style: none; margin: 0 0 1rem; padding: 0; max-height: 300px; overflow-y: auto; }
@@ -427,7 +478,10 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 /* ------------------------------- responsive ------------------------ */
 @media (max-width: 960px) {
   .dash-grid { grid-template-columns: 1fr; }
-  #stream-panel, #stats-panel, #interventions-panel, #rules-panel { grid-column: span 1; }
+  #stream-panel, #stats-panel, #interventions-panel { grid-column: span 1; }
+  /* Relax the big live-view height on small screens; let it size to content. */
+  #stream-panel { min-height: auto; }
+  #view-rules { padding: 1rem; }
 }
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }

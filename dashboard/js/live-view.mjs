@@ -1,0 +1,364 @@
+/* ==========================================================================
+ * mcp-manager dashboard — live event stream / intervention list rendering.
+ *
+ * Builds and manages the per-row DOM for tool calls, tool results, and policy
+ * interventions in the "stream" and "intervention log" panels. One row per
+ * logical call is tracked by call id in state.callRows; a matching tool.result
+ * pairs back to its call row (by toolCallId or same-session fallback) and
+ * updates it in place, while unmatched results become standalone "orphan" rows
+ * so no data is lost. Client-side filters compose tool / status / session /
+ * time-window constraints over the visible rows.
+ * ========================================================================== */
+import { $, el, esc, fmtOpt, fmtTime, shortSession } from './dom.mjs';
+import { state } from './state.mjs';
+import { MAX_LIST_ITEMS } from './constants.mjs';
+import { inTimeRange } from './time.mjs';
+
+// Prepend a row to a <ul>, keeping at most `max` children (newest-first).
+export function prependTrim(listEl, node, max) {
+  listEl.insertBefore(node, listEl.firstChild);
+  while (listEl.children.length > max) {
+    listEl.removeChild(listEl.lastChild);
+  }
+}
+// Append the four numeric cells (In | Out | Total | Size) to a row's .row-main.
+// Each token column renders '\u2014' unless the event carries that field (tokens are only
+// present when the upstream provider reported usage); Size shows the paired result
+// payload size (chars) when known. Driven by tokens.input / tokens.output / tokens.total.
+export function appendTokenAndSizeCells(main, ev) {
+  var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
+  var inCell = el('span', 's-tokens-in col-num', tokens && typeof tokens.input === 'number' ? fmtOpt(tokens.input) : '\u2014');
+  inCell.title = 'Input tokens (turn)';
+  main.appendChild(inCell);
+  var outCell = el('span', 's-tokens-out col-num', tokens && typeof tokens.output === 'number' ? fmtOpt(tokens.output) : '\u2014');
+  outCell.title = 'Output tokens (turn)';
+  main.appendChild(outCell);
+  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? fmtOpt(tokens.total) : '\u2014');
+  totCell.title = 'Turn tokens (in+out) \u2014 the full upstream turn total (dominated by resent history), not a per-tool cost.';
+  main.appendChild(totCell);
+  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? fmtOpt(ev.chars) : '\u2014');
+  sizeCell.title = 'Result payload size (characters)';
+  main.appendChild(sizeCell);
+}
+// Update a numeric cell's text from an optional value; leave it unchanged ('—') when absent.
+export function setNumCellText(cell, v) {
+  if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = fmtOpt(v);
+}
+
+/* ---- unified call-row rendering ---------------------------------------
+ * One row per logical tool-call, tracked by call id in `state.callRows`. A
+ * matching tool.result pairs back to its call row (by toolCallId or same-
+ * session fallback) and updates it in place. Unmatched results are retained
+ * as standalone "orphan" rows so no data is lost.
+ */
+// Build a single call row, register it in state.callRows, and prepend it to the list.
+export function createCallRow(ev) {
+  var callId = ev.id || '';
+  var li = el('li', 'stream-row call-row');
+  if (callId) li.dataset.callId = callId;
+  li.dataset.tool = ev.toolName || '';
+  li.dataset.session = ev.sessionKey || '';
+  li.dataset.status = 'pending';
+  li.dataset.at = ev.at;
+
+  var main = el('div', 'row-main');
+  main.appendChild(el('span', 'badge badge-pending', 'pending'));
+  main.appendChild(el('span', 's-tool', ev.toolName || ''));
+  var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+  sess.title = ev.sessionKey || '';
+  main.appendChild(sess);
+  var t = el('time', 's-time', fmtTime(ev.at));
+  t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+  main.appendChild(t);
+  var dur = el('span', 's-duration col-num', '\u2014');
+  dur.title = 'Duration (ms)';
+  main.appendChild(dur);
+  appendTokenAndSizeCells(main, ev);
+  var exp = el('span', 's-expand', '\u25BE');
+  exp.setAttribute('aria-hidden', 'true');
+  main.appendChild(exp);
+
+  var detail = el('div', 'row-detail');
+  detail.hidden = true;
+
+  li.appendChild(main);
+  li.appendChild(detail);
+
+  // Key the row state by the unique event id so each distinct batched same-name
+  // call gets its own row (retaining the empty-id fallback for legacy events).
+  var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false };
+  if (callId) state.callRows.set(callId, rs);
+  prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
+  $('stream-empty').hidden = true;
+  trimCallData();
+  bindRowClick(li, rs);
+  applyFilters();
+  return rs;
+}
+
+// Update an existing call row in place when its tool.result arrives.
+export function updateCallRowWithResult(rs, ev) {
+  rs.resultEv = ev;
+  rs.status = ev.ok === false ? 'error' : 'ok';
+  rs.li.dataset.status = rs.status;
+  var badge = rs.li.querySelector('.badge');
+  if (badge) {
+    badge.className = 'badge ' + (ev.ok === false ? 'badge-err' : 'badge-ok');
+    badge.textContent = ev.ok === false ? 'error' : 'ok';
+  }
+  var dur = rs.li.querySelector('.s-duration');
+  if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
+  // Update the numeric columns in place; absent values keep their existing '—'.
+  setNumCellText(rs.li.querySelector('.s-tokens-in'), ev.tokens && ev.tokens.input);
+  setNumCellText(rs.li.querySelector('.s-tokens-out'), ev.tokens && ev.tokens.output);
+  setNumCellText(rs.li.querySelector('.s-tokens-total'), ev.tokens && ev.tokens.total);
+  setNumCellText(rs.li.querySelector('.s-size'), ev.chars);
+  if (rs.expanded) renderRowDetail(rs);
+  applyFilters();
+}
+
+// Create a standalone row for a tool.result that could not be paired to any call.
+export function createOrphanResultRow(ev) {
+  var li = el('li', 'stream-row orphan-row');
+  li.dataset.tool = ev.toolName || '';
+  li.dataset.session = ev.sessionKey || '';
+  li.dataset.status = ev.ok === false ? 'error' : 'ok';
+  li.dataset.at = ev.at;
+
+  var isErr = ev.ok === false;
+  var main = el('div', 'row-main');
+  main.appendChild(el('span', 'badge ' + (isErr ? 'badge-err' : 'badge-ok'), isErr ? 'error' : 'ok'));
+  main.appendChild(el('span', 's-tool', ev.toolName || ''));
+  var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+  sess.title = ev.sessionKey || '';
+  main.appendChild(sess);
+  var t = el('time', 's-time', fmtTime(ev.at));
+  t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+  main.appendChild(t);
+  var dur = el('span', 's-duration col-num', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
+  dur.title = 'Duration (ms)';
+  main.appendChild(dur);
+  appendTokenAndSizeCells(main, ev);
+  var exp = el('span', 's-expand', '\u25BE');
+  exp.setAttribute('aria-hidden', 'true');
+  main.appendChild(exp);
+
+  var detail = el('div', 'row-detail');
+  detail.hidden = true;
+
+  li.appendChild(main);
+  li.appendChild(detail);
+
+  var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'error' : 'ok', expanded: false };
+  state.orphanResultEntries.push({ li: li, ev: ev, rs: rs });
+  prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
+  $('stream-empty').hidden = true;
+  trimCallData();
+  bindRowClick(li, rs);
+  applyFilters();
+}
+
+// Find the pending call row that a result event belongs to.
+export function findCallForResult(ev) {
+  if (ev.toolCallId) {
+    var rs = state.callRows.get(ev.toolCallId);
+    if (rs && !rs.resultEv && rs.li.parentNode === $('stream-list')) return rs;
+  }
+  // Fallback: most-recent still-pending call in the SAME NON-EMPTY session. A
+  // uniform/empty sessionKey identifies no single conversation (many unrelated sessions
+  // collapse onto ''), so it must not drive cross-row matching — otherwise an empty-key
+  // result could mis-match an unrelated empty-key pending row. The primary id-match above
+  // stays authoritative; this only tightens the session fallback (identical for any
+  // non-empty sessionKey that was already accepted).
+  if (typeof ev.sessionKey === 'string' && ev.sessionKey !== '') {
+    var best = null, bestAt = -1;
+    state.callRows.forEach(function (rs) {
+      if (rs.resultEv) return;
+      if (rs.callEv.sessionKey !== ev.sessionKey) return;
+      var at = rs.callEv.at || 0;
+      if (at >= bestAt) { bestAt = at; best = rs; }
+    });
+    if (best) return best;
+  }
+  return null;
+}
+
+// Pair a tool.result to its call row (or create an orphan row if unmatched).
+export function matchAndRenderResult(ev) {
+  var rs = findCallForResult(ev);
+  if (rs) { updateCallRowWithResult(rs, ev); }
+  else { createOrphanResultRow(ev); }
+}
+
+// Store an intervention event for later drill-down lookup by session key.
+export function storeInterventionForDrillDown(ev) {
+  var sk = ev.sessionKey || '';
+  if (!sk) return;
+  if (!state.interventionsBySession.has(sk)) state.interventionsBySession.set(sk, []);
+  state.interventionsBySession.get(sk).push({ ruleId: ev.ruleId, action: ev.action, at: ev.at, detail: ev.detail });
+}
+
+// Wire the click-to-drill-down handler on a row.
+export function bindRowClick(li, rs) {
+  li.onclick = null;
+  li.addEventListener('click', function (e) {
+    if (e.target.closest('.row-detail')) return; // clicks inside detail don't toggle
+    rs.expanded = !rs.expanded;
+    var detailEl = li.querySelector('.row-detail');
+    if (!detailEl) return;
+    if (rs.expanded) { renderRowDetail(rs); detailEl.hidden = false; }
+    else { detailEl.hidden = true; }
+    li.classList.toggle('expanded', rs.expanded);
+  });
+}
+
+// Fill the inline detail block under a row with args / result / session / intervention.
+export function renderRowDetail(rs) {
+  var detailEl = rs.li.querySelector('.row-detail');
+  if (!detailEl) return;
+  var ev = rs.callEv || rs.resultEv;
+  var res = rs.resultEv;
+  var html = '';
+  if (rs.callEv && rs.callEv.args != null) {
+    html += '<div class="rd-section"><div class="rd-label">Arguments</div>';
+    html += '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre></div>';
+  }
+  if (res) {
+    html += '<div class="rd-section"><div class="rd-label">Result</div>';
+    html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
+    html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? String(res.chars) : '\u2014') + '</div>';
+    html += '<div class="rd-kv"><span>durationMs:</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
+    if (res.tokens && typeof res.tokens.total === 'number') {
+      html += '<div class="rd-kv"><span>tokens:</span> ' + fmtOpt(res.tokens.total) + '</div>';
+    }
+    html += '</div>';
+  }
+  var fullSession = (ev && ev.sessionKey) || '';
+  if (fullSession) {
+    html += '<div class="rd-section"><div class="rd-label">Session</div><div class="rd-value">' + esc(fullSession) + '</div></div>';
+    var ivs = state.interventionsBySession.get(fullSession);
+    if (ivs && ivs.length) {
+      html += '<div class="rd-section"><div class="rd-label">Intervention</div>';
+      ivs.forEach(function (iv) {
+        html += '<div class="rd-kv"><span>rule:</span> ' + esc(iv.ruleId || '') + '</div>';
+        html += '<div class="rd-kv"><span>action:</span> ' + esc(iv.action || '') + '</div>';
+        if (iv.detail) html += '<div class="rd-kv"><span>detail:</span> ' + esc(iv.detail) + '</div>';
+      });
+      html += '</div>';
+    }
+  }
+  if (!html) html = '<div class="muted small">No additional details.</div>';
+  detailEl.innerHTML = html;
+}
+
+// Remove data entries whose DOM rows have been trimmed from the list.
+export function trimCallData() {
+  var list = $('stream-list');
+  var toDelete = [];
+  state.callRows.forEach(function (rs, id) {
+    if (rs.li.parentNode !== list) toDelete.push(id);
+  });
+  toDelete.forEach(function (id) { state.callRows.delete(id); });
+  state.orphanResultEntries = state.orphanResultEntries.filter(function (e) { return e.li.parentNode === list; });
+  var ivList = $('intervention-list');
+  state.interventionRowData.forEach(function (_d, li) {
+    if (li.parentNode !== ivList) state.interventionRowData.delete(li);
+  });
+}
+
+/* ---- client-side filters ------------------------------------------ */
+// Apply the current filter inputs (tool / status / session) AND the active
+// time-window to show/hide rows in both the stream list and the intervention
+// log; update the stream "showing X of Y" count display. The filters compose:
+// a row is shown only if it passes every active constraint.
+export function applyFilters() {
+  var toolF = ($('filter-tool').value || '').trim().toLowerCase();
+  var statusF = $('filter-status').value;
+  var sessionF = ($('filter-session').value || '').trim().toLowerCase();
+  var list = $('stream-list');
+  var visible = 0, total = 0;
+
+  for (var i = 0; i < list.children.length; i++) {
+    var child = list.children[i];
+    if (!child.classList.contains('stream-row')) continue;
+    total++;
+    var show = true;
+    if (toolF && (child.dataset.tool || '').toLowerCase().indexOf(toolF) === -1) show = false;
+    if (show && statusF) {
+      var st = child.dataset.status || '';
+      if (statusF === 'unmatched') {
+        show = !!child.classList.contains('orphan-row');
+      } else if (statusF === 'intervention') {
+        var sess2 = child.dataset.session || '';
+        var ivs = sess2 ? state.interventionsBySession.get(sess2) : null;
+        show = !!(ivs && ivs.length);
+      } else {
+        show = (st === statusF);
+      }
+    }
+    if (show && sessionF && (child.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) show = false;
+    if (show && !inTimeRange(child.dataset.at)) show = false;
+    child.style.display = show ? '' : 'none';
+    if (show) visible++;
+  }
+  var countEl = $('stream-count');
+  if (countEl) {
+    var anyFilter = !!(toolF || statusF || sessionF || state.timeRange.mode !== 'all');
+    countEl.textContent = anyFilter ? 'showing ' + visible + ' of ' + total : '';
+  }
+
+  // The intervention log has no tool/status, so it is constrained only by the
+  // session filter (when present) and the shared time-window.
+  var ivList = $('intervention-list');
+  for (var j = 0; j < ivList.children.length; j++) {
+    var ivRow = ivList.children[j];
+    if (!ivRow.classList.contains('stream-row')) continue;
+    var ivShow = true;
+    if (sessionF && (ivRow.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) ivShow = false;
+    if (ivShow && !inTimeRange(ivRow.dataset.at)) ivShow = false;
+    ivRow.style.display = ivShow ? '' : 'none';
+  }
+}
+
+// Wire up filter input listeners.
+export function bindFilterEvents() {
+  $('filter-tool').addEventListener('input', applyFilters);
+  $('filter-session').addEventListener('input', applyFilters);
+  $('filter-status').addEventListener('change', applyFilters);
+}
+
+// Append a policy.intervention row to the intervention log as distinct cells:
+// Time | Rule id | Action (type badge) | Detail (message). Reuses the
+// InterventionEvent fields (at, ruleId, action, detail?). Built via DOM so
+// untrusted text is escaped automatically.
+export function addInterventionRow(ev) {
+  var li = el('li', 'stream-row intervention-row');
+  li.dataset.at = ev.at;
+  li.dataset.session = ev.sessionKey || '';
+  var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+
+  var timeEl = el('time', 'iv-time', fmtTime(ev.at));
+  if (when) timeEl.title = when;
+  li.appendChild(timeEl);
+
+  var ruleEl = el('span', 'iv-rule muted', ev.ruleId || '');
+  if (ev.ruleId) ruleEl.title = 'Rule id: ' + ev.ruleId;
+  li.appendChild(ruleEl);
+
+  li.appendChild(el('span', 'badge badge-interv iv-action', ev.action || 'intervention'));
+
+  var detailEl = el('span', 'iv-detail', ev.detail || '');
+  if (ev.detail) detailEl.title = ev.detail;
+  li.appendChild(detailEl);
+
+  state.interventionRowData.set(li, { ruleId: ev.ruleId || '', action: ev.action || '', at: ev.at, detail: ev.detail || '', sessionKey: ev.sessionKey || '' });
+  prependTrim($('intervention-list'), li, MAX_LIST_ITEMS);
+  $('intervention-empty').hidden = true;
+}
+
+// Refresh the "this session" per-type counters driven by WS events.
+export function updateLiveCounters() {
+  $('live-calls').textContent = String(state.localCounts.calls);
+  $('live-results').textContent = String(state.localCounts.results);
+  $('live-interventions').textContent = String(state.localCounts.interventions);
+}
