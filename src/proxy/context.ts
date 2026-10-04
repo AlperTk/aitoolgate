@@ -281,36 +281,81 @@ function emitResponseTelemetry(
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
   const clientId = toClientId(requestCtx.client);
   const at = Date.now();
+  // Assign EVERY issued call a stable, turn-unique id (the upstream tool_call id when present,
+  // else a deterministic `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch
+  // turn NEVER share an identical id — the field the dashboard dedups on. The same id feeds both
+  // the emitted event and the tracker so a later result stays linked to its originating call.
+  const seenIds = new Set<string>();
+  const issued = toolCalls.map((call, index) => ({
+    call,
+    id: stableToolCallId(sessionKey, at, index, call.id, seenIds),
+  }));
   if (bus !== undefined) {
-    for (const call of toolCalls) {
-      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at));
+    for (const { call, id } of issued) {
+      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at, id));
     }
   }
-  // Record issued calls so a LATER request carrying their results can pair them. The same
-  // `at` as the emitted events keeps durationMs consistent; calls without an id are skipped.
-  tracker?.recordIssued(sessionKey, toolCalls.map((call) => ({ id: call.id, at })));
+  // Record issued calls so a LATER request carrying their results can pair them. The same `at`
+  // as the emitted events keeps durationMs consistent. Every call now carries a non-empty stable
+  // id (assigned above) plus its tool name, so a resolved result can surface a REAL toolName
+  // (both OpenAI and Anthropic issuance points provide it via the summary view).
+  tracker?.recordIssued(
+    sessionKey,
+    issued.map(({ call, id }) => ({ id, at, ...(call.name !== '' ? { name: call.name } : {}) })),
+  );
 }
 
-/** Build a {@link ToolCallEvent}; `args`, `id`, and `tokens` are included only when present. */
+/**
+ * Build a {@link ToolCallEvent}. `args` and `tokens` are included only when present; `id` is the
+ * caller-assigned stable tool-call id (always non-empty on the emitter paths, where every
+ * emitted call carries a stable, turn-unique id — the field the dashboard dedups on).
+ */
 function makeToolCallEvent(
   sessionKey: string,
   clientId: string | undefined,
   call: ToolCall,
   usage: NormalizedUsage | undefined,
   at: number,
+  id: string,
 ): ToolCallEvent {
   const hasArgs = Object.keys(call.arguments ?? {}).length > 0;
-  const hasId = typeof call.id === 'string' && call.id !== '';
   return {
     type: 'tool.call',
     sessionKey,
     toolName: call.name,
     at,
     ...(hasArgs ? { args: call.arguments } : {}),
-    ...(hasId ? { id: call.id } : {}),
+    ...(id !== '' ? { id } : {}),
     ...(usage !== undefined ? { tokens: usage } : {}),
     ...(clientId !== undefined ? { clientId } : {}),
   };
+}
+
+/**
+ * Assign a stable, turn-unique id to one issued tool call. Prefers the upstream tool-call id when
+ * present; otherwise synthesizes a deterministic `${sessionKey}#${at}#${index}` id. A monotonic
+ * suffix (`~1`, `~2`, …) is appended whenever the computed id would still collide with a sibling
+ * already seen in this same turn (e.g. two calls sharing one upstream id), guaranteeing NO two
+ * sibling calls in a batch turn ever share an identical id — the field the dashboard dedups on.
+ * Mirrors `stableStreamCallId` in `telemetry/stream-extract.ts` so both emission paths produce
+ * the same contract.
+ */
+function stableToolCallId(
+  sessionKey: string,
+  at: number,
+  index: number,
+  preferredId: string,
+  seen: Set<string>,
+): string {
+  const base = preferredId !== '' ? preferredId : `${sessionKey}#${at}#${index}`;
+  let id = base;
+  let n = 0;
+  while (seen.has(id)) {
+    n += 1;
+    id = `${base}~${n}`;
+  }
+  seen.add(id);
+  return id;
 }
 
 /**
@@ -321,11 +366,19 @@ function makeToolCallEvent(
  * result was removed). It reads the request messages independently (does not touch
  * rehydration) and understands both protocols: OpenAI `role:'tool'` messages (paired by
  * `tool_call_id`) and Anthropic `type:'tool_result'` content blocks (paired by
- * `tool_use_id`). A `toolName` is attached only when determinable (best-effort); `ok` is
+ * `tool_use_id`). Each resolved result carries a REAL `toolName` taken from the recorded
+ * issued call (authoritative for both protocol paths); when the tracker held none it falls
+ * back to a best-effort name read from the originating message. `ok` is
  * omitted (not reliably knowable from a result arrival). No-op when no bus/tracker is
  * wired, when the request carries no tool results, or when none match a pending issued call.
+ *
+ * Exported so it can be invoked on EVERY proxied request path — both the buffered
+ * {@link runThroughPipeline} path and the streamed `streamSameProtocol` paths — guaranteeing
+ * that pending issued calls recorded by an earlier same-session request (whether that response
+ * was buffered or streamed) are paired into a REAL `tool.result` regardless of how the later
+ * request is delivered. Each path invokes it exactly once, so it never double-resolves.
  */
-function resolveAndEmitToolResults(
+export function resolveAndEmitToolResults(
   tracker: ToolMetricsTracker | undefined,
   bus: TelemetryEmitter | undefined,
   requestCtx: RequestContext,
@@ -341,8 +394,13 @@ function resolveAndEmitToolResults(
     incoming.map((result) => ({ toolCallId: result.toolCallId, at, chars: result.chars })),
   );
   for (const entry of resolved) {
-    // Best-effort tool name from the originating message (omitted when unknown).
-    const name = incoming.find((result) => result.toolCallId === entry.toolCallId)?.toolName;
+    // Prefer the recorded issued-call's tool name — captured authoritatively at the point the
+    // call was ISSUED (both protocol paths), so every resolved result carries a real toolName.
+    // Fall back to a best-effort name read from the originating message when the tracker held
+    // none (e.g. a legacy pending entry recorded before the name was threaded through).
+    const name =
+      entry.toolName ??
+      incoming.find((result) => result.toolCallId === entry.toolCallId)?.toolName;
     const event = {
       type: 'tool.result' as const,
       sessionKey,

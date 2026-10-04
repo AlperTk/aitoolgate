@@ -10,6 +10,7 @@ import {
 import {
   buildRequestContext,
   readJSONBody,
+  resolveAndEmitToolResults,
   runThroughPipeline,
   sendJSON,
   toClientId,
@@ -95,15 +96,18 @@ async function streamSameProtocol(
   const requestCtx = buildRequestContext(req, deps.upstream, raw);
   const processed = await deps.pipeline.handleRequest(requestCtx);
   syncRequestMessages(processed);
+  // Request-phase tool-RESULT detection runs on EVERY proxied request — including streamed ones —
+  // so pending issued calls recorded by an earlier same-session request pair into a REAL
+  // tool.result even when this response itself is streamed (a no-op when nothing matches).
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx);
   const upstreamResponse = await streamAnthropicRequest(deps.upstream, processed.raw as AnthropicRequest);
   // Pipe the raw SSE through a passthrough transformer that extracts tool-call telemetry
-  // onto the shared bus without altering forwarded bytes (a no-op when no bus is wired).
-  // The extractor parses the OpenAI `choices[].delta.tool_calls[]` shape and records any
-  // detected call (with a stable id) into the shared tracker for later result pairing; it
-  // emits NO synthetic per-stream tool.result. Note: this branch is the SAME-protocol
-  // Anthropic stream, whose native `content_block_*` frames this OpenAI-shaped extractor
-  // does not parse — cross-protocol streaming translation is out of scope, so such streams
-  // pass through byte-for-byte unchanged and contribute no tool-call telemetry here.
+  // onto the shared bus WITHOUT altering forwarded bytes (a no-op when no bus is wired).
+  // The extractor is PROTOCOL-AWARE: it captures BOTH the native Anthropic `content_block_*`
+  // frames streamed here (each `tool_use` block → a tool.call carrying its stable id + name
+  // + turn tokens, recorded into the shared tracker for later result pairing) AND any
+  // OpenAI-shaped fragments, emitting NO synthetic per-stream tool.result. The raw SSE bytes
+  // are passed through to the client byte-for-byte unchanged either way.
   const extractor = createSseToolCallExtractor(
     deps.bus,
     toSessionKeyString(requestCtx.sessionKey),

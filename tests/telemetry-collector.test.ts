@@ -327,3 +327,139 @@ test('reset clears duration and token aggregates', async () => {
   await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 7 } }));
   assert.equal(collector.summary().totalInputTokens, 7);
 });
+
+// --- aggregate exclusion of wrapper tools (e.g. the `task` sub-session) -------
+
+/**
+ * Scenario: N normal tool calls (each with small duration + tokens, results
+ * paired) mixed with K `task` wrapper calls whose single call/result carries a
+ * WHOLE nested sub-session's large duration + token mass. The `task` wrapper is
+ * excluded from every aggregate while its individual events stay in the raw stream.
+ */
+test('excluded `task` wrapper is filtered from aggregates but kept in the raw event stream', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  // A recorder mirroring every EMITTED event — proves the filter is
+  // aggregation-only and never drops raw events from the stream.
+  const seen: TelemetryEvent[] = [];
+  bus.subscribe((ev) => { seen.push(ev); });
+
+  // N normal calls (unique `at` so each is its own dedup turn), each paired with a result.
+  await bus.emit(toolCall({ toolName: 'bash', sessionKey: 'sess-1', at: AT + 1, tokens: { input: 100, output: 50, total: 150 } }));
+  await bus.emit(toolResult({ toolName: 'bash', sessionKey: 'sess-1', at: AT + 2, durationMs: 100 }));
+  await bus.emit(toolCall({ toolName: 'bash', sessionKey: 'sess-1', at: AT + 3, tokens: { input: 200, output: 80, total: 280 } }));
+  await bus.emit(toolResult({ toolName: 'bash', sessionKey: 'sess-1', at: AT + 4, durationMs: 200 }));
+  await bus.emit(toolCall({ toolName: 'read', sessionKey: 'sess-1', at: AT + 5, tokens: { input: 300, output: 60, total: 360 } }));
+  await bus.emit(toolResult({ toolName: 'read', sessionKey: 'sess-1', at: AT + 6, durationMs: 150 }));
+
+  // K `task` wrapper calls carrying a whole nested sub-session's large mass.
+  await bus.emit(toolCall({ toolName: 'task', sessionKey: 'sub-a', at: AT + 10, tokens: { input: 100000, output: 90000, total: 190000 } }));
+  await bus.emit(toolResult({ toolName: 'task', sessionKey: 'sub-a', at: AT + 11, durationMs: 600000 }));
+  await bus.emit(toolCall({ toolName: 'task', sessionKey: 'sub-b', at: AT + 12, tokens: { input: 200000, output: 150000, total: 350000 } }));
+  await bus.emit(toolResult({ toolName: 'task', sessionKey: 'sub-b', at: AT + 13, durationMs: 900000 }));
+
+  const s = collector.summary();
+  // Normal-only counts (the task wrapper is excluded from both sides).
+  assert.equal(s.totalCalls, 3);
+  assert.equal(s.totalResults, 3);
+  // Normal-only duration; the average is NOT inflated by the large task durations.
+  assert.equal(s.totalDurationMs, 450); // 100 + 200 + 150
+  assert.equal(s.avgDurationMs, 150);    // 450 / 3 normal results, not (450+600000+900000)/5
+  // Normal-only token mass; the task wrapper's huge totals are excluded.
+  assert.equal(s.totalInputTokens, 600);   // 100 + 200 + 300
+  assert.equal(s.totalOutputTokens, 190);  // 50 + 80 + 60
+  assert.equal(s.totalTokens, 790);        // 150 + 280 + 360
+  // No `task` row in the top tools; other tools present with correct metrics.
+  assert.ok(!s.topTools.some((t) => t.toolName.toLowerCase() === 'task'));
+  assert.deepEqual(s.topTools, [
+    { toolName: 'bash', count: 2, avgDurationMs: 150, maxDurationMs: 200, totalDurationMs: 300 },
+    { toolName: 'read', count: 1, avgDurationMs: 150, maxDurationMs: 150, totalDurationMs: 150 },
+  ]);
+
+  // The RAW emitted stream still carries every individual task event (aggregation-only filter).
+  assert.equal(seen.filter((e) => e.type === 'tool.call' && e.toolName === 'task').length, 2);
+  assert.equal(seen.filter((e) => e.type === 'tool.result' && e.toolName === 'task').length, 2);
+  const taskResultEv = seen.find((e) => e.type === 'tool.result' && e.toolName === 'task') as ToolResultEvent;
+  assert.equal(taskResultEv.durationMs, 600000);
+  const taskCallEv = seen.find((e) => e.type === 'tool.call' && e.toolName === 'task') as ToolCallEvent;
+  assert.equal(taskCallEv.tokens?.total, 190000);
+
+  // The collector's own retained raw-event buffer also keeps them.
+  assert.equal(collector.getRecentEvents().filter((e) => (e.type === 'tool.call' || e.type === 'tool.result') && e.toolName === 'task').length, 4);
+  // Per-session tallies stay raw: the task wrapper's sessions are still counted.
+  assert.equal(collector.perSession.get('sub-a'), 1);
+  assert.equal(collector.perSession.get('sub-b'), 1);
+});
+
+test('aggregate exclusion matches tool names case-insensitively (Task / TASK / tAsK)', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+  const seen: TelemetryEvent[] = [];
+  bus.subscribe((ev) => { seen.push(ev); });
+
+  await bus.emit(toolCall({ toolName: 'Task', at: AT + 1, tokens: { input: 900, output: 100, total: 1000 } }));
+  await bus.emit(toolResult({ toolName: 'Task', at: AT + 2, durationMs: 50000 }));
+  await bus.emit(toolCall({ toolName: 'TASK', at: AT + 3, tokens: { input: 400, output: 60, total: 460 } }));
+  await bus.emit(toolResult({ toolName: 'TASK', at: AT + 4, durationMs: 70000 }));
+  await bus.emit(toolCall({ toolName: 'tAsK', at: AT + 5 }));
+
+  const s = collector.summary();
+  // Every differently-cased variant of `task` is excluded from every aggregate.
+  assert.equal(s.totalCalls, 0);
+  assert.equal(s.totalResults, 0);
+  assert.equal(s.totalDurationMs, undefined);
+  assert.equal(s.avgDurationMs, undefined);
+  assert.equal(s.totalInputTokens, undefined);
+  assert.equal(s.totalOutputTokens, undefined);
+  assert.equal(s.totalTokens, undefined);
+  assert.deepEqual(s.topTools, []);
+
+  // ...but the raw stream retains all of them.
+  assert.equal(seen.filter((e) => e.type === 'tool.call' && /^task$/i.test(e.toolName)).length, 3);
+  assert.equal(seen.filter((e) => e.type === 'tool.result' && /^task$/i.test(e.toolName)).length, 2);
+});
+
+test('excludedTools option customizes the aggregation-exclusion set (default excludes only `task`)', async () => {
+  // Default behaviour: a non-`task` tool counts; `task` is excluded.
+  const busA = createEventBus();
+  const cA = createCollector({ bus: busA });
+  await busA.emit(toolCall({ toolName: 'task' }));
+  await busA.emit(toolCall({ toolName: 'other' }));
+  assert.equal(cA.summary().totalCalls, 1); // only `other`
+  assert.deepEqual(cA.getTopTools(), [{ toolName: 'other', count: 1 }]);
+
+  // Custom set: exclude a different name instead of `task` (case-insensitive).
+  const busB = createEventBus();
+  const cB = createCollector({ bus: busB, excludedTools: ['deploy'] });
+  await busB.emit(toolCall({ toolName: 'task' }));   // NOT in the custom set -> counted
+  await busB.emit(toolCall({ toolName: 'Deploy' })); // in the set -> excluded
+  assert.equal(cB.summary().totalCalls, 1);
+  assert.deepEqual(cB.getTopTools(), [{ toolName: 'task', count: 1 }]);
+
+  // Empty set disables exclusion entirely (a `task` call is then counted).
+  const busC = createEventBus();
+  const cC = createCollector({ bus: busC, excludedTools: [] });
+  await busC.emit(toolCall({ toolName: 'task' }));
+  assert.equal(cC.summary().totalCalls, 1);
+});
+
+// --- token-absent turns ---------------------------------------------------------------
+
+test('a token-less tool.call counts as a call but adds no token mass; its chars-carrying result still counts', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  // A single-call turn whose response carried no upstream usage: NO `tokens` on the call.
+  await bus.emit(toolCall({ toolName: 'bash' }));
+  // Its paired result still reports its payload size (`chars`).
+  await bus.emit(toolResult({ toolName: 'bash', chars: 128 }));
+
+  const s = collector.summary();
+  assert.equal(s.totalCalls, 1, 'the token-less tool.call still counts as a call');
+  assert.equal(s.totalResults, 1, 'the paired tool.result is counted');
+  assert.equal(s.totalInputTokens, undefined, 'no input-token mass is recorded for a usage-less turn');
+  assert.equal(s.totalOutputTokens, undefined, 'no output-token mass is recorded for a usage-less turn');
+  assert.equal(s.totalTokens, undefined, 'no total-token mass is recorded for a usage-less turn');
+  assert.deepEqual(collector.getTopTools(), [{ toolName: 'bash', count: 1 }]);
+});

@@ -10,6 +10,7 @@ import {
 import {
   buildRequestContext,
   readJSONBody,
+  resolveAndEmitToolResults,
   runThroughPipeline,
   sendJSON,
   toClientId,
@@ -89,6 +90,8 @@ function isStreamRequest(raw: unknown): boolean {
  * Stream a same-protocol OpenAI request through to the client as raw SSE. Only the
  * REQUEST phase of the pipeline runs (policy edits applied before forwarding); response-
  * phase stages cannot run on a raw SSE pass-through (they would need the full response).
+ * The request-phase tool-RESULT detection still runs (via {@link resolveAndEmitToolResults}),
+ * pairing any tool results carried in the incoming messages against previously-issued calls.
  */
 async function streamSameProtocol(
   req: http.IncomingMessage,
@@ -99,6 +102,15 @@ async function streamSameProtocol(
   const requestCtx = buildRequestContext(req, deps.upstream, raw);
   const processed = await deps.pipeline.handleRequest(requestCtx);
   syncRequestMessages(processed);
+  // Request-phase tool-RESULT detection runs on EVERY proxied request — including streamed ones —
+  // so pending issued calls recorded by an earlier same-session request (buffered or streamed)
+  // pair into a REAL tool.result even when this response itself is streamed. A no-op here when
+  // the incoming messages carry no tool results or none match a pending issued call.
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx);
+  // Ask the upstream to include per-turn token usage on the stream so the passthrough SSE carries
+  // a trailing `usage` chunk the extractor reads into turn-level `tokens` (OpenAI only emits it
+  // when asked via `stream_options.include_usage`). Preserves any client-provided `stream_options`.
+  ensureStreamUsage(processed.raw);
   const upstreamResponse = await streamOpenAIRequest(deps.upstream, processed.raw as OpenAIChatRequest);
   // Pipe the raw SSE through a passthrough transformer that extracts tool-call/result
   // telemetry onto the shared bus without altering forwarded bytes (a no-op when no
@@ -125,6 +137,24 @@ function syncRequestMessages(ctx: RequestContext): void {
   if (!Array.isArray(record.messages)) return;
   if (record.messages === ctx.messages) return;
   record.messages = ctx.messages;
+}
+
+/**
+ * Force `stream_options.include_usage` to `true` on an OpenAI stream request body so the upstream
+ * emits a trailing `usage` chunk (read by the SSE extractor into turn-level `tokens`). Preserves
+ * any other client-provided `stream_options`; no-op when the body is not a plain object. Mutates
+ * and returns the raw wire body.
+ */
+function ensureStreamUsage(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const existing = record.stream_options;
+  const opts =
+    existing !== null && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  record.stream_options = { ...opts, include_usage: true };
+  return record;
 }
 
 /** Return the configured model(s) as an OpenAI model list. */

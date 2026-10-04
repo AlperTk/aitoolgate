@@ -84,6 +84,43 @@ function turnFetch(bodies: unknown[]): FetchLike {
   let i = 0;
   return async () => new Response(JSON.stringify(bodies[Math.min(i++, bodies.length - 1)]), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
+/** Multi-turn SSE upstream: returns `texts[i]` (as an event-stream) on the i-th call (last text repeats). */
+function sseTurnFetch(texts: string[]): FetchLike {
+  const enc = new TextEncoder();
+  let i = 0;
+  return async () =>
+    new Response(
+      new ReadableStream({ start: (c) => { c.enqueue(enc.encode(texts[Math.min(i++, texts.length - 1)])); c.close(); } }),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    );
+}
+/** OpenAI SSE stream carrying ONE tool call (id X) followed by a turn-level `usage` chunk, then `[DONE]`. */
+function sseCallWithUsage(): string {
+  const delta = (d: unknown): string => `data: ${JSON.stringify({ choices: [{ delta: d }] })}\n\n`;
+  return (
+    delta({ tool_calls: [{ index: 0, id: 'call_stream_metrics', function: { name: 'search_web' } }] }) +
+    delta({ tool_calls: [{ index: 0, function: { arguments: '{"query":"stream"}' } }] }) +
+    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 } })}\n\n` +
+    'data: [DONE]\n\n'
+  );
+}
+/** OpenAI SSE stream carrying TWO tool calls in one turn (same turn-level `at`) + a `usage` chunk. */
+function sseTwoCallsWithUsage(): string {
+  const delta = (d: unknown): string => `data: ${JSON.stringify({ choices: [{ delta: d }] })}\n\n`;
+  return (
+    delta({ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'search_web' } }] }) +
+    delta({ tool_calls: [{ index: 0, function: { arguments: '{"query":"a"}' } }] }) +
+    delta({ tool_calls: [{ index: 1, id: 'call_b', function: { name: 'search_web' } }] }) +
+    delta({ tool_calls: [{ index: 1, function: { arguments: '{"query":"b"}' } }] }) +
+    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 } })}\n\n` +
+    'data: [DONE]\n\n'
+  );
+}
+/** OpenAI SSE stream carrying only a final text answer (no tool calls, no usage). */
+function sseFinalAnswer(): string {
+  const delta = (content: string): string => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+  return delta('all ') + delta('done') + 'data: [DONE]\n\n';
+}
 interface StatsSummary { totalCalls: number; totalResults: number; topTools: { toolName: string; count: number }[]; interventions: unknown[]; }
 async function stats(port: number): Promise<StatsSummary> {
   const res = await fetch(`http://127.0.0.1:${port}/api/stats`);
@@ -412,6 +449,252 @@ test('two successive same-session requests produce a real tool.result paired fro
     const summary = mcm.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector summary reports non-zero totalDurationMs');
     assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'collector summary reports non-zero token totals');
+  } finally {
+    unsub();
+    await closeServer(srv);
+  }
+});
+
+// --- Test 6: STREAMING tool-call metrics end-to-end ------------------------
+// A pure-streaming two-request same-session scenario that must behave like the non-stream
+// case above (Test 5): request N is a streamed response whose SSE carries one tool call
+// (id X) plus a turn-level `usage` chunk; request N+1 is ALSO streamed and carries the
+// matching tool result, which the request-phase resolution pairs into a REAL tool.result.
+const STREAM_METRICS_SESSION = 'sess-e2e-stream-metrics';
+const STREAM_TOOL_RESULT = '<web-search-results-stream>';
+
+test('two successive same-session STREAMING requests produce a real tool.result paired from the streamed tool.call', async () => {
+  // Request N → SSE with one tool call + usage; request N+1 → SSE final answer (no calls).
+  const { port, srv, mcm } = await startServer(
+    { upstream: upstream(sseTurnFetch([sseCallWithUsage(), sseFinalAnswer()])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => {
+    events.push(ev);
+  });
+  try {
+    const resN = await post(port, { ...chatBody(), stream: true }, { 'x-session-id': STREAM_METRICS_SESSION });
+    assert.equal(resN.status, 200, 'streaming request N must be HTTP 200');
+    assert.match(resN.headers.get('content-type') ?? '', /text\/event-stream/, 'request N must be streamed');
+    await resN.text();
+
+    // The streamed tool.call carries its stable id AND the turn tokens parsed from the stream.
+    const call = events.find(isToolCall);
+    assert.ok(call, 'request N emitted a streamed tool.call event');
+    assert.equal(call.id, 'call_stream_metrics', 'the streamed tool.call carries the stable tool-call id');
+    assert.ok(
+      call.tokens !== undefined &&
+        (call.tokens.input ?? 0) > 0 &&
+        (call.tokens.output ?? 0) > 0 &&
+        (call.tokens.total ?? 0) > 0,
+      'the streamed tool.call carries turn tokens parsed from the stream usage chunk',
+    );
+
+    // Advance the clock so the measured issue→result duration is strictly positive (deterministic).
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Request N+1 (also streamed) feeds back the matching role:'tool' result in the same session.
+    const bodyN1: Record<string, unknown> = {
+      ...chatBody(),
+      stream: true,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Look it up, please.' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_stream_metrics', type: 'function', function: { name: 'search_web', arguments: '{"query":"stream"}' } }] },
+        { role: 'tool', tool_call_id: 'call_stream_metrics', name: 'search_web', content: STREAM_TOOL_RESULT },
+      ],
+    };
+    const resN1 = await post(port, bodyN1, { 'x-session-id': STREAM_METRICS_SESSION });
+    assert.equal(resN1.status, 200, 'streaming request N+1 must be HTTP 200');
+    await resN1.text();
+
+    // A REAL tool.result was emitted, linked to the issued id, with a measured duration + chars.
+    const result = events.find(isToolResult);
+    assert.ok(result, 'request N+1 emitted a real tool.result event paired from the streamed tool.call');
+    assert.equal(result.toolCallId, 'call_stream_metrics', 'the tool.result links to the issued tool-call id');
+    assert.ok(typeof result.durationMs === 'number' && result.durationMs > 0, 'durationMs is measured and strictly positive');
+    assert.ok(result.chars !== undefined && result.chars === STREAM_TOOL_RESULT.length, 'chars reflects the result payload size');
+
+    // The shared collector now exposes non-zero duration AND token totals for the streaming session.
+    const summary = mcm.collector.summary();
+    assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector reports non-zero totalDurationMs');
+    assert.ok(summary.avgDurationMs !== undefined && summary.avgDurationMs > 0, 'collector reports non-zero avgDurationMs');
+    assert.ok(summary.totalInputTokens !== undefined && summary.totalInputTokens > 0, 'collector reports non-zero totalInputTokens');
+    assert.ok(summary.totalOutputTokens !== undefined && summary.totalOutputTokens > 0, 'collector reports non-zero totalOutputTokens');
+    assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'collector reports non-zero totalTokens');
+    const top = summary.topTools.find((t) => t.toolName === 'search_web');
+    assert.ok(top, 'topTools includes search_web');
+    assert.ok(top.avgDurationMs !== undefined && top.avgDurationMs > 0, 'per-tool avgDurationMs > 0');
+    assert.ok(top.maxDurationMs !== undefined && top.maxDurationMs > 0, 'per-tool maxDurationMs > 0');
+  } finally {
+    unsub();
+    await closeServer(srv);
+  }
+});
+
+// --- Test 7: multi-call streamed turn dedups tokens via a shared `at` ------
+test('a streamed turn with multiple tool calls is counted as ONE token turn (no over-count)', async () => {
+  // Two tool calls in ONE streamed response share one turn-level `at`; even though the usage chunk
+  // arrives after the first call is finalized, the shared `at` makes the collector count the turn's
+  // usage exactly once. Request N+1 feeds back BOTH results so both resolve into real tool.results.
+  const { port, srv, mcm } = await startServer(
+    { upstream: upstream(sseTurnFetch([sseTwoCallsWithUsage(), sseFinalAnswer()])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => {
+    events.push(ev);
+  });
+  try {
+    const resN = await post(port, { ...chatBody(), stream: true }, { 'x-session-id': STREAM_METRICS_SESSION });
+    assert.equal(resN.status, 200, 'streaming request N must be HTTP 200');
+    await resN.text();
+
+    // Both streamed calls are emitted and, crucially, share a single turn-level `at`.
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'the streamed turn emitted both tool.call events');
+    assert.ok(
+      new Set(calls.map((c) => c.at)).size === 1,
+      'every tool.call in the streamed turn shares one turn-level `at` (for token dedup)',
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Request N+1 feeds back BOTH matching role:'tool' results in the same session (also streamed).
+    const bodyN1: Record<string, unknown> = {
+      ...chatBody(),
+      stream: true,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Look it up, please.' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_a', type: 'function', function: { name: 'search_web', arguments: '{"query":"a"}' } }] },
+        { role: 'tool', tool_call_id: 'call_a', name: 'search_web', content: '<result-a>' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_b', type: 'function', function: { name: 'search_web', arguments: '{"query":"b"}' } }] },
+        { role: 'tool', tool_call_id: 'call_b', name: 'search_web', content: '<result-b>' },
+      ],
+    };
+    const resN1 = await post(port, bodyN1, { 'x-session-id': STREAM_METRICS_SESSION });
+    assert.equal(resN1.status, 200, 'streaming request N+1 must be HTTP 200');
+    await resN1.text();
+
+    // Both pending issued calls resolve into REAL tool.results.
+    assert.equal(events.filter(isToolResult).length, 2, 'both streamed tool calls resolved into real tool.results');
+    assert.ok(events.every((e) => !isToolResult(e) || (typeof e.durationMs === 'number' && e.durationMs > 0)), 'every result carries a positive durationMs');
+
+    // The turn's tokens are counted exactly once despite two tool.call events sharing one `at`.
+    const summary = mcm.collector.summary();
+    assert.equal(summary.totalCalls, 2, 'collector observed both streamed tool calls');
+    assert.equal(summary.totalTokens, 19, 'the multi-call turn contributes its token usage exactly once (no over-count)');
+    assert.equal(summary.totalInputTokens, 12, 'input tokens counted once for the whole turn');
+    assert.equal(summary.totalOutputTokens, 7, 'output tokens counted once for the whole turn');
+    assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'non-zero total duration across the two results');
+    const top = summary.topTools.find((t) => t.toolName === 'search_web');
+    assert.ok(top, 'topTools includes search_web');
+    assert.equal(top.count, 2, 'search_web count reflects both streamed calls');
+    assert.ok(top.avgDurationMs !== undefined && top.avgDurationMs > 0, 'per-tool avgDurationMs > 0');
+    assert.ok(top.maxDurationMs !== undefined && top.maxDurationMs > 0, 'per-tool maxDurationMs > 0');
+  } finally {
+    unsub();
+    await closeServer(srv);
+  }
+});
+
+// --- Test 8: turn with NO upstream usage -> token-less call, chars-carrying result -----
+test('a turn whose response has no upstream usage emits a token-less tool.call but a chars-carrying tool.result', async () => {
+  // Intentionally NO `usage` field on either response body.
+  const NO_USAGE_CALL = {
+    id: 'chatcmpl-no-usage', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'no_usage_1', type: 'function', function: { name: 'search_web', arguments: '{"query":"x"}' } }] }, finish_reason: 'tool_calls' }],
+  };
+  const NO_USAGE_FINAL = {
+    id: 'chatcmpl-no-usage-final', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+  };
+  const SESS = 'sess-no-usage';
+  const RESULT_CONTENT = '<no-usage-results>';
+  const { port, srv, mcm } = await startServer(
+    { upstream: upstream(turnFetch([NO_USAGE_CALL, NO_USAGE_FINAL])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    const resN = await post(port, { ...chatBody(), stream: false }, { 'x-session-id': SESS });
+    assert.equal(resN.status, 200, 'request N must be HTTP 200');
+    await resN.arrayBuffer();
+
+    // The tool.call carries its stable id but NO tokens (the upstream reported none).
+    const call = events.find(isToolCall);
+    assert.ok(call, 'request N emitted a tool.call event');
+    assert.equal(call.id, 'no_usage_1', 'the tool.call carries its stable id even without usage');
+    assert.ok(call.tokens === undefined, 'a turn with no upstream usage carries NO tokens on the tool.call');
+
+    // Advance the clock so the measured issue->result duration is strictly positive (deterministic).
+    await new Promise((r) => setTimeout(r, 40));
+
+    const bodyN1: Record<string, unknown> = {
+      ...chatBody(),
+      stream: false,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Look it up, please.' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'no_usage_1', type: 'function', function: { name: 'search_web', arguments: '{"query":"x"}' } }] },
+        { role: 'tool', tool_call_id: 'no_usage_1', name: 'search_web', content: RESULT_CONTENT },
+      ],
+    };
+    const resN1 = await post(port, bodyN1, { 'x-session-id': SESS });
+    assert.equal(resN1.status, 200, 'request N+1 must be HTTP 200');
+    await resN1.arrayBuffer();
+
+    // The paired REAL tool.result still carries chars (payload size) despite the turn having no tokens.
+    const result = events.find(isToolResult);
+    assert.ok(result, 'request N+1 emitted a real tool.result event paired from the tool.call');
+    assert.equal(result.toolCallId, 'no_usage_1', 'the tool.result links to the issued tool-call id');
+    assert.ok(typeof result.durationMs === 'number' && result.durationMs > 0, 'durationMs is measured and strictly positive');
+    assert.equal(result.chars, RESULT_CONTENT.length, 'chars reflects the result payload size even when the turn had no tokens');
+  } finally {
+    unsub();
+    await closeServer(srv);
+  }
+});
+
+// --- Test 9: streamed OpenAI turn REQUESTS token usage + carries merged tokens ----------
+test('a streamed OpenAI turn requests upstream token usage (stream_options.include_usage) and carries merged tokens', async () => {
+  // A fetch that RECORDS the forwarded request body then delegates to the canned usage-carrying SSE.
+  let forwarded: Record<string, unknown> | undefined;
+  const baseFetch = sseFetch(sseCallWithUsage());
+  const recordingFetch: FetchLike = async (url: string, init?: RequestInit): Promise<Response> => {
+    try {
+      forwarded = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+    } catch {
+      /* ignore non-JSON body */
+    }
+    return baseFetch(url, init);
+  };
+  const { port, srv, mcm } = await startServer({ upstream: upstream(recordingFetch) }, { ws: false });
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    const res = await post(port, { ...chatBody(), stream: true }, { 'x-session-id': 'sess-usage-req' });
+    assert.equal(res.status, 200, 'the streaming request must be HTTP 200');
+    await res.text();
+
+    // The proxy REQUESTED token usage from the upstream via stream_options.include_usage.
+    assert.ok(forwarded !== undefined, 'the streamed request was forwarded to the upstream');
+    assert.equal(
+      (forwarded!.stream_options as Record<string, unknown> | undefined)?.include_usage,
+      true,
+      'the streamed request sets stream_options.include_usage=true so the upstream reports per-turn usage',
+    );
+
+    // The extracted call carries the merged turn tokens read from the trailing usage chunk.
+    const call = events.find(isToolCall);
+    assert.ok(call, 'a streamed tool.call was emitted');
+    assert.ok(
+      call.tokens !== undefined && call.tokens.input === 12 && call.tokens.output === 7 && call.tokens.total === 19,
+      'the streamed tool.call carries the merged turn tokens (normalized input/output/total) from the upstream usage chunk',
+    );
   } finally {
     unsub();
     await closeServer(srv);

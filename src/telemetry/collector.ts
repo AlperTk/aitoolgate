@@ -12,6 +12,7 @@
 import { createEventBus } from './event-bus';
 import type { TelemetryEventBus } from './event-bus';
 import type { InterventionEvent, TelemetryEvent } from './events';
+import { DEFAULT_AGGREGATE_EXCLUDED_TOOLS, isAggregateExcluded } from './aggregate-exclusions';
 
 /** A ranked entry in the top-tools list. */
 export interface TopTool {
@@ -37,6 +38,8 @@ export interface CollectorOptions {
   maxRecent?: number;
   /** Bound on distinct token-turn dedup keys retained (`${sessionKey}\u0000${at}`); oldest evicted beyond this. Default 10000. */
   maxTokenTurns?: number;
+  /** Tool names excluded from aggregate statistics (matched case-insensitively). Raw events are always retained. Defaults to {@link DEFAULT_AGGREGATE_EXCLUDED_TOOLS}. */
+  excludedTools?: readonly string[];
 }
 
 /** A snapshot of all current aggregates. */
@@ -102,6 +105,8 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const maxInterventions = options.maxInterventions ?? DEFAULT_MAX_INTERVENTIONS;
   const maxRecent = options.maxRecent ?? DEFAULT_MAX_RECENT;
   const maxTokenTurns = options.maxTokenTurns ?? DEFAULT_MAX_TOKEN_TURNS;
+  // Tool names whose events are skipped by the aggregate accumulators (raw events are retained).
+  const excludedTools = options.excludedTools ?? DEFAULT_AGGREGATE_EXCLUDED_TOOLS;
 
   let totalCalls = 0;
   let totalResults = 0;
@@ -125,16 +130,22 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const tokenTurnKeys = new Set<string>();
 
   const handler: (event: TelemetryEvent) => void = (event) => {
-    // Retain every incoming raw event in arrival order, evicting the oldest past the cap.
+    // Retain EVERY incoming raw event in arrival order, evicting the oldest past the cap. The
+    // aggregation exclusion below is purely an aggregate filter: it never drops the raw event,
+    // so excluded tools stay visible in the live dashboard stream and drill-down.
     recent.push(event);
     if (recent.length > maxRecent) {
       recent.shift();
     }
     switch (event.type) {
-      case 'tool.call':
+      case 'tool.call': {
+        // Per-session call tallies stay raw (not "typical call" aggregates).
+        perSession.set(event.sessionKey, (perSession.get(event.sessionKey) ?? 0) + 1);
+        // Skip aggregate accumulation for excluded tools (e.g. the `task` wrapper) so totals,
+        // averages, and per-tool rankings reflect normal tool calls only.
+        if (isAggregateExcluded(event.toolName, excludedTools)) break;
         totalCalls += 1;
         perTool.set(event.toolName, (perTool.get(event.toolName) ?? 0) + 1);
-        perSession.set(event.sessionKey, (perSession.get(event.sessionKey) ?? 0) + 1);
         // Sum a turn's upstream token usage once, deduped by (sessionKey, at): calls sharing one
         // response turn repeat identical `tokens`, so only the first-seen turn contributes.
         if (event.tokens) {
@@ -154,7 +165,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
           }
         }
         break;
-      case 'tool.result':
+      }
+      case 'tool.result': {
+        // Aggregation-only exclusion: an excluded tool's result is skipped for every
+        // result/duration aggregate, but its raw event is retained above.
+        if (isAggregateExcluded(event.toolName, excludedTools)) break;
         totalResults += 1;
         // Accumulate duration metrics per tool and globally, only when measurable.
         if (typeof event.durationMs === 'number') {
@@ -167,6 +182,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
           toolDuration.set(event.toolName, stats);
         }
         break;
+      }
       case 'policy.intervention':
         interventions.unshift(event);
         if (interventions.length > maxInterventions) {

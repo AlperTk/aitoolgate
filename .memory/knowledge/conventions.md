@@ -15,7 +15,7 @@ Rules to follow; each is supported by multiple examples or explicit project rule
 - Server precedence: `/health` → `/api/*` → dashboard static (only `/`, `/app.js`, `/styles.css`) → proxy `/v1/*` → 404. One shared `bus`+`collector` feeds proxy telemetry + REST + WS.
 
 ## Testing
-- `node:test` + `node:assert/strict`; one file per area under `tests/`, compiled to `dist/tests/`. Baseline: 21 suites / 132 tests green.
+- `node:test` + `node:assert/strict`; one file per area under `tests/`, compiled to `dist/tests/`. Baseline: ~22 suites / 165 tests green.
 - Ephemeral ports: `await server.listen(0)` then read `.port` (or await `'listening'` if the server auto-listens); drive requests via global `fetch` or raw `node:net`; **close servers/sockets in `afterEach`** so the event loop drains.
 - WS tests use raw `node:net` (hand-rolled RFC6455 upgrade). See `pitfalls.md` for hang / double-listen traps.
 

@@ -32,6 +32,8 @@ export interface IssuedCall {
   id: string;
   /** When it was issued (epoch milliseconds). */
   at: number;
+  /** Name of the invoked tool, when known (carried onto the resolved result as its `toolName`). */
+  name?: string;
 }
 
 /** A tool result arriving later on the stream. */
@@ -50,6 +52,8 @@ export interface ResolvedToolCall {
   toolCallId: string;
   /** Elapsed milliseconds from issue to result (clamped to >= 0). */
   durationMs: number;
+  /** Name of the invoked tool, included only when the recorded issued call carried one. */
+  toolName?: string;
   /** The result's payload size, included only when present on the incoming result. */
   chars?: number;
 }
@@ -62,9 +66,15 @@ export interface ToolMetricsTracker {
    */
   recordIssued(sessionKey: string, issued: IssuedCall[]): void;
   /**
-   * Resolve results against same-session pending calls, computing
-   * `durationMs = Math.max(0, result.at - issuedAt)`. Results with no matching
-   * pending id are silently skipped (not included in the returned list).
+   * Resolve results against pending calls, computing `durationMs = Math.max(0,
+   * result.at - issuedAt)` (clamped non-negative). Each result first matches the
+   * EXACT same-session bucket (`${sessionKey}\u0000${id}`); when that is absent —
+   * e.g. the session key diverged or was empty between the issuing and resolving
+   * request — it falls back to the most-recently-issued pending entry carrying the
+   * same tool-call id in ANY session, so a call is never permanently stranded by a
+   * header mismatch. Results with no matching pending id are silently skipped (not
+   * included in the returned list); each id resolves only once. Sequential
+   * single-client pairing, TTL sweep, and capacity behavior are all preserved.
    */
   resolveResults(sessionKey: string, results: ToolResultIn[]): ResolvedToolCall[];
   /** Number of pending entries currently retained. */
@@ -76,12 +86,16 @@ export interface ToolMetricsTracker {
 const DEFAULT_MAX_PENDING = 1000;
 const DEFAULT_TTL_MS = 300_000;
 
-/** Retained pending entry: issue time plus a stable insertion-order sequence. */
+/** Retained pending entry: issue time, insertion order, and the id/name it represents. */
 interface PendingEntry {
   /** Issue time (epoch milliseconds). */
   at: number;
   /** Monotonic insertion-order index, stable across re-issues of the same id. */
   seq: number;
+  /** Stable tool-call id this pending entry represents (for cross-session fallback matching). */
+  id: string;
+  /** Invoked tool name, when the issuing call carried one (surfaced on the resolved call). */
+  name?: string;
 }
 
 /** Create an in-memory {@link ToolMetricsTracker}. */
@@ -124,12 +138,40 @@ export function createToolMetricsTracker(options: ToolMetricsOptions = {}): Tool
       const key = keyFor(sessionKey, id);
       const existing = entries.get(key);
       if (existing) {
-        existing.at = call.at; // re-issue updates the time but keeps insertion order
+        existing.at = call.at; // re-issue updates the time (and name) but keeps insertion order
+        if (call.name !== undefined) existing.name = call.name;
       } else {
-        entries.set(key, { at: call.at, seq: seq++ });
+        const entry: PendingEntry = { at: call.at, seq: seq++, id };
+        if (call.name !== undefined) entry.name = call.name;
+        entries.set(key, entry);
       }
     }
     enforceCapacity();
+  };
+
+  /**
+   * Locate the pending entry for `id`: prefer the EXACT same-session bucket
+   * (`${sessionKey}\u0000${id}`); as a robustness fallback so a diverging or empty
+   * `x-session-id` header cannot strand an issued call, otherwise the most-recently
+   * issued pending entry carrying that id in ANY session. Returns the full key plus
+   * the entry, or `undefined` when nothing matches.
+   */
+  const findPendingById = (sessionKey: string, id: string): { key: string; entry: PendingEntry } | undefined => {
+    const exactKey = keyFor(sessionKey, id);
+    const exact = entries.get(exactKey);
+    if (exact !== undefined) return { key: exactKey, entry: exact };
+    let bestKey: string | undefined;
+    let best: PendingEntry | undefined;
+    for (const [key, candidate] of entries) {
+      if (candidate.id !== id) continue;
+      // Prefer the most recent issue (largest `at`; ties broken by most-recently inserted).
+      if (best === undefined || candidate.at > best.at || (candidate.at === best.at && candidate.seq > best.seq)) {
+        best = candidate;
+        bestKey = key;
+      }
+    }
+    if (bestKey === undefined || best === undefined) return undefined;
+    return { key: bestKey, entry: best };
   };
 
   const resolveResults = (sessionKey: string, results: ToolResultIn[]): ResolvedToolCall[] => {
@@ -139,14 +181,14 @@ export function createToolMetricsTracker(options: ToolMetricsOptions = {}): Tool
     for (const result of results) {
       const id = result.toolCallId;
       if (!id) continue; // no id cannot match any pending call
-      const key = keyFor(sessionKey, id);
-      const entry = entries.get(key);
-      if (!entry) continue; // unmatched → silently skipped
-      entries.delete(key);
+      const match = findPendingById(sessionKey, id);
+      if (!match) continue; // unmatched → silently skipped
+      entries.delete(match.key);
       const resolvedEntry: ResolvedToolCall = {
         toolCallId: id,
-        durationMs: Math.max(0, result.at - entry.at),
+        durationMs: Math.max(0, result.at - match.entry.at),
       };
+      if (match.entry.name !== undefined) resolvedEntry.toolName = match.entry.name;
       if (result.chars !== undefined) resolvedEntry.chars = result.chars;
       resolved.push(resolvedEntry);
     }

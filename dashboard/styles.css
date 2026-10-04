@@ -118,33 +118,49 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 /* ------------------------------- lists ----------------------------- */
 .list-wrap { max-height: 360px; overflow-y: auto; }
 .stream-list { list-style: none; margin: 0; padding: 0; }
-/* Stream row: outer container (block) holding a flex .row-main + optional .row-detail */
+/* Stream row: outer container (block) holding a grid .row-main + optional .row-detail */
 .stream-row {
   display: block;
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
 }
 .stream-row:last-child { border-bottom: none; }
+/* Stream rows and their header share one grid template so the <th> labels line up
+   exactly with each column: status | tool | session | time | duration(ms) | in | out
+   | total | size | expand-chevron (last track has no header label). */
+.stream-head,
 .row-main {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(2.8rem, auto) minmax(0, 1fr) minmax(0, 9rem) minmax(0, 6.2rem) repeat(5, minmax(3.4rem, auto)) auto;
   align-items: center;
   gap: 0.6rem;
+}
+.stream-head {
+  padding: 0 0.25rem 0.4rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.stream-head th { padding: 0; font-weight: 600; text-align: left; }
+.row-main {
   padding: 0.45rem 0.25rem;
   cursor: pointer;
   user-select: none;
 }
 .row-main:hover { background: rgba(255, 255, 255, 0.03); }
-.s-tool { font-weight: 600; word-break: break-all; }
-.s-session { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
-.s-time { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.s-duration, .s-tokens {
+.s-tool { font-weight: 600; word-break: break-all; min-width: 0; }
+.s-session { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Numeric cells + their right-aligned headers (Duration, In, Out, Total, Size). */
+.col-num {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  min-width: 3rem;
   text-align: right;
   font-size: 0.85rem;
 }
+.stream-head .num-col { text-align: right; }
 .s-expand {
   font-size: 0.7rem;
   color: var(--muted);

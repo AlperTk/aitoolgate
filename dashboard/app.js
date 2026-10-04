@@ -237,6 +237,30 @@
    * as standalone "orphan" rows so no data is lost.
    */
   // Build a single call row, register it in callRows, and prepend it to the list.
+  // Append the four numeric cells (In | Out | Total | Size) to a row's .row-main.
+  // Each token column renders '\u2014' unless the event carries that field (tokens are only
+  // present when the upstream provider reported usage); Size shows the paired result
+  // payload size (chars) when known. Driven by tokens.input / tokens.output / tokens.total.
+  function appendTokenAndSizeCells(main, ev) {
+    var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
+    var inCell = el('span', 's-tokens-in col-num', tokens && typeof tokens.input === 'number' ? fmtOpt(tokens.input) : '\u2014');
+    inCell.title = 'Input tokens (turn)';
+    main.appendChild(inCell);
+    var outCell = el('span', 's-tokens-out col-num', tokens && typeof tokens.output === 'number' ? fmtOpt(tokens.output) : '\u2014');
+    outCell.title = 'Output tokens (turn)';
+    main.appendChild(outCell);
+    var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? fmtOpt(tokens.total) : '\u2014');
+    totCell.title = 'Turn tokens (in+out) \u2014 the full upstream turn total (dominated by resent history), not a per-tool cost.';
+    main.appendChild(totCell);
+    var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? fmtOpt(ev.chars) : '\u2014');
+    sizeCell.title = 'Result payload size (characters)';
+    main.appendChild(sizeCell);
+  }
+  // Update a numeric cell's text from an optional value; leave it unchanged ('—') when absent.
+  function setNumCellText(cell, v) {
+    if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = fmtOpt(v);
+  }
+
   function createCallRow(ev) {
     var callId = ev.id || '';
     var li = el('li', 'stream-row call-row');
@@ -252,15 +276,13 @@
     var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
     sess.title = ev.sessionKey || '';
     main.appendChild(sess);
-    var dur = el('span', 's-duration', '\u2014');
-    dur.title = 'Duration (ms)';
-    main.appendChild(dur);
-    var tok = el('span', 's-tokens', ev.tokens && typeof ev.tokens.total === 'number' ? fmtOpt(ev.tokens.total) : '\u2014');
-    tok.title = 'Tokens (turn total)';
-    main.appendChild(tok);
     var t = el('time', 's-time', fmtTime(ev.at));
     t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
     main.appendChild(t);
+    var dur = el('span', 's-duration col-num', '\u2014');
+    dur.title = 'Duration (ms)';
+    main.appendChild(dur);
+    appendTokenAndSizeCells(main, ev);
     var exp = el('span', 's-expand', '\u25BE');
     exp.setAttribute('aria-hidden', 'true');
     main.appendChild(exp);
@@ -271,6 +293,8 @@
     li.appendChild(main);
     li.appendChild(detail);
 
+    // Key the row state by the unique event id so each distinct batched same-name
+    // call gets its own row (retaining the empty-id fallback for legacy events).
     var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false };
     if (callId) callRows.set(callId, rs);
     prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
@@ -293,8 +317,11 @@
     }
     var dur = rs.li.querySelector('.s-duration');
     if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
-    var tok = rs.li.querySelector('.s-tokens');
-    if (tok && ev.tokens && typeof ev.tokens.total === 'number') tok.textContent = fmtOpt(ev.tokens.total);
+    // Update the numeric columns in place; absent values keep their existing '—'.
+    setNumCellText(rs.li.querySelector('.s-tokens-in'), ev.tokens && ev.tokens.input);
+    setNumCellText(rs.li.querySelector('.s-tokens-out'), ev.tokens && ev.tokens.output);
+    setNumCellText(rs.li.querySelector('.s-tokens-total'), ev.tokens && ev.tokens.total);
+    setNumCellText(rs.li.querySelector('.s-size'), ev.chars);
     if (rs.expanded) renderRowDetail(rs);
     applyFilters();
   }
@@ -314,15 +341,13 @@
     var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
     sess.title = ev.sessionKey || '';
     main.appendChild(sess);
-    var dur = el('span', 's-duration', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
-    dur.title = 'Duration (ms)';
-    main.appendChild(dur);
-    var tok = el('span', 's-tokens', ev.tokens && typeof ev.tokens.total === 'number' ? fmtOpt(ev.tokens.total) : '\u2014');
-    tok.title = 'Tokens (turn total)';
-    main.appendChild(tok);
     var t = el('time', 's-time', fmtTime(ev.at));
     t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
     main.appendChild(t);
+    var dur = el('span', 's-duration col-num', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
+    dur.title = 'Duration (ms)';
+    main.appendChild(dur);
+    appendTokenAndSizeCells(main, ev);
     var exp = el('span', 's-expand', '\u25BE');
     exp.setAttribute('aria-hidden', 'true');
     main.appendChild(exp);
@@ -348,8 +373,13 @@
       var rs = callRows.get(ev.toolCallId);
       if (rs && !rs.resultEv && rs.li.parentNode === $('stream-list')) return rs;
     }
-    // Fallback: most-recent still-pending call in the same session.
-    if (ev.sessionKey) {
+    // Fallback: most-recent still-pending call in the SAME NON-EMPTY session. A
+    // uniform/empty sessionKey identifies no single conversation (many unrelated sessions
+    // collapse onto ''), so it must not drive cross-row matching — otherwise an empty-key
+    // result could mis-match an unrelated empty-key pending row. The primary id-match above
+    // stays authoritative; this only tightens the session fallback (identical for any
+    // non-empty sessionKey that was already accepted).
+    if (typeof ev.sessionKey === 'string' && ev.sessionKey !== '') {
       var best = null, bestAt = -1;
       callRows.forEach(function (rs) {
         if (rs.resultEv) return;
@@ -548,8 +578,11 @@
    * keys so it never grows unbounded.
    */
   // Build a stable identity key for an event so a row renders at most once.
+  // The unique event id is included so distinct batched same-name calls (identical
+  // type/session/at/toolName) never share a key and collapse into one row. Non-call
+  // events carry no id, so an empty trailing segment preserves the prior behavior.
   function eventKey(ev) {
-    return ev.type + '|' + (ev.sessionKey || '') + '|' + ev.at + '|' + (ev.toolName || '');
+    return ev.type + '|' + (ev.sessionKey || '') + '|' + ev.at + '|' + (ev.toolName || '') + '|' + (ev.id || '');
   }
   // Render one telemetry event only if its key has not been seen, then record it.
   // Accepts an object or a JSON string (the WS onmessage case). Non-telemetry
@@ -1050,6 +1083,11 @@
   // Build one export record for a logical tool-call row (call + optional result).
   function callRecordFromRs(rs) {
     var call = rs.callEv, res = rs.resultEv, primary = call || res;
+    // Tokens live on the upstream tool.call event (present only when usage is reported);
+    // fall back to the paired result if it carries them. Size is the always-available
+    // result payload size (chars). Absent fields stay undefined so the CSV leaves a gap.
+    var tokens = (call && call.tokens && typeof call.tokens === 'object' ? call.tokens : null) ||
+      (res && res.tokens && typeof res.tokens === 'object' ? res.tokens : null);
     return {
       type: call ? 'call' : 'result',
       at: primary && typeof primary.at === 'number' ? primary.at : undefined,
@@ -1057,7 +1095,10 @@
       sessionKey: (call && call.sessionKey) || (res && res.sessionKey) || '',
       status: rs.status,
       durationMs: res && typeof res.durationMs === 'number' ? res.durationMs : undefined,
-      tokensTotal: res && res.tokens && typeof res.tokens.total === 'number' ? res.tokens.total : undefined
+      tokensInput: tokens && typeof tokens.input === 'number' ? tokens.input : undefined,
+      tokensOutput: tokens && typeof tokens.output === 'number' ? tokens.output : undefined,
+      tokensTotal: tokens && typeof tokens.total === 'number' ? tokens.total : undefined,
+      sizeChars: res && typeof res.chars === 'number' ? res.chars : undefined
     };
   }
   // Build one export record from an intervention row's raw data.
@@ -1107,7 +1148,7 @@
   }
   // Serialize visible call records to RFC-4180 CSV text.
   function buildCallsCsv(rows) {
-    var lines = ['type,at,time,toolName,sessionKey,status,durationMs,tokensTotal'];
+    var lines = ['type,at,time,toolName,sessionKey,status,durationMs,tokensInput,tokensOutput,tokensTotal,sizeChars'];
     rows.forEach(function (r) {
       lines.push([
         csvCell(r.type),
@@ -1117,7 +1158,10 @@
         csvCell(r.sessionKey || ''),
         csvCell(r.status),
         csvCell(r.durationMs == null ? '' : Math.round(r.durationMs)),
-        csvCell(r.tokensTotal == null ? '' : Math.round(r.tokensTotal))
+        csvCell(r.tokensInput == null ? '' : Math.round(r.tokensInput)),
+        csvCell(r.tokensOutput == null ? '' : Math.round(r.tokensOutput)),
+        csvCell(r.tokensTotal == null ? '' : Math.round(r.tokensTotal)),
+        csvCell(r.sizeChars == null ? '' : Math.round(r.sizeChars))
       ].join(','));
     });
     return lines.join('\r\n');
