@@ -1,4 +1,4 @@
-/* mcp-manager dashboard css — responsive: trailing @media breakpoints (max-width 960px and 560px) */
+/* mcp-manager dashboard css — responsive: @media breakpoints (max-width 960px/560px + min-width 961px viewport-fit cap) */
 /* ------------------------------- responsive ------------------------ */
 @media (max-width: 960px) {
   .dash-grid { grid-template-columns: 1fr; }
@@ -10,4 +10,45 @@
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
   .app-header { flex-direction: column; align-items: flex-start; }
+}
+
+/* Viewport-fit cap: at >=961px the whole dashboard grid fits one screen —
+   panels shrink below their natural content height and scroll internally
+   instead of forcing the page to grow tall. Below 960px this block does not
+   apply, so the single-column layout still scrolls naturally as before. */
+@media (min-width: 961px) {
+  /* Cap the grid (padding included, box-sizing:border-box) just under the
+     chrome above/below it (~header 61px + controls 45px + grid padding 48px). */
+  .dash-grid {
+    max-height: calc(100dvh - 160px);
+    /* Make the long-content row (row 1: stream + stats) deterministic and
+       bounded within the cap so it can compress below natural content height
+       and its panels scroll internally; the full-width interventions row
+       (row 2) stays sized to its short content. Columns are already
+       minmax(0, 1fr) so the stream column can shrink. */
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  /* Allow every grid item to shrink below its natural content size so the
+     capped row tracks can compress without overflowing the page. */
+  #stream-panel,
+  #stats-panel,
+  #interventions-panel {
+    min-height: 0;
+  }
+  /* Stream list fills whatever height the capped panel allows and scrolls
+     internally; replaces the dvh-based list cap for wide viewports (#stream-head
+     stays pinned since it is sticky within this scroll container). */
+  #stream-panel .list-wrap {
+    flex: 1 1 auto;
+    min-height: 120px;
+    max-height: none;
+  }
+  /* Stats + interventions become column flex boxes that scroll vertically
+     inside themselves (on the panel itself — no markup change needed). */
+  #stats-panel,
+  #interventions-panel {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
 }

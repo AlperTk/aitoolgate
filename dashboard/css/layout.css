@@ -92,10 +92,11 @@
   flex-direction: column;
 }
 #stream-panel .list-wrap {
-  max-height: none;
+  max-height: calc(100dvh - 300px);
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 240px;
   overflow-y: auto;
+  overflow-x: auto;
 }
 #stats-panel { grid-column: span 1; }
 #interventions-panel { grid-column: span 3; }

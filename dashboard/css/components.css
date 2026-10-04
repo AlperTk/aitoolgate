@@ -185,6 +185,19 @@
 .badge-err { background: rgba(248, 81, 73, 0.16); color: #ff9b94; border-color: rgba(248, 81, 73, 0.35); }
 .badge-interv { background: rgba(210, 153, 34, 0.16); color: #f3d08a; border-color: rgba(210, 153, 34, 0.35); }
 
+/* Stream rows (call / orphan + intervention) show status/action pills that should
+   hug their text: drop the horizontal badge padding only for these row types so the
+   pill box is exactly as wide as its label. Vertical padding, radius, font and colors
+   are unchanged. */
+.call-row .badge,
+.orphan-row .badge,
+.intervention-row .badge {
+  width: max-content;
+  justify-self: start;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* ------------------------------- stats panel ----------------------- */
 .stat-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
 .stat-row.live { margin-top: 0.25rem; }
