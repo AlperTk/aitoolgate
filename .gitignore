@@ -7,3 +7,5 @@ coverage/
 .graphify-out/
 .serena/
 .gate-*.log
+
+.playwright-mcp/
