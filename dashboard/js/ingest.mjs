@@ -26,7 +26,14 @@ import {
 // type/session/at/toolName) never share a key and collapse into one row. Non-call
 // events carry no id, so an empty trailing segment preserves the prior behavior.
 export function eventKey(ev) {
-  return ev.type + '|' + (ev.sessionKey || '') + '|' + ev.at + '|' + (ev.toolName || '') + '|' + (ev.id || '');
+  var base = ev.type + '|' + (ev.sessionKey || '') + '|' + ev.at + '|' + (ev.toolName || '') + '|' + (ev.id || '');
+  // For tool.result events also fold in ev.toolCallId as an extra discriminant: sibling
+  // same-name same-turn results share type/sessionKey/at/toolName and may even lack an id
+  // (older emitters), so without this they collapse onto ONE key and only the first row
+  // resolves. Deterministic + bounded; a legitimate duplicate replay (same toolCallId) still
+  // dedupes, and non-result events keep their exact prior key shape (byte-identical).
+  if (ev.type === 'tool.result') base += '|' + (ev.toolCallId || '');
+  return base;
 }
 
 // Render one telemetry event only if its key has not been seen, then record it.

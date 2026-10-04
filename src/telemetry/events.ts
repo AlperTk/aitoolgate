@@ -68,6 +68,8 @@ export type ToolResultEvent = {
   ok?: boolean;
   /** Id of the specific tool call whose result this is (links to {@link ToolCallEvent.id}); used for cross-request pairing. */
   toolCallId?: string;
+  /** Stable unique id of this result (`== toolCallId`); present when the backend paired it to an issued call. Distinct batched same-name results in one turn carry distinct ids — the field the dashboard dedups on. */
+  id?: string;
   /** Elapsed milliseconds from issue to result; omitted until measurable. */
   durationMs?: number;
   /** Raw character length of the tool-result payload (best-effort size metric); omitted when unknown. */

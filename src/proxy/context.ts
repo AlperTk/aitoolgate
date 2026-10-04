@@ -405,6 +405,12 @@ export function resolveAndEmitToolResults(
       type: 'tool.result' as const,
       sessionKey,
       toolCallId: entry.toolCallId,
+      // Carry a STABLE UNIQUE id equal to the resolved entry's toolCallId — the very value that
+      // matched the issued call. Sibling same-name results in one batch turn share
+      // type/sessionKey/at/toolName, so this per-result id is the field the dashboard dedups on;
+      // without it N same-name same-turn results collapsed onto a single row. Purely additive:
+      // aggregation reads only toolName/durationMs, so this never alters aggregates.
+      id: entry.toolCallId,
       durationMs: entry.durationMs,
       ...(entry.chars !== undefined ? { chars: entry.chars } : {}),
       ...(name !== undefined && name !== '' ? { toolName: name } : {}),
