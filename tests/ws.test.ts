@@ -264,3 +264,23 @@ test('broadcasts a telemetry event from the bus to connected clients', async () 
     h.socket.destroy();
   }
 });
+
+// Regression: server→client frames whose payload exceeds 125 bytes use the 16-bit
+// extended-length header, which MUST keep the RFC6455 MASK bit clear (unmasked). A set
+// mask bit makes the frame malformed and unparseable by a spec-conformant reader, so the
+// broadcast never delivers and the client hangs. Pin the correct unmasking for that path.
+test('broadcasts a large (>125 byte) telemetry event correctly unmasked', async () => {
+  const { port, bus } = await start();
+  const h = await connectAndHandshake(port);
+  try {
+    const blob = 'x'.repeat(120);
+    await bus.emit({ type: 'tool.call', sessionKey: 's', toolName: 'search_web', args: { data: blob }, at: Date.now() });
+    const frame = await readTextFrame(h.socket, h.leftover);
+    assert.equal(frame.opcode, 0x1, 'a large broadcast must still be a text frame (opcode 1)');
+    const parsed = JSON.parse(frame.payload) as { type?: string; args?: { data?: string } };
+    assert.equal(parsed.type, 'tool.call');
+    assert.equal(parsed.args?.data?.length, blob.length, 'the large payload round-trips intact through the 16-bit length path');
+  } finally {
+    h.socket.destroy();
+  }
+});

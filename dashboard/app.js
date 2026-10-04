@@ -53,6 +53,11 @@
     k = String(k || '');
     return k.length > 14 ? k.slice(0, 12) + '…' : k;
   }
+  // Format an optional numeric summary field (ms/token totals) as an integer;
+  // shows '—' when the field is absent (early in the run) or not finite.
+  function fmtOpt(v) {
+    return typeof v === 'number' && isFinite(v) ? String(Math.round(v)) : '—';
+  }
 
   /* ---- module state -------------------------------------------------- */
   var ws = null;
@@ -143,11 +148,14 @@
     var tb = $('top-tools');
     tb.textContent = '';
     if (!top || !top.length) {
-      tb.innerHTML = '<tr><td colspan="2" class="muted">—</td></tr>';
+      tb.innerHTML = '<tr><td colspan="4" class="muted">—</td></tr>';
       return;
     }
     tb.innerHTML = top.map(function (t) {
-      return '<tr><td>' + esc(t.toolName) + '</td><td class="num-col">' + esc(String(t.count)) + '</td></tr>';
+      return '<tr><td>' + esc(t.toolName) + '</td>' +
+        '<td class="num-col">' + esc(String(t.count)) + '</td>' +
+        '<td class="num-col">' + esc(fmtOpt(t.avgDurationMs)) + '</td>' +
+        '<td class="num-col">' + esc(fmtOpt(t.maxDurationMs)) + '</td></tr>';
     }).join('');
   }
   // GET /api/stats and refresh the counts + top-tools panel. Fetched on load
@@ -160,6 +168,11 @@
       $('total-calls').textContent = String(typeof s.totalCalls === 'number' ? s.totalCalls : 0);
       $('total-results').textContent = String(typeof s.totalResults === 'number' ? s.totalResults : 0);
       renderTopTools(s.topTools);
+      $('total-tokens').textContent = fmtOpt(s.totalTokens);
+      $('input-tokens').textContent = fmtOpt(s.totalInputTokens);
+      $('output-tokens').textContent = fmtOpt(s.totalOutputTokens);
+      $('total-duration').textContent = fmtOpt(s.totalDurationMs);
+      $('avg-duration').textContent = fmtOpt(s.avgDurationMs);
       $('interventions-retained').textContent = String(Array.isArray(s.interventions) ? s.interventions.length : 0);
       clearNotice();
     } catch (e) {

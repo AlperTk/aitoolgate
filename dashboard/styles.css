@@ -160,6 +160,8 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .top-tools th, .top-tools td { text-align: left; padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border); }
 .top-tools th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.4px; }
 .top-tools .num-col { text-align: right; font-variant-numeric: tabular-nums; }
+/* Keep long tool names from forcing the (now wider) top-tools table to overflow its card. */
+.top-tools th:first-child, .top-tools td:first-child { min-width: 0; word-break: break-word; }
 .top-tools tbody tr:last-child td { border-bottom: none; }
 
 /* ------------------------------- rule list ------------------------- */

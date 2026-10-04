@@ -2,6 +2,7 @@ import type http from 'node:http';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
 import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from '../telemetry/events';
+import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
 import type { UpstreamClient, UpstreamResult } from './upstream';
 
 /** Read and parse a JSON request body; an empty body resolves to `{}`. */
@@ -80,7 +81,9 @@ function extractMessages(raw: unknown): unknown[] {
  * Summarize a client-protocol response body into provider-agnostic tool calls
  * and text content (understands both the OpenAI and Anthropic shapes).
  */
-export function summarizeResponse(body: unknown): { toolCalls: ToolCall[]; content: string } {
+export function summarizeResponse(
+  body: unknown,
+): { toolCalls: ToolCall[]; content: string; usage?: NormalizedUsage } {
   const record = body as
     | {
         choices?: { message?: { content?: unknown; tool_calls?: unknown[] } }[];
@@ -92,7 +95,7 @@ export function summarizeResponse(body: unknown): { toolCalls: ToolCall[]; conte
   if (choice?.message) {
     const message = choice.message;
     const toolCalls = (message.tool_calls ?? []).map((toolCall) => toToolCall(toolCall));
-    return { toolCalls, content: extractTextContent(message.content) };
+    return { toolCalls, content: extractTextContent(message.content), usage: extractUsage(body) };
   }
 
   if (Array.isArray(record?.content)) {
@@ -115,10 +118,10 @@ export function summarizeResponse(body: unknown): { toolCalls: ToolCall[]; conte
         });
       }
     }
-    return { toolCalls, content };
+    return { toolCalls, content, usage: extractUsage(body) };
   }
 
-  return { toolCalls: [], content: '' };
+  return { toolCalls: [], content: '', usage: extractUsage(body) };
 }
 
 function toToolCall(toolCall: unknown): ToolCall {
@@ -172,11 +175,18 @@ export interface RunPipelineOptions {
    * Optional telemetry event bus to emit `tool.call` / `tool.result` events onto
    * after the response phase. Accepts EITHER the port-level `EventBus` or the
    * telemetry `TelemetryEventBus` (both expose `emit`, so either is structurally
-   * compatible). When omitted, no events are emitted (behavior unchanged). Emission
-   * is skipped when the pipeline already contains a `policy` stage — that stage owns
-   * tool-call observation for policy-enabled requests, so this avoids double-counting.
+   * compatible). When omitted, no events are emitted (behavior unchanged). `tool.call`
+   * emission runs on EVERY path (default and policy alike) and is centralized here, so a
+   * policy stage never double-emits; the policy stage owns only intervention events.
    */
   bus?: TelemetryEmitter;
+  /**
+   * Optional tool-call latency tracker pairing issued calls with their later results
+   * across successive requests. When provided, `runThroughPipeline` records this
+   * response's tool calls here and emits real `tool.result` events for tool results
+   * detected in the incoming request's messages. When omitted, no pairing/emission occurs.
+   */
+  tracker?: ToolMetricsTracker;
 }
 
 export async function runThroughPipeline(
@@ -190,6 +200,29 @@ export async function runThroughPipeline(
   // forwarding, so they actually reach the upstream model. No-op when the raw has
   // no `messages` field or the stream was left untouched.
   syncRequestMessages(processedRequest);
+
+  // Tool telemetry has two phases, and BOTH run here UNCONDITIONALLY so that tool-call
+  // and tool-result observation are IDENTICAL whether or not a policy stage is present.
+  // The policy stage owns ONLY its INTERVENTION events (see createPolicyStage); it no
+  // longer emits tool.call on its own (that produced id/token-less duplicates which
+  // skipped the tracker and left the pending set empty). Tool-RESULT detection
+  // (request phase) reads the incoming role:'tool' / tool_result messages; tool-CALL
+  // observation (response phase, below) emits one tool.call (stable id + turn tokens)
+  // per issued call and records it into the shared tracker. Pairing assumes sequential
+  // single-client per session: each client resends its full history each turn, so a
+  // call's result arrives in a LATER request of the same session, where it pairs with
+  // the issue recorded here. The response-phase session key is derived from the request
+  // context itself (the same sessionKey used for tool.call on the default path), so
+  // emission + recording work identically regardless of policy presence and never rely
+  // on the policy stage's fragile per-instance "last request" session-key reference.
+
+  // Request-phase tool-RESULT detection: pair incoming results against previously-issued
+  // calls via the shared tracker and emit one REAL tool.result per resolved entry. Runs
+  // unconditionally; a no-op when no bus/tracker is wired or nothing to pair. It reads
+  // the request messages independently (never touches rehydration) and does not disturb
+  // policy-stage ordering.
+  resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx);
+
   const result = await forward(processedRequest.raw);
   const summary = summarizeResponse(result.body);
   const responseCtx: ResponseContext = {
@@ -204,13 +237,12 @@ export async function runThroughPipeline(
   // Rehydrate any stage edits to the tool calls onto the raw wire response before
   // returning it to the client. No-op (byte-identical) when the view is unchanged.
   syncResponseBody(processedResponse, summary);
-  // Emit tool-call/result telemetry directly onto the provided bus (independent of
-  // any policy stage). Skipped when a policy stage is present (it observes/emits these
-  // same calls), or when no bus is wired (pure passthrough — behavior unchanged).
-  const policyHandledTelemetry = pipeline.stages.some((stage) => stage.name === 'policy');
-  if (!policyHandledTelemetry) {
-    emitResponseTelemetry(opts?.bus, requestCtx, processedResponse.toolCalls, result.status);
-  }
+  // Response-phase tool-CALL emission + issue recording, ALWAYS (default AND policy paths):
+  // emit one tool.call (stable id + turn tokens) per issued call and record it into the
+  // shared tracker. No synthetic per-response tool.result is emitted here; real results
+  // are emitted in the request phase above once the client feeds them back. A no-op when
+  // neither a bus nor a tracker is wired (pure passthrough — behavior unchanged).
+  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage);
   return { status: result.status, body: processedResponse.raw };
 }
 
@@ -227,53 +259,196 @@ export function toClientId(client: ClientConfig): string | undefined {
   return undefined;
 }
 
+/** Normalized upstream token usage (provider-agnostic). */
+export type NormalizedUsage = { input?: number; output?: number; total?: number };
+
 /**
- * Emit one `tool.call` event per observed tool call plus a single `tool.result` event
- * (per request, not per call) onto the given bus. A no-op when `bus` is undefined. Each
- * dispatch is guarded so a throwing/rejecting emitter can never break the request flow.
+ * Emit one `tool.call` event per observed tool call (carrying its stable `id` and the
+ * turn's upstream `tokens`) and record each issued call into the shared tracker — all in
+ * one response-emission pass with a single shared timestamp, so the pairing math stays
+ * consistent. Does NOT emit a synthetic per-response `tool.result` (removed); real results
+ * are emitted later via {@link resolveAndEmitToolResults}. A no-op for both effects when
+ * the respective bus/tracker is undefined. Each dispatch is guarded so a throwing/rejecting
+ * emitter can never break the request flow.
  */
 function emitResponseTelemetry(
   bus: TelemetryEmitter | undefined,
+  tracker: ToolMetricsTracker | undefined,
   requestCtx: RequestContext,
   toolCalls: ToolCall[],
-  status: number,
+  usage: NormalizedUsage | undefined,
 ): void {
-  if (bus === undefined) return;
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
   const clientId = toClientId(requestCtx.client);
   const at = Date.now();
-  for (const call of toolCalls) {
-    safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call.name, call.arguments, at));
+  if (bus !== undefined) {
+    for (const call of toolCalls) {
+      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at));
+    }
   }
-  const first = toolCalls[0];
-  const resultEvent: ToolResultEvent = {
-    type: 'tool.result',
-    sessionKey,
-    toolName: first ? first.name : '',
-    ok: status >= 200 && status < 300,
-    at,
-    ...(clientId !== undefined ? { clientId } : {}),
-  };
-  safeEmit(bus, resultEvent);
+  // Record issued calls so a LATER request carrying their results can pair them. The same
+  // `at` as the emitted events keeps durationMs consistent; calls without an id are skipped.
+  tracker?.recordIssued(sessionKey, toolCalls.map((call) => ({ id: call.id, at })));
 }
 
-/** Build a {@link ToolCallEvent}; `args` is included only when it is a non-empty object. */
+/** Build a {@link ToolCallEvent}; `args`, `id`, and `tokens` are included only when present. */
 function makeToolCallEvent(
   sessionKey: string,
   clientId: string | undefined,
-  toolName: string,
-  args: Record<string, unknown>,
+  call: ToolCall,
+  usage: NormalizedUsage | undefined,
   at: number,
 ): ToolCallEvent {
-  const hasArgs = Object.keys(args).length > 0;
+  const hasArgs = Object.keys(call.arguments ?? {}).length > 0;
+  const hasId = typeof call.id === 'string' && call.id !== '';
   return {
     type: 'tool.call',
     sessionKey,
-    toolName,
+    toolName: call.name,
     at,
-    ...(hasArgs ? { args } : {}),
+    ...(hasArgs ? { args: call.arguments } : {}),
+    ...(hasId ? { id: call.id } : {}),
+    ...(usage !== undefined ? { tokens: usage } : {}),
     ...(clientId !== undefined ? { clientId } : {}),
   };
+}
+
+/**
+ * Detect tool results arriving from the incoming request's messages, pair them against
+ * previously-issued calls via the shared tracker, and emit one REAL `tool.result` event
+ * per resolved entry (`durationMs = now - issueAt`, plus the result's `chars`). This is
+ * now the ONLY source of `tool.result` events on this path (the synthetic per-response
+ * result was removed). It reads the request messages independently (does not touch
+ * rehydration) and understands both protocols: OpenAI `role:'tool'` messages (paired by
+ * `tool_call_id`) and Anthropic `type:'tool_result'` content blocks (paired by
+ * `tool_use_id`). A `toolName` is attached only when determinable (best-effort); `ok` is
+ * omitted (not reliably knowable from a result arrival). No-op when no bus/tracker is
+ * wired, when the request carries no tool results, or when none match a pending issued call.
+ */
+function resolveAndEmitToolResults(
+  tracker: ToolMetricsTracker | undefined,
+  bus: TelemetryEmitter | undefined,
+  requestCtx: RequestContext,
+): void {
+  if (tracker === undefined || bus === undefined) return;
+  const incoming = extractIncomingToolResults(requestCtx.messages);
+  if (incoming.length === 0) return;
+  const sessionKey = toSessionKeyString(requestCtx.sessionKey);
+  const clientId = toClientId(requestCtx.client);
+  const at = Date.now();
+  const resolved = tracker.resolveResults(
+    sessionKey,
+    incoming.map((result) => ({ toolCallId: result.toolCallId, at, chars: result.chars })),
+  );
+  for (const entry of resolved) {
+    // Best-effort tool name from the originating message (omitted when unknown).
+    const name = incoming.find((result) => result.toolCallId === entry.toolCallId)?.toolName;
+    const event = {
+      type: 'tool.result' as const,
+      sessionKey,
+      toolCallId: entry.toolCallId,
+      durationMs: entry.durationMs,
+      ...(entry.chars !== undefined ? { chars: entry.chars } : {}),
+      ...(name !== undefined && name !== '' ? { toolName: name } : {}),
+      ...(clientId !== undefined ? { clientId } : {}),
+      at,
+    } as ToolResultEvent;
+    safeEmit(bus, event);
+  }
+}
+
+/** A single tool result detected in an incoming request. */
+interface IncomingToolResult {
+  /** Id of the originating call (OpenAI `tool_call_id` / Anthropic `tool_use_id`), if present. */
+  toolCallId?: string;
+  /** Best-effort tool name (OpenAI `role:'tool'` `name`), if present. */
+  toolName?: string;
+  /** Character length of the result payload, if measurable. */
+  chars?: number;
+}
+
+/**
+ * Detect tool results from a provider-agnostic message list (both protocols), reading it
+ * without mutation. OpenAI: `role:'tool'` messages paired by `tool_call_id`. Anthropic:
+ * `type:'tool_result'` content blocks paired by `tool_use_id`.
+ */
+function extractIncomingToolResults(messages: unknown[]): IncomingToolResult[] {
+  const results: IncomingToolResult[] = [];
+  if (!Array.isArray(messages)) return results;
+  for (const message of messages) {
+    if (!isRecord(message)) continue;
+    // OpenAI `role:'tool'` result message, paired by `tool_call_id`.
+    if (message.role === 'tool') {
+      results.push({
+        toolCallId: typeof message.tool_call_id === 'string' ? message.tool_call_id : undefined,
+        toolName: typeof message.name === 'string' ? message.name : undefined,
+        chars: measureContentLength(message.content),
+      });
+      continue;
+    }
+    // Anthropic user/assistant message whose content carries `tool_result` blocks.
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (isRecord(block) && block.type === 'tool_result') {
+          results.push({
+            toolCallId: typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined,
+            chars: measureContentLength(block.content),
+          });
+        }
+      }
+    }
+  }
+  return results;
+}
+
+/** Best-effort character length of a tool-result payload (`undefined` when not measurable). */
+function measureContentLength(content: unknown): number | undefined {
+  if (content == null) return undefined;
+  if (typeof content === 'string') return content.length;
+  try {
+    return JSON.stringify(content).length;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True for finite numeric values. */
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** True when a normalized usage carries at least one numeric field. */
+function hasAnyValue(usage: NormalizedUsage): boolean {
+  return usage.input !== undefined || usage.output !== undefined || usage.total !== undefined;
+}
+
+/**
+ * Normalize upstream token usage from the (native or cross-protocol translated) response
+ * body into `{ input?, output?, total? }`. The protocol is detected from which usage
+ * fields are present — OpenAI `usage.{prompt_tokens,completion_tokens,total_tokens}` vs
+ * Anthropic `usage.{input_tokens,output_tokens}` (total = input+output when absent) — so
+ * the real upstream numbers are read regardless of translation.
+ */
+function extractUsage(body: unknown): NormalizedUsage | undefined {
+  if (!isRecord(body)) return undefined;
+  const usage = body.usage;
+  if (!isRecord(usage)) return undefined;
+  if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
+    const out: NormalizedUsage = {};
+    if (isNumber(usage.prompt_tokens)) out.input = usage.prompt_tokens;
+    if (isNumber(usage.completion_tokens)) out.output = usage.completion_tokens;
+    if (isNumber(usage.total_tokens)) out.total = usage.total_tokens;
+    else if (out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+    return hasAnyValue(out) ? out : undefined;
+  }
+  if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
+    const out: NormalizedUsage = {};
+    if (isNumber(usage.input_tokens)) out.input = usage.input_tokens;
+    if (isNumber(usage.output_tokens)) out.output = usage.output_tokens;
+    if (out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+    return hasAnyValue(out) ? out : undefined;
+  }
+  return undefined;
 }
 
 /** Emit an event through an optional bus without ever letting a failure surface. */

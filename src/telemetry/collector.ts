@@ -3,10 +3,11 @@
  *
  * Subscribes to a {@link TelemetryEventBus} and maintains live aggregates over
  * the event stream: total tool-call count, per-tool counts, a top-tools
- * ranking, a bounded newest-first intervention log, plus result/session
- * counters. Query methods expose these for the live dashboard. Purely
- * in-memory: no timers, no I/O, no persistence; {@link Collector.dispose} is
- * what detaches the view from its bus.
+ * ranking (with per-tool duration metrics), a bounded newest-first intervention
+ * log, plus result/session counters and global duration/token usage totals.
+ * Query methods expose these for the live dashboard. Purely in-memory: no
+ * timers, no I/O, no persistence; {@link Collector.dispose} is what detaches
+ * the view from its bus.
  */
 import { createEventBus } from './event-bus';
 import type { TelemetryEventBus } from './event-bus';
@@ -18,6 +19,12 @@ export interface TopTool {
   toolName: string;
   /** How many times it was called. */
   count: number;
+  /** Mean duration in ms over results reporting `durationMs`; omitted when the tool has none. */
+  avgDurationMs?: number;
+  /** Longest single-result duration in ms; omitted when the tool has none. */
+  maxDurationMs?: number;
+  /** Cumulative duration in ms across results reporting `durationMs`; omitted when the tool has none. */
+  totalDurationMs?: number;
 }
 
 /** Options for {@link createCollector}. */
@@ -28,6 +35,8 @@ export interface CollectorOptions {
   maxInterventions?: number;
   /** Max recent raw events to retain in arrival order (oldest beyond this evicted). Default 200. */
   maxRecent?: number;
+  /** Bound on distinct token-turn dedup keys retained (`${sessionKey}\u0000${at}`); oldest evicted beyond this. Default 10000. */
+  maxTokenTurns?: number;
 }
 
 /** A snapshot of all current aggregates. */
@@ -40,6 +49,16 @@ export interface CollectorSummary {
   topTools: TopTool[];
   /** Retained intervention events, newest-first. */
   interventions: InterventionEvent[];
+  /** Cumulative duration in ms across results reporting `durationMs`; omitted when none. */
+  totalDurationMs?: number;
+  /** Mean duration in ms across results reporting `durationMs`; omitted when none. */
+  avgDurationMs?: number;
+  /** Sum of `tokens.input` across distinct turns; omitted when no token usage observed. */
+  totalInputTokens?: number;
+  /** Sum of `tokens.output` across distinct turns; omitted when no token usage observed. */
+  totalOutputTokens?: number;
+  /** Sum of `tokens.total` across distinct turns; omitted when no token usage observed. */
+  totalTokens?: number;
 }
 
 /** A live in-memory aggregation view over a telemetry event bus. */
@@ -74,11 +93,15 @@ const DEFAULT_MAX_INTERVENTIONS = 500;
 /** Default retention cap for the recent-events ring buffer. */
 const DEFAULT_MAX_RECENT = 200;
 
+/** Default bound on distinct token-turn dedup keys retained (oldest evicted beyond this). */
+const DEFAULT_MAX_TOKEN_TURNS = 10000;
+
 /** Create an in-memory {@link Collector} subscribed to a telemetry event bus. */
 export function createCollector(options: CollectorOptions = {}): Collector {
   const bus = options.bus ?? createEventBus();
   const maxInterventions = options.maxInterventions ?? DEFAULT_MAX_INTERVENTIONS;
   const maxRecent = options.maxRecent ?? DEFAULT_MAX_RECENT;
+  const maxTokenTurns = options.maxTokenTurns ?? DEFAULT_MAX_TOKEN_TURNS;
 
   let totalCalls = 0;
   let totalResults = 0;
@@ -88,6 +111,18 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const interventions: InterventionEvent[] = [];
   // Oldest-first ring buffer: index 0 is the oldest retained event, appended in arrival order.
   const recent: TelemetryEvent[] = [];
+  // Per-tool duration stats (cumulative sum / max / sample count) for tools reporting at least one result with durationMs.
+  const toolDuration = new Map<string, { sum: number; max: number; count: number }>();
+  // Global duration aggregates across all results reporting durationMs (sum + sample count).
+  let totalDurationSum = 0;
+  let totalDurationSamples = 0;
+  // Global token aggregates across distinct turns (deduped by `${sessionKey}\u0000${at}`).
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalTokens = 0;
+  let tokenSumsSeen = false;
+  // Bounded, insertion-ordered set of seen token-turn dedup keys; the oldest key is evicted first beyond the cap.
+  const tokenTurnKeys = new Set<string>();
 
   const handler: (event: TelemetryEvent) => void = (event) => {
     // Retain every incoming raw event in arrival order, evicting the oldest past the cap.
@@ -100,9 +135,37 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         totalCalls += 1;
         perTool.set(event.toolName, (perTool.get(event.toolName) ?? 0) + 1);
         perSession.set(event.sessionKey, (perSession.get(event.sessionKey) ?? 0) + 1);
+        // Sum a turn's upstream token usage once, deduped by (sessionKey, at): calls sharing one
+        // response turn repeat identical `tokens`, so only the first-seen turn contributes.
+        if (event.tokens) {
+          const turnKey = `${event.sessionKey}\u0000${event.at}`;
+          if (!tokenTurnKeys.has(turnKey)) {
+            tokenTurnKeys.add(turnKey);
+            // Keep the dedup set bounded: evict the oldest key(s) beyond the configured cap.
+            while (tokenTurnKeys.size > maxTokenTurns) {
+              const oldest = tokenTurnKeys.values().next().value;
+              if (oldest === undefined) break;
+              tokenTurnKeys.delete(oldest);
+            }
+            totalInputTokens += event.tokens.input ?? 0;
+            totalOutputTokens += event.tokens.output ?? 0;
+            totalTokens += event.tokens.total ?? 0;
+            tokenSumsSeen = true;
+          }
+        }
         break;
       case 'tool.result':
         totalResults += 1;
+        // Accumulate duration metrics per tool and globally, only when measurable.
+        if (typeof event.durationMs === 'number') {
+          totalDurationSum += event.durationMs;
+          totalDurationSamples += 1;
+          const stats = toolDuration.get(event.toolName) ?? { sum: 0, max: 0, count: 0 };
+          stats.sum += event.durationMs;
+          stats.max = Math.max(stats.max, event.durationMs);
+          stats.count += 1;
+          toolDuration.set(event.toolName, stats);
+        }
         break;
       case 'policy.intervention':
         interventions.unshift(event);
@@ -120,7 +183,17 @@ export function createCollector(options: CollectorOptions = {}): Collector {
 
   const getTopTools = (n?: number): TopTool[] => {
     const ranked = [...perTool.entries()]
-      .map(([toolName, count]) => ({ toolName, count }))
+      .map(([toolName, count]): TopTool => {
+        const entry: TopTool = { toolName, count };
+        // Ride duration metrics along only when this tool has at least one result with durationMs.
+        const stats = toolDuration.get(toolName);
+        if (stats) {
+          entry.avgDurationMs = stats.sum / stats.count;
+          entry.maxDurationMs = stats.max;
+          entry.totalDurationMs = stats.sum;
+        }
+        return entry;
+      })
       .sort(
         (a, b) =>
           (b.count - a.count) ||
@@ -141,12 +214,26 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     return n >= recent.length ? recent.slice() : recent.slice(recent.length - n);
   };
 
-  const summary = (): CollectorSummary => ({
-    totalCalls,
-    totalResults,
-    topTools: getTopTools(),
-    interventions: getInterventions(),
-  });
+  const summary = (): CollectorSummary => {
+    const out: CollectorSummary = {
+      totalCalls,
+      totalResults,
+      topTools: getTopTools(),
+      interventions: getInterventions(),
+    };
+    // Global duration metrics are present only when some result reported durationMs.
+    if (totalDurationSamples > 0) {
+      out.totalDurationMs = totalDurationSum;
+      out.avgDurationMs = totalDurationSum / totalDurationSamples;
+    }
+    // Token totals are present only when some turn reported token usage.
+    if (tokenSumsSeen) {
+      out.totalInputTokens = totalInputTokens;
+      out.totalOutputTokens = totalOutputTokens;
+      out.totalTokens = totalTokens;
+    }
+    return out;
+  };
 
   const reset = (): void => {
     totalCalls = 0;
@@ -155,6 +242,14 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     perSession.clear();
     interventions.length = 0;
     recent.length = 0;
+    toolDuration.clear();
+    totalDurationSum = 0;
+    totalDurationSamples = 0;
+    totalInputTokens = 0;
+    totalOutputTokens = 0;
+    totalTokens = 0;
+    tokenSumsSeen = false;
+    tokenTurnKeys.clear();
   };
 
   const dispose = (): void => {

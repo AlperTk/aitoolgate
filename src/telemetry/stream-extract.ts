@@ -9,15 +9,18 @@
  *
  * - A `tool.call` event whenever a NEW tool-call `index` starts (finalising the
  *   previously-accumulated call) — i.e. "when a new tool call starts".
- * - Any remaining accumulated calls plus ONE `tool.result` event (`ok: true`) when
- *   the stream ends (`flush`), i.e. "when the stream ends" (also covers a
- *   `data: [DONE]` terminator and client-disconnect/error teardown).
+ * - Any remaining accumulated calls when the stream ends (`flush`), i.e. "when the
+ *   stream ends" (also covers a `data: [DONE]` terminator and client-disconnect/error
+ *   teardown). Each call carrying a stable id is ALSO recorded into an optional shared
+ *   latency tracker so its LATER result (fed back by the client) pairs into a REAL
+ *   `tool.result`; no synthetic per-stream `tool.result` is emitted.
  *
  * Best-effort throughout: unparseable lines are ignored, a missing/undefined `bus`
  * yields a pure passthrough, and no internal error can propagate into the stream.
  */
 import { Transform } from 'node:stream';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from './events';
+import type { ToolMetricsTracker } from './toolMetrics';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -25,6 +28,8 @@ interface StreamToolCall {
   name: string;
   /** The accumulating raw `function.arguments` string. */
   args: string;
+  /** The stable tool-call id (`tool_calls[].id` / Anthropic `tool_use.id`), when present. */
+  id: string;
 }
 
 /**
@@ -36,6 +41,7 @@ export function createSseToolCallExtractor(
   bus: TelemetryEmitter | undefined,
   sessionKey: string,
   clientId?: string,
+  tracker?: ToolMetricsTracker,
 ): Transform {
   /** Emit through the optional bus, swallowing any synchronous or async failure. */
   const emitEvent = (event: ToolCallEvent | ToolResultEvent): void => {
@@ -52,7 +58,6 @@ export function createSseToolCallExtractor(
 
   const byIndex = new Map<number, StreamToolCall>();
   let maxSeenIndex = -1;
-  let lastName = '';
   let buffer = '';
   let finished = false;
 
@@ -67,22 +72,35 @@ export function createSseToolCallExtractor(
     }
   };
 
-  /** Emit and drop the accumulated call at `index` (only when it carries a tool name). */
+  /**
+   * Emit and drop the accumulated call at `index` (only when it carries a tool name). When a
+   * stable id is present it is ALSO recorded into the shared latency tracker so a LATER request
+   * carrying the matching result pairs into a REAL `tool.result` (no synthetic per-stream result).
+   */
   const emitCallAt = (index: number): void => {
     const acc = byIndex.get(index);
     if (acc === undefined) return;
     byIndex.delete(index);
     if (acc.name === '') return;
-    lastName = acc.name;
     const args = parseArgs(acc.args);
+    const at = Date.now();
     emitEvent({
       type: 'tool.call',
       sessionKey,
       toolName: acc.name,
-      at: Date.now(),
+      ...(acc.id !== '' ? { id: acc.id } : {}),
       ...(args !== undefined ? { args } : {}),
+      at,
       ...(clientId !== undefined ? { clientId } : {}),
     });
+    // Record the issued call (sharing the same timestamp) so its later result can be paired.
+    if (tracker !== undefined && acc.id !== '') {
+      try {
+        tracker.recordIssued(sessionKey, [{ id: acc.id, at }]);
+      } catch {
+        // A throwing tracker must never break the stream pass-through.
+      }
+    }
   };
 
   /** Emit every remaining accumulated call in index order. */
@@ -90,24 +108,20 @@ export function createSseToolCallExtractor(
     for (const index of [...byIndex.keys()].sort((a, b) => a - b)) emitCallAt(index);
   };
 
-  /** Finalise the stream once: emit remaining calls + a single `tool.result` (`ok: true`). */
+  /**
+   * Finalise the stream once: emit any remaining accumulated calls. No synthetic per-stream
+   * `tool.result` is emitted here — real results are paired against the tracker (see
+   * {@link emitCallAt}) when the client resends with the matching result message.
+   */
   const finish = (): void => {
     if (finished) return;
     finished = true;
     flushAllCalls();
-    emitEvent({
-      type: 'tool.result',
-      sessionKey,
-      toolName: lastName,
-      ok: true,
-      at: Date.now(),
-      ...(clientId !== undefined ? { clientId } : {}),
-    });
   };
 
   /** Accumulate one `choices[].delta.tool_calls[]` fragment, keyed by its `index`. */
   const accumulate = (entry: unknown): void => {
-    const record = entry as { index?: number; function?: { name?: string; arguments?: string } };
+    const record = entry as { index?: number; id?: string; function?: { name?: string; arguments?: string } };
     const index = typeof record.index === 'number' ? record.index : byIndex.size;
     // A strictly-new higher index means every lower-index call is complete: finalise them.
     if (maxSeenIndex >= 0 && index > maxSeenIndex) {
@@ -117,9 +131,10 @@ export function createSseToolCallExtractor(
     }
     let acc = byIndex.get(index);
     if (acc === undefined) {
-      acc = { name: '', args: '' };
+      acc = { name: '', args: '', id: '' };
       byIndex.set(index, acc);
     }
+    if (typeof record.id === 'string' && record.id !== '') acc.id = record.id;
     const fn = record.function;
     if (isRecord(fn)) {
       if (typeof fn.name === 'string' && fn.name !== '') acc.name = fn.name;

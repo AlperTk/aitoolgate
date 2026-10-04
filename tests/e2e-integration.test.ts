@@ -24,6 +24,7 @@ type MountOpts = Parameters<typeof createServer>[2];
 
 // Type guards keep captured events fully typed without fragile casts.
 const isToolCall = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.call' }> => e.type === 'tool.call';
+const isToolResult = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.result' }> => e.type === 'tool.result';
 const isIntervention = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'policy.intervention' }> => e.type === 'policy.intervention';
 
 // --- canned fixtures -------------------------------------------------------------
@@ -74,8 +75,14 @@ function chatBody(): Record<string, unknown> {
     ],
   };
 }
-async function post(port: number, body: Record<string, unknown>): Promise<Response> {
-  return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function post(port: number, body: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<Response> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
+  return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) });
+}
+/** Multi-turn non-streaming upstream: returns `bodies[i]` on the i-th call (last body repeats). */
+function turnFetch(bodies: unknown[]): FetchLike {
+  let i = 0;
+  return async () => new Response(JSON.stringify(bodies[Math.min(i++, bodies.length - 1)]), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 interface StatsSummary { totalCalls: number; totalResults: number; topTools: { toolName: string; count: number }[]; interventions: unknown[]; }
 async function stats(port: number): Promise<StatsSummary> {
@@ -296,9 +303,13 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
     const text = await res.text();
     assert.ok(text.includes('search_web') && text.includes('[DONE]'), 'raw SSE pass-through reaches the client unchanged');
 
-    // The passthrough extractor emitted both tool.call and tool.result on the bus.
+    // The passthrough extractor emitted the streamed tool.call onto the shared bus.
     assert.ok(events.some((e) => isToolCall(e) && e.toolName === 'search_web'), 'SSE extractor emitted a tool.call event');
-    assert.ok(events.some((e) => e.type === 'tool.result'), 'SSE extractor emitted a tool.result event');
+    // Gap B: a lone streaming request emits NO synthetic tool.result — the real result is paired
+    // later (via the tracker) when the client resends with a matching role:'tool' message.
+    assert.ok(!events.some(isToolResult), 'no synthetic tool.result is emitted by a lone streaming request');
+    // The extracted call (carrying its SSE id) was recorded into the shared tracker for later pairing.
+    assert.ok(mcm.tracker.pendingCount() >= 1, 'the streamed tool call was recorded into the shared tracker');
 
     // Stats reflect the streaming call too.
     const s = await stats(port);
@@ -328,6 +339,81 @@ test('GET /api/events via the default server returns the tool.call emitted by a 
     assert.ok(toolCall !== undefined, 'GET /api/events must include the tool.call emitted by the proxied request');
     assert.equal(toolCall.toolName, 'search_web');
   } finally {
+    await closeServer(srv);
+  }
+});
+
+// --- Test 5: tool-call metrics end-to-end (call → real result → collector) --
+const CALL_BODY = {
+  id: 'chatcmpl-e2e-metrics-n',
+  object: 'chat.completion',
+  created: 1700000000,
+  model: 'gpt-4o-mini',
+  choices: [
+    { index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_e2e_metrics', type: 'function', function: { name: 'search_web', arguments: '{"query":"metrics"}' } }] }, finish_reason: 'tool_calls' },
+  ],
+  usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
+};
+const FINAL_BODY = {
+  id: 'chatcmpl-e2e-metrics-n1',
+  object: 'chat.completion',
+  created: 1700000000,
+  model: 'gpt-4o-mini',
+  choices: [{ index: 0, message: { role: 'assistant', content: 'all done' }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+};
+const METRICS_SESSION = 'sess-e2e-metrics';
+const TOOL_RESULT_CONTENT = '<web-search-results>';
+
+test('two successive same-session requests produce a real tool.result paired from the tool.call', async () => {
+  // One server → one shared bus/collector/tracker. Request N makes the model issue a tool call
+  // (stable id + upstream usage); request N+1 (same session) feeds back the matching role:'tool'
+  // result, which is paired against the recorded issue into a REAL tool.result.
+  const { port, srv, mcm } = await startServer({ upstream: upstream(turnFetch([CALL_BODY, FINAL_BODY])) }, { ws: false });
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => {
+    events.push(ev);
+  });
+  try {
+    const resN = await post(port, { ...chatBody(), stream: false }, { 'x-session-id': METRICS_SESSION });
+    assert.equal(resN.status, 200, 'request N must be HTTP 200');
+    await resN.arrayBuffer();
+
+    const call = events.find(isToolCall);
+    assert.ok(call, 'request N emitted a tool.call event');
+    assert.equal(call.id, 'call_e2e_metrics', 'the tool.call carries the stable tool-call id');
+    assert.ok(call.tokens !== undefined && (call.tokens.total ?? 0) > 0, 'the tool.call carries turn tokens from the upstream usage');
+
+    // Advance the clock so the measured issue→result duration is strictly positive (deterministic).
+    await new Promise((r) => setTimeout(r, 40));
+
+    const bodyN1: Record<string, unknown> = {
+      ...chatBody(),
+      stream: false,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Look it up, please.' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_e2e_metrics', type: 'function', function: { name: 'search_web', arguments: '{"query":"metrics"}' } }] },
+        { role: 'tool', tool_call_id: 'call_e2e_metrics', content: TOOL_RESULT_CONTENT },
+      ],
+    };
+    const resN1 = await post(port, bodyN1, { 'x-session-id': METRICS_SESSION });
+    assert.equal(resN1.status, 200, 'request N+1 must be HTTP 200');
+    await resN1.arrayBuffer();
+
+    // A REAL tool.result was emitted (not synthetic), linked to the issued tool-call id.
+    const result = events.find(isToolResult);
+    assert.ok(result, 'request N+1 emitted a real tool.result event paired from the tool.call');
+    assert.equal(result.toolCallId, 'call_e2e_metrics', 'the tool.result links to the issued tool-call id');
+    assert.ok(typeof result.durationMs === 'number' && result.durationMs > 0, 'durationMs is measured and strictly positive');
+    assert.ok(result.chars !== undefined && result.chars === TOOL_RESULT_CONTENT.length, 'chars reflects the result payload size');
+
+    // The shared collector aggregates non-zero duration and token totals.
+    const summary = mcm.collector.summary();
+    assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector summary reports non-zero totalDurationMs');
+    assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'collector summary reports non-zero token totals');
+  } finally {
+    unsub();
     await closeServer(srv);
   }
 });

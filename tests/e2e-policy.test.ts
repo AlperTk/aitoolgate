@@ -5,6 +5,8 @@ import { createProxyHandler } from '../src/proxy/index';
 import { flagshipLoopRule, type PolicyAction, type PolicyRule } from '../src/policy/ruleEngine';
 import { createToolNameMatcher } from '../src/policy/matchers/index';
 import { createBlockAction } from '../src/policy/actions/index';
+import { createEventBus } from '../src/telemetry/event-bus';
+import { createCollector } from '../src/telemetry/collector';
 /** The corrective message injected by the default flagship loop rule. */
 const LOOP_CORRECTION =
   'You appear to be stuck repeating the same tool call. Stop repeating identical calls and change your approach to make progress.';
@@ -292,3 +294,79 @@ test('e2e policy: block rule drops the bash call from the response and queues fe
     await fakeModel.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 3: cross-request tool-call/result pairing through an ACTIVE policy stage
+// ---------------------------------------------------------------------------
+
+test(
+  'e2e policy: an issued tool call and its later same-session result pair into one call + one real result',
+  async () => {
+    // A rule that matches nothing (so no intervention noise), but whose presence puts an
+    // active policy stage in the pipeline -> context.ts defers tool.call observation to it.
+    const inertRule: PolicyRule = {
+      id: 'inert-noop',
+      enabled: true,
+      description: 'Matches nothing.',
+      matcher: createToolNameMatcher({ toolName: '__never_called__' }),
+      action: createBlockAction({ reason: 'unused' }) as PolicyAction,
+    };
+
+    // Upstream emits ONE tool call (id bash-1) with token usage on the first turn, then a
+    // plain text turn for the second request (so only one tool.call is observed in total).
+    const fakeModel = await createFakeModel(bashCompletion());
+    const bus = createEventBus();
+    const collector = createCollector({ bus });
+    let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
+    try {
+      proxy = await startProxy({
+        upstream: {
+          baseUrl: `http://127.0.0.1:${fakeModel.port}/v1`,
+          model: 'gpt-4o-mini',
+          protocol: 'openai',
+        },
+        policy: { rules: [inertRule], sessionIdHeader: 'x-session-id' },
+        telemetry: { bus, collector },
+      });
+
+      const post = (messages: Msg[]): Promise<Response> =>
+        fetch(`http://127.0.0.1:${proxy!.port}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-session-id': SESSION_TOKEN },
+          body: JSON.stringify({ model: 'gpt-4o-mini', messages }),
+        });
+
+      // Req N: fresh history; the LLM issues one tool call (id bash-1) + reports usage.
+      const resN = await post(freshMessages());
+      assert.equal(resN.status, 200);
+      await resN.json();
+
+      // Req N+1: same session; plain response, but the client feeds back the matching
+      // role:'tool' result so the request phase can pair it against the issued call.
+      fakeModel.setCanned(plainCompletion());
+      const nextMessages: Msg[] = [
+        ...freshMessages(),
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'bash-1', type: 'function', function: { name: 'bash', arguments: '{"command":"rm -rf /"}' } }],
+        },
+        { role: 'tool', tool_call_id: 'bash-1', name: 'bash', content: 'boom' },
+      ];
+      const resNp1 = await post(nextMessages);
+      assert.equal(resNp1.status, 200);
+      await resNp1.json();
+
+      const summary = collector.summary();
+      // Exactly ONE tool.call for the issued call (no double-emission between the active
+      // policy stage and context emission)...
+      assert.equal(summary.totalCalls, 1, `expected exactly one tool.call, got ${summary.totalCalls}`);
+      // ...and exactly ONE REAL tool.result, paired across the two successive requests.
+      assert.equal(summary.totalResults, 1, `expected exactly one real tool.result, got ${summary.totalResults}`);
+    } finally {
+      if (proxy) await closeServer(proxy.server);
+      await fakeModel.close();
+      collector.dispose();
+    }
+  },
+);

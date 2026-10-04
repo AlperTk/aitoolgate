@@ -15,6 +15,7 @@ import { handleOpenAIRoute } from './openai';
 import { handleAnthropicRoute } from './anthropic';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
+import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
 import type { SqliteStorage } from '../storage/sqlite';
 
 export type { FetchLike, UpstreamClient };
@@ -83,6 +84,8 @@ export interface ProxyTelemetryOptions {
   bus?: TelemetryEventBus;
   /** A live aggregation view over the bus. Defaults to {@link createCollector} subscribed to the configured bus. */
   collector?: Collector;
+  /** A live tool-call latency tracker pairing issued calls with their later results. Defaults to a fresh {@link createToolMetricsTracker}. */
+  tracker?: ToolMetricsTracker;
   /** Optional SQLite-backed persistence for the event stream; omitted → no persistence (never auto-created). */
   storage?: SqliteStorage;
 }
@@ -98,6 +101,8 @@ export interface ProxyTelemetry {
   readonly bus: TelemetryEventBus;
   /** A live in-memory aggregation view over the event stream. */
   readonly collector: Collector;
+  /** A live tool-call latency tracker pairing issued calls with their later results (always present). */
+  readonly tracker: ToolMetricsTracker;
   /** Optional SQLite-backed persistence; present only when a storage was configured. */
   readonly storage?: SqliteStorage;
 }
@@ -215,6 +220,11 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
   // works with or without a policy.
   const tele = options.telemetry;
   const bus = tele?.bus ?? createEventBus();
+  // A shared tool-call latency tracker ALWAYS exists (like the bus) so request-phase result
+  // detection and response-phase issue recording work with or without a policy stage. It is
+  // honored when a caller supplies one; otherwise a fresh default is created and threaded into
+  // every request path exactly like the bus above.
+  const tracker = tele?.tracker ?? createToolMetricsTracker();
   const storage = tele?.storage;
 
   // Expose the live `.telemetry` view ONLY when a policy stage is present OR an
@@ -237,7 +247,7 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
     });
   }
   const telemetry: ProxyTelemetry | undefined = shouldAttach
-    ? { bus, collector: collector as Collector, storage }
+    ? { bus, collector: collector as Collector, tracker, storage }
     : undefined;
 
   if (policy) {
@@ -254,7 +264,7 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
     pipeline = options.pipeline ?? createPipeline();
   }
 
-  const deps = { upstream: options.upstream, pipeline, bus };
+  const deps = { upstream: options.upstream, pipeline, bus, tracker };
 
   const handler = async function handleProxyRequest(
     req: http.IncomingMessage,

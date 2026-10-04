@@ -17,6 +17,7 @@ import {
 } from './context';
 import { createSseToolCallExtractor } from '../telemetry/stream-extract';
 import type { TelemetryEmitter } from '../telemetry/events';
+import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
 
 /** Dependencies for the Anthropic-compatible route handlers. */
 export interface AnthropicHandlerDeps {
@@ -24,6 +25,8 @@ export interface AnthropicHandlerDeps {
   pipeline: Pipeline;
   /** Shared telemetry event bus (optional) that observes the response stream for tool-call telemetry. */
   bus?: TelemetryEmitter;
+  /** Shared tool-call latency tracker (optional) pairing issued calls with their later results. */
+  tracker?: ToolMetricsTracker;
 }
 
 /**
@@ -59,7 +62,7 @@ export async function handleAnthropicRoute(
       deps.pipeline,
       requestCtx,
       (request) => forwardAnthropicRequest(deps.upstream, request as AnthropicRequest),
-      { bus: deps.bus },
+      { bus: deps.bus, tracker: deps.tracker },
     );
     sendJSON(res, status, body);
     return true;
@@ -93,14 +96,19 @@ async function streamSameProtocol(
   const processed = await deps.pipeline.handleRequest(requestCtx);
   syncRequestMessages(processed);
   const upstreamResponse = await streamAnthropicRequest(deps.upstream, processed.raw as AnthropicRequest);
-  // Pipe the raw SSE through a passthrough transformer that extracts tool-call/result
-  // telemetry onto the shared bus without altering forwarded bytes (a no-op when no
-  // bus is wired). The extractor parses the OpenAI `choices[].delta.tool_calls[]`
-  // shape; Anthropic-native streams simply surface a `tool.result` on completion.
+  // Pipe the raw SSE through a passthrough transformer that extracts tool-call telemetry
+  // onto the shared bus without altering forwarded bytes (a no-op when no bus is wired).
+  // The extractor parses the OpenAI `choices[].delta.tool_calls[]` shape and records any
+  // detected call (with a stable id) into the shared tracker for later result pairing; it
+  // emits NO synthetic per-stream tool.result. Note: this branch is the SAME-protocol
+  // Anthropic stream, whose native `content_block_*` frames this OpenAI-shaped extractor
+  // does not parse — cross-protocol streaming translation is out of scope, so such streams
+  // pass through byte-for-byte unchanged and contribute no tool-call telemetry here.
   const extractor = createSseToolCallExtractor(
     deps.bus,
     toSessionKeyString(requestCtx.sessionKey),
     toClientId(requestCtx.client),
+    deps.tracker,
   );
   pipeUpstreamStream(res, upstreamResponse, extractor);
 }

@@ -17,6 +17,7 @@ import {
 } from './context';
 import { createSseToolCallExtractor } from '../telemetry/stream-extract';
 import type { TelemetryEmitter } from '../telemetry/events';
+import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
 
 /** Dependencies for the OpenAI-compatible route handlers. */
 export interface OpenAIHandlerDeps {
@@ -24,6 +25,8 @@ export interface OpenAIHandlerDeps {
   pipeline: Pipeline;
   /** Shared telemetry event bus (optional) that observes the response stream for tool-call telemetry. */
   bus?: TelemetryEmitter;
+  /** Shared tool-call latency tracker (optional) pairing issued calls with their later results. */
+  tracker?: ToolMetricsTracker;
 }
 
 /**
@@ -63,7 +66,7 @@ export async function handleOpenAIRoute(
       deps.pipeline,
       requestCtx,
       (request) => forwardOpenAIRequest(deps.upstream, request as OpenAIChatRequest),
-      { bus: deps.bus },
+      { bus: deps.bus, tracker: deps.tracker },
     );
     sendJSON(res, status, body);
     return true;
@@ -105,6 +108,7 @@ async function streamSameProtocol(
     deps.bus,
     toSessionKeyString(requestCtx.sessionKey),
     toClientId(requestCtx.client),
+    deps.tracker,
   );
   pipeUpstreamStream(res, upstreamResponse, extractor);
 }

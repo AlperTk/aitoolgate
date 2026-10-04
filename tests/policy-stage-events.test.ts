@@ -20,9 +20,11 @@ import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../src/por
 /**
  * Tests for the policy stage's optional TELEMETRY emission (slice 6d-i). When a
  * {@link TelemetryEventBus} is wired via `createPolicyStage({ engine, bus })`,
- * the response phase publishes a {@link ToolCallEvent} per observed tool call and
- * both phases publish an {@link InterventionEvent} per applied rule effect. With
- * no bus the stage behaves EXACTLY as before (no emission, effects still applied).
+ * Both phases publish an {@link InterventionEvent} per applied rule effect when a
+ * bus is wired. The stage does NOT publish tool.call events itself: that observation
+ * (with id + tokens) is centralized in proxy/context.ts so it is never double-counted
+ * and always feeds the shared tracker. With no bus the stage behaves EXACTLY as
+ * before (no emission, effects still applied).
  *
  * Fixtures mirror `tests/policy-stage.test.ts`: real rule engine, matchers, and
  * actions driven by request/response context shapes the `PipelineStage` expects.
@@ -111,7 +113,7 @@ function toolNamesOf(raw: unknown): string[] {
 
 // --- response-phase ToolCallEvent -------------------------------------------
 
-test('response phase: each observed tool call emits a ToolCallEvent with correct toolName + sessionKey', async () => {
+test('response phase: observed tool calls are NOT emitted here (tool.call observation is centralized in proxy/context.ts)', async () => {
   const key: SessionKey = { fingerprint: 'fp-events' };
   const calls: ToolCall[] = [
     { id: 'c1', name: 'bash', arguments: { cmd: 'curl https://example.com' } },
@@ -122,16 +124,12 @@ test('response phase: each observed tool call emits a ToolCallEvent with correct
 
   await stage.onResponse!(makeResponse(calls, key));
 
-  const toolCalls = toolCallEvents(events);
-  assert.equal(toolCalls.length, 2, 'one ToolCallEvent per observed tool call');
-  assert.deepEqual(
-    toolCalls.map((event) => event.toolName),
-    ['bash', 'read'],
-  );
-  assert.ok(toolCalls.every((event) => event.sessionKey === 'fp-events'), 'the response-derived session key is used');
-  assert.deepEqual(toolCalls[0].args, { cmd: 'curl https://example.com' });
-  assert.deepEqual(toolCalls[1].args, { path: '/tmp/x' });
-  assert.ok(toolCalls.every((event) => typeof event.at === 'number'), 'each event carries an epoch timestamp');
+  // The policy stage no longer publishes tool.call events on its own; that observation
+  // (with stable id + turn tokens) is centralized in proxy/context.ts so it is never
+  // double-counted and always recorded into the shared tracker. The stage owns ONLY
+  // intervention events, and no rule fires here, so it also emits none.
+  assert.equal(toolCallEvents(events).length, 0, 'the stage does not emit tool.call (context.ts centralizes emission)');
+  assert.equal(interventionEvents(events).length, 0, 'no rule fires here, so no intervention either');
 });
 
 // --- InterventionEvent (request phase, flagship loop) -----------------------
@@ -155,7 +153,7 @@ test('request phase: the flagship loop rule emits an InterventionEvent with its 
 
 // --- InterventionEvent (response phase, block) -----------------------------
 
-test('response phase: a block rule emits an InterventionEvent alongside the observed tool call', async () => {
+test('response phase: a block rule emits an InterventionEvent without emitting a tool.call from the stage', async () => {
   const key: SessionKey = { fingerprint: 'fp-block-events' };
   const { bus, events } = capturingBus();
   const stage = createPolicyStage({
@@ -175,9 +173,9 @@ test('response phase: a block rule emits an InterventionEvent alongside the obse
   assert.equal(typeof interventions[0].detail, 'string');
   assert.ok(/block/i.test(interventions[0].detail!), 'the block detail mentions blocking');
 
-  // The observed tool call was also published in the same response phase.
-  assert.equal(toolCallEvents(events).length, 1, 'the offending call is observed before being dropped');
-  assert.equal(toolCallEvents(events)[0].toolName, 'bash');
+  // The stage no longer observes/publishes tool.call itself (that is centralized in
+  // proxy/context.ts); it records only the intervention here.
+  assert.equal(toolCallEvents(events).length, 0, 'the stage does not emit tool.call (context.ts centralizes emission)');
 });
 
 // --- no bus: identical behavior --------------------------------------------

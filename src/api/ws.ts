@@ -46,12 +46,12 @@ export function encodeFrame(opcode: number, payload: Buffer): Buffer {
   } else if (length <= 0xffff) {
     header = Buffer.alloc(4);
     header[0] = 0x80 | opcode;
-    header[1] = 0xfe;
+    header[1] = 0x7e; // 16-bit length marker; MASK bit stays clear (server→client frames are unmasked)
     header.writeUInt16BE(length, 2);
   } else {
     header = Buffer.alloc(10);
     header[0] = 0x80 | opcode;
-    header[1] = 0xff;
+    header[1] = 0x7f; // 64-bit length marker; MASK bit stays clear (server→client frames are unmasked)
     header.writeBigUInt64BE(BigInt(length), 2);
   }
   return Buffer.concat([header, payload]);

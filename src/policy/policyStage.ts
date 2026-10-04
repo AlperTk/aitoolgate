@@ -8,7 +8,7 @@ import { deriveSessionKey } from '../session/session';
 import type { Message } from '../session/session';
 import { SessionFeedbackStore } from './feedbackStore';
 import type { TelemetryEventBus } from '../telemetry/event-bus';
-import type { InterventionEvent, TelemetryEvent, ToolCallEvent } from '../telemetry/events';
+import type { InterventionEvent, TelemetryEvent } from '../telemetry/events';
 
 /** Options for {@link createPolicyStage}. */
 export interface PolicyStageOptions {
@@ -20,11 +20,13 @@ export interface PolicyStageOptions {
    */
   feedback?: SessionFeedbackStore;
   /**
-   * Optional telemetry event bus. When provided, every tool call observed in the
-   * response phase is emitted as a {@link ToolCallEvent} and each applied rule
-   * effect (request or response) is emitted as an {@link InterventionEvent}.
-   * Omitting it (the default) leaves the stage completely emission-free — no
-   * events are published and nothing is subscribed, so behavior is unchanged.
+   * Optional telemetry event bus. When provided, each applied rule effect
+   * (request or response) is emitted as an {@link InterventionEvent}. Tool-call
+   * observation/emission is NOT done here — it is centralized in proxy/context.ts
+   * (runThroughPipeline) on every path — so this stage never double-emits and always
+   * feeds the same shared tracker. Omitting the bus (the default) leaves the stage
+   * completely emission-free (no events are published, nothing is subscribed), so
+   * behavior is unchanged.
    */
   bus?: TelemetryEventBus;
 }
@@ -115,23 +117,13 @@ export function createPolicyStage(options: PolicyStageOptions): PipelineStage {
 
     onResponse(ctx: ResponseContext): ResponseContext {
       const sessionKey = resolveResponseSessionKey(ctx, lastRequestSessionKey);
-      // Observe every tool call the model emitted in this response BEFORE any
-      // effect mutates ctx.toolCalls, publishing each as a {@link ToolCallEvent}
-      // when a bus is wired (a no-op otherwise — the guard keeps the emission-
-      // free stage byte-for-byte identical to before).
-      if (bus !== undefined) {
-        const at = Date.now();
-        for (const call of ctx.toolCalls) {
-          const event: ToolCallEvent = {
-            type: 'tool.call',
-            sessionKey: sessionKeyToString(sessionKey),
-            toolName: call.name,
-            args: call.arguments,
-            at,
-          };
-          emitTelemetry(event);
-        }
-      }
+      // NOTE: tool-CALL observation/emission is NOT done here. It is centralized in
+      // proxy/context.ts (runThroughPipeline -> emitResponseTelemetry), which emits one
+      // tool.call per issued call (carrying its stable id + turn tokens) and records it
+      // into the shared tracker on EVERY path (default and policy alike). Emitting a
+      // second, id/token-less tool.call here would double-count and skip the tracker.
+      // This stage owns ONLY its INTERVENTION events; the session key resolved above is
+      // therefore used exclusively for those intervention events below.
       // A ResponseContext IS a PolicyContext: evaluate it, then apply each effect
       // and (when a bus is wired) record each applied effect as an intervention.
       const result = options.engine.evaluate(ctx);

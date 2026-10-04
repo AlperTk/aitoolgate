@@ -194,3 +194,136 @@ test('createCollector with no options returns an empty view', () => {
   assert.equal(collector.getInterventions().length, 0);
   collector.dispose();
 });
+
+// --- token usage (deduped per response turn) -----------------------------
+
+test('tool.call tokens are deduped once per (sessionKey, at) turn and summed globally', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  // Two calls share one response turn (same sessionKey + at) and repeat identical
+  // tokens; the turn must be counted once, not twice.
+  await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 1000, output: 50, total: 1050 } }));
+  await bus.emit(toolCall({ toolName: 'read', tokens: { input: 1000, output: 50, total: 1050 } }));
+
+  assert.equal(collector.totalCalls, 2); // both still count as calls
+  const firstTurn = collector.summary();
+  assert.equal(firstTurn.totalInputTokens, 1000); // deduped to a single turn, NOT doubled
+  assert.equal(firstTurn.totalOutputTokens, 50);
+  assert.equal(firstTurn.totalTokens, 1050);
+
+  // A second, distinct turn accumulates additively.
+  await bus.emit(toolCall({ toolName: 'ls', sessionKey: 'sess-2', at: AT + 1, tokens: { input: 200, output: 40, total: 240 } }));
+  const twoTurns = collector.summary();
+  assert.equal(twoTurns.totalInputTokens, 1200);
+  assert.equal(twoTurns.totalOutputTokens, 90);
+  assert.equal(twoTurns.totalTokens, 1290);
+});
+
+test('a repeated identical call within the same turn is not double-counted', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  // Identical (sessionKey, at) => same turn key, even if the toolName differs.
+  await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 300, output: 70, total: 370 } }));
+  await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 300, output: 70, total: 370 } }));
+
+  assert.equal(collector.totalCalls, 2);
+  const s = collector.summary();
+  assert.equal(s.totalInputTokens, 300);
+  assert.equal(s.totalOutputTokens, 70);
+  assert.equal(s.totalTokens, 370);
+});
+
+test('maxTokenTurns bounds the token-turn dedup set, evicting oldest keys', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus, maxTokenTurns: 1 });
+
+  await bus.emit(toolCall({ toolName: 'a', sessionKey: 'a', at: 1, tokens: { input: 10 } }));
+  assert.equal(collector.summary().totalInputTokens, 10);
+
+  // Turn "b" pushes the dedup set over the cap, evicting the oldest key ("a").
+  await bus.emit(toolCall({ toolName: 'b', sessionKey: 'b', at: 1, tokens: { input: 10 } }));
+  assert.equal(collector.summary().totalInputTokens, 20);
+
+  // "a" was evicted from the bounded set, so re-emitting its turn counts it again.
+  await bus.emit(toolCall({ toolName: 'c', sessionKey: 'a', at: 1, tokens: { input: 10 } }));
+  assert.equal(collector.summary().totalInputTokens, 30);
+});
+
+// --- duration aggregation -------------------------------------------------
+
+test('tool.result durations aggregate per tool and into summary totals', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  await bus.emit(toolCall({ toolName: 'bash' }));
+  await bus.emit(toolCall({ toolName: 'bash' }));
+  await bus.emit(toolCall({ toolName: 'read' })); // no results with durationMs -> fields stay undefined
+  await bus.emit(toolResult({ toolName: 'bash', durationMs: 100 }));
+  await bus.emit(toolResult({ toolName: 'bash', durationMs: 250 }));
+  await bus.emit(toolResult({ toolName: 'read' })); // no durationMs -> ignored for duration
+
+  assert.equal(collector.summary().totalCalls, 3);
+  assert.equal(collector.summary().totalResults, 3);
+
+  const top = collector.getTopTools();
+  const bash = top.find((t) => t.toolName === 'bash');
+  assert.ok(bash);
+  assert.equal(bash.count, 2);
+  assert.equal(bash.totalDurationMs, 350);
+  assert.equal(bash.avgDurationMs, 175);
+  assert.equal(bash.maxDurationMs, 250);
+
+  // A tool with calls but no duration-carrying result keeps those fields undefined.
+  const read = top.find((t) => t.toolName === 'read');
+  assert.ok(read);
+  assert.equal(read.count, 1);
+  assert.equal(read.totalDurationMs, undefined);
+  assert.equal(read.avgDurationMs, undefined);
+  assert.equal(read.maxDurationMs, undefined);
+
+  const s = collector.summary();
+  assert.equal(s.totalDurationMs, 350);
+  assert.equal(s.avgDurationMs, 175);
+});
+
+test('tools with no result/duration leave duration fields undefined in the summary too', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  await bus.emit(toolCall({ toolName: 'bash' }));
+  const s = collector.summary();
+  assert.equal(s.totalDurationMs, undefined);
+  assert.equal(s.avgDurationMs, undefined);
+  assert.deepEqual(collector.getTopTools(), [{ toolName: 'bash', count: 1 }]);
+});
+
+// --- reset of the new aggregates ------------------------------------------
+
+test('reset clears duration and token aggregates', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus });
+
+  await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 10, output: 5, total: 15 } }));
+  await bus.emit(toolResult({ toolName: 'bash', durationMs: 200 }));
+  assert.equal(collector.summary().totalInputTokens, 10);
+  assert.equal(collector.summary().totalTokens, 15);
+  assert.equal(collector.summary().totalDurationMs, 200);
+  assert.equal(collector.summary().avgDurationMs, 200);
+
+  collector.reset();
+  const s = collector.summary();
+  assert.equal(s.totalCalls, 0);
+  assert.equal(s.totalResults, 0);
+  assert.equal(s.totalDurationMs, undefined);
+  assert.equal(s.avgDurationMs, undefined);
+  assert.equal(s.totalInputTokens, undefined);
+  assert.equal(s.totalOutputTokens, undefined);
+  assert.equal(s.totalTokens, undefined);
+  assert.deepEqual(collector.getTopTools(), []);
+
+  // still subscribed after reset: a fresh turn is counted again from a clean slate
+  await bus.emit(toolCall({ toolName: 'bash', tokens: { input: 7 } }));
+  assert.equal(collector.summary().totalInputTokens, 7);
+});

@@ -46,6 +46,10 @@ export type ToolCallEvent = {
   toolName: string;
   /** Parsed arguments of the call, if any. */
   args?: unknown;
+  /** Stable tool-call id (`ToolCall.id`; OpenAI `tool_calls[].id` / Anthropic `tool_use.id`), present when available. */
+  id?: string;
+  /** Upstream token usage of the turn that produced this call (OpenAI prompt/completion/total or Anthropic input/output, normalized); omitted when the upstream didn't report usage. */
+  tokens?: { input?: number; output?: number; total?: number };
   /** When it occurred (epoch milliseconds). */
   at: number;
 };
@@ -62,6 +66,12 @@ export type ToolResultEvent = {
   toolName: string;
   /** Whether the call succeeded. */
   ok?: boolean;
+  /** Id of the specific tool call whose result this is (links to {@link ToolCallEvent.id}); used for cross-request pairing. */
+  toolCallId?: string;
+  /** Elapsed milliseconds from issue to result; omitted until measurable. */
+  durationMs?: number;
+  /** Raw character length of the tool-result payload (best-effort size metric); omitted when unknown. */
+  chars?: number;
   /** When it occurred (epoch milliseconds). */
   at: number;
 };

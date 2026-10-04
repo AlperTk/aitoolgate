@@ -8,6 +8,7 @@ import { createWsServer, type WsServer } from '../api/ws';
 import { createRuleStore, type RuleStore } from '../api/ruleStore';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
+import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
 import type { SqliteStorage } from '../storage/sqlite';
 import type { PolicyRule } from '../policy/ruleEngine';
 
@@ -34,6 +35,8 @@ export interface McmServerHandle {
   bus: TelemetryEventBus;
   /** Live aggregation view subscribed to the shared bus (backs `/api/stats`). */
   collector: Collector;
+  /** Live tool-call latency tracker pairing issued calls with their later results (always present). */
+  tracker: ToolMetricsTracker;
   /** SQLite-backed persistence, present only when a storage was configured. */
   storage?: SqliteStorage;
   /** In-memory rule registry backing the rule CRUD routes. */
@@ -123,6 +126,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   // Single shared telemetry source: BOTH the proxy handler AND the API/WS read it.
   const bus = options?.telemetry?.bus ?? createEventBus();
   const collector = options?.telemetry?.collector ?? createCollector({ bus });
+  const tracker = options?.telemetry?.tracker ?? createToolMetricsTracker();
   const storage = options?.telemetry?.storage;
 
   const proxyOptions: ProxyOptions = {
@@ -136,7 +140,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
       },
     // Reuse any caller-provided bus/collector; otherwise default to fresh instances
     // that share the configured bus so the live view always sees the stage's events.
-    telemetry: { bus, collector, ...(storage !== undefined ? { storage } : {}) },
+    telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
   };
   const handleProxyRequest: ProxyHandler = createProxyHandler(proxyOptions);
 
@@ -197,6 +201,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     value: {
       bus,
       collector,
+      tracker,
       ...(storage !== undefined ? { storage } : {}),
       ruleStore,
       apiHandler: api,
