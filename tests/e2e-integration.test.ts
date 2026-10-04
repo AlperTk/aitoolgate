@@ -309,3 +309,25 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
     await closeServer(srv);
   }
 });
+
+// --- Test 4: default-server /api/events reflects a proxied tool call -----
+test('GET /api/events via the default server returns the tool.call emitted by a proxied request', async () => {
+  // Default server options: only the upstream is pointed at a fake model that returns a single
+  // tool_call; every other mount option (rule store, ws) stays at its default.
+  const { port, srv } = await startServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) });
+  try {
+    const res = await post(port, { ...chatBody(), stream: false });
+    assert.equal(res.status, 200, 'the proxied response must be HTTP 200');
+    await res.arrayBuffer(); // drain the body so all bus emission has completed
+
+    const eventsRes = await fetch(`http://127.0.0.1:${port}/api/events`);
+    assert.equal(eventsRes.status, 200, 'GET /api/events must be HTTP 200');
+    const body = (await eventsRes.json()) as { events: TelemetryEvent[] };
+    assert.ok(Array.isArray(body.events), 'the response must carry an events array');
+    const toolCall = body.events.find(isToolCall);
+    assert.ok(toolCall !== undefined, 'GET /api/events must include the tool.call emitted by the proxied request');
+    assert.equal(toolCall.toolName, 'search_web');
+  } finally {
+    await closeServer(srv);
+  }
+});

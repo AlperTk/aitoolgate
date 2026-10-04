@@ -26,6 +26,8 @@ export interface CollectorOptions {
   bus?: TelemetryEventBus;
   /** Max intervention events to retain (newest kept); oldest beyond this evicted. Default 500. */
   maxInterventions?: number;
+  /** Max recent raw events to retain in arrival order (oldest beyond this evicted). Default 200. */
+  maxRecent?: number;
 }
 
 /** A snapshot of all current aggregates. */
@@ -56,6 +58,8 @@ export interface Collector {
   getTopTools(n?: number): TopTool[];
   /** Retained intervention events, newest-first, capped at `limit`. */
   getInterventions(limit?: number): InterventionEvent[];
+  /** Recent raw events retained in arrival order; up to `limit` most-recent, ascending (oldest-first), defensive copy. */
+  getRecentEvents(limit?: number): TelemetryEvent[];
   /** A snapshot of all current aggregates. */
   summary(): CollectorSummary;
   /** Clear all aggregates (does not unsubscribe). */
@@ -67,10 +71,14 @@ export interface Collector {
 /** Default retention cap for the intervention log. */
 const DEFAULT_MAX_INTERVENTIONS = 500;
 
+/** Default retention cap for the recent-events ring buffer. */
+const DEFAULT_MAX_RECENT = 200;
+
 /** Create an in-memory {@link Collector} subscribed to a telemetry event bus. */
 export function createCollector(options: CollectorOptions = {}): Collector {
   const bus = options.bus ?? createEventBus();
   const maxInterventions = options.maxInterventions ?? DEFAULT_MAX_INTERVENTIONS;
+  const maxRecent = options.maxRecent ?? DEFAULT_MAX_RECENT;
 
   let totalCalls = 0;
   let totalResults = 0;
@@ -78,8 +86,15 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const perSession = new Map<string, number>();
   // Newest-first: index 0 is the most recent retained event.
   const interventions: InterventionEvent[] = [];
+  // Oldest-first ring buffer: index 0 is the oldest retained event, appended in arrival order.
+  const recent: TelemetryEvent[] = [];
 
   const handler: (event: TelemetryEvent) => void = (event) => {
+    // Retain every incoming raw event in arrival order, evicting the oldest past the cap.
+    recent.push(event);
+    if (recent.length > maxRecent) {
+      recent.shift();
+    }
     switch (event.type) {
       case 'tool.call':
         totalCalls += 1;
@@ -119,6 +134,13 @@ export function createCollector(options: CollectorOptions = {}): Collector {
       ? interventions.slice()
       : interventions.slice(0, Math.max(0, limit));
 
+  const getRecentEvents = (limit?: number): TelemetryEvent[] => {
+    // Most-recent events, still ascending (oldest-first): take the last `limit` entries.
+    if (limit === undefined) return recent.slice();
+    const n = Math.max(0, limit);
+    return n >= recent.length ? recent.slice() : recent.slice(recent.length - n);
+  };
+
   const summary = (): CollectorSummary => ({
     totalCalls,
     totalResults,
@@ -132,6 +154,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     perTool.clear();
     perSession.clear();
     interventions.length = 0;
+    recent.length = 0;
   };
 
   const dispose = (): void => {
@@ -156,6 +179,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     },
     getTopTools,
     getInterventions,
+    getRecentEvents,
     summary,
     reset,
     dispose,

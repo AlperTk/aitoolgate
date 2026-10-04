@@ -8,6 +8,7 @@ import type { Collector } from '../src/telemetry/collector';
 import { createEventBus } from '../src/telemetry/event-bus';
 import { createApiHandler } from '../src/api/http';
 import type { RuleSpec } from '../src/api/ruleSpec';
+import type { TelemetryEvent } from '../src/telemetry/events';
 
 /**
  * Each test boots a real HTTP server on an EPHEMERAL port (`listen(0)`) wrapping
@@ -205,6 +206,40 @@ test('PATCH an unknown id returns 404 { error: "not_found" }', async () => {
   });
   assert.equal(res.status, 404);
   assert.deepEqual(await res.json(), { error: 'not_found' });
+});
+
+test('GET /api/events returns recent raw telemetry events in ascending order and honors limit', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus }); // standalone, driven by our own bus
+  const ruleStore = createRuleStore();
+  const baseUrl = await startServer(ruleStore, collector);
+
+  // Empty state: correct shape.
+  const first = await fetch(`${baseUrl}/api/events`);
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get('content-type') ?? '', /application\/json/);
+  const empty = (await first.json()) as { events: unknown[] };
+  assert.ok(Array.isArray(empty.events));
+  assert.equal(empty.events.length, 0);
+
+  // Two distinct events emitted in arrival order (ascending by `at`).
+  const t1 = 1_700_000_000_000;
+  const t2 = t1 + 1;
+  await bus.emit({ type: 'tool.call', sessionKey: 'k', toolName: 'bash', at: t1 });
+  await bus.emit({ type: 'tool.result', sessionKey: 'k', toolName: 'bash', ok: true, at: t2 });
+
+  const second = await fetch(`${baseUrl}/api/events`);
+  assert.equal(second.status, 200);
+  const body = (await second.json()) as { events: TelemetryEvent[] };
+  assert.equal(body.events.length, 2);
+  assert.deepEqual(body.events.map((e) => e.type), ['tool.call', 'tool.result']);
+  assert.deepEqual(body.events.map((e) => e.at), [t1, t2]); // ascending (oldest-first)
+
+  // The underlying collector method honors an explicit limit (most-recent entries).
+  const limited = collector.getRecentEvents(1);
+  assert.equal(limited.length, 1);
+  assert.equal(limited[0].type, 'tool.result');
+  assert.equal(limited[0].at, t2);
 });
 
 test('a non-/api path falls through (handler returns false) to a 404 from the chain', async () => {

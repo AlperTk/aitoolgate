@@ -4,6 +4,7 @@
  *
  * Routes (all under `/api`, all JSON):
  * - `GET    /api/stats`        → `200` `collector.summary()`
+ * - `GET    /api/events`       → `200` `{ events }` (recent raw telemetry events, ascending)
  * - `GET    /api/rules`        → `200` `RuleSpec[]` (stored spec if present, else best-effort `describeRule`)
  * - `POST   /api/rules`        → `201` serialized rule; `400 { error }` on an invalid spec/body
  * - `PATCH  /api/rules/{id}`   → `200` serialized rule; `404 { error:'not_found' }` unknown; `400` bad body
@@ -147,6 +148,11 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
 
       if (path === '/api/stats' && method === 'GET') {
         sendJson(res, 200, collector.summary());
+        return true;
+      }
+
+      if (path === '/api/events' && method === 'GET') {
+        sendJson(res, 200, { events: collector.getRecentEvents() });
         return true;
       }
 

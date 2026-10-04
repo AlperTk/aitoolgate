@@ -13,6 +13,10 @@
   var MAX_LIST_ITEMS = 200;   // cap for the live + intervention lists
   var STATS_POLL_MS = 3000;   // fallback poll interval for /api/stats
   var WS_RECONNECT_MS = 1500; // retry delay after the socket closes
+  var EVENTS_POLL_MS = 2500;     // polling interval for the /api/events fallback stream
+  var WS_KEEPALIVE_MS = 10000;   // periodic keepalive text frame while the WS is open
+  var WS_DEAD_AFTER_MS = WS_KEEPALIVE_MS * 3; // ~3 unanswered keepalive windows => dead
+  var MAX_SEEN_EVENTS = 1000;    // cap on the dedup set of already-rendered event keys
 
   /* ---- tiny DOM helpers ---------------------------------------------- */
   function $(id) { return document.getElementById(id); }
@@ -59,6 +63,17 @@
   // matcher "loop" (all fields optional) + action "block" (all fields optional).
   var curMatcherType = 'loop';
   var curActionType = 'block';
+
+  /* ---- resilience state for the dual-source live stream -----------
+   * The WebSocket is the low-latency primary source. A /api/events poll is the
+   * fallback so rows still populate when the browser cannot open a WS (tunnel,
+   * port-forward, or a webview that drops the Upgrade header). Both funnel
+   * through one deduped ingest path (ingestEvent) so each row renders once.
+   */
+  var eventsPollTimer = null;      // single-instance interval running pollEvents()
+  var keepaliveTimer = null;       // periodic keepalive text frame while the WS is open
+  var wsLastInboundAt = 0;         // epoch-ms of the last inbound WS frame (echoes count)
+  var seenEventKeys = new Set();   // dedup gate: event keys already rendered (bounded)
 
   /* ---- field schemas -------------------------------------------------
    * Each dynamic form control is described here by `kind`. `readField` and
@@ -203,12 +218,31 @@
     $('live-results').textContent = String(localCounts.results);
     $('live-interventions').textContent = String(localCounts.interventions);
   }
-  // Dispatch a single parsed WebSocket frame by its `type` discriminator.
-  // Non-telemetry frames (e.g. { echo }) fall through and are ignored.
-  function handleWsMessage(raw) {
-    var ev;
-    try { ev = JSON.parse(raw); } catch (_e) { return; } // ignore non-JSON frames
-    if (!ev || typeof ev !== 'object') return;
+  /* ---- dual-source ingest: ONE deduped render path for WS + polling --
+   * The WS onmessage handler AND the /api/events polling fallback BOTH funnel
+   * through ingestEvent(). A module-level Set of already-rendered event keys
+   * guarantees each event renders exactly once even when it arrives via both
+   * sources (or is replayed), and keeps the per-type "this session" counters
+   * from double-counting. The set is bounded to MAX_SEEN_EVENTS most-recent
+   * keys so it never grows unbounded.
+   */
+  // Build a stable identity key for an event so a row renders at most once.
+  function eventKey(ev) {
+    return ev.type + '|' + (ev.sessionKey || '') + '|' + ev.at + '|' + (ev.toolName || '');
+  }
+  // Render one telemetry event only if its key has not been seen, then record it.
+  // Accepts an object or a JSON string (the WS onmessage case). Non-telemetry
+  // frames (e.g. the server's { echo }) are ignored without side effects.
+  function ingestEvent(raw) {
+    var ev = raw;
+    if (typeof raw === 'string') { try { ev = JSON.parse(raw); } catch (_e) { return; } }
+    if (!isPlainObject(ev)) return;
+    var key = eventKey(ev);
+    if (seenEventKeys.has(key)) return; // already rendered (cross-source or replay)
+    seenEventKeys.add(key);
+    while (seenEventKeys.size > MAX_SEEN_EVENTS) { // bound the set (drop oldest)
+      seenEventKeys.delete(seenEventKeys.keys().next().value);
+    }
     switch (ev.type) {
       case 'tool.call':
         localCounts.calls += 1; addCallRow(ev); updateLiveCounters(); break;
@@ -217,8 +251,15 @@
       case 'policy.intervention':
         localCounts.interventions += 1; addInterventionRow(ev); updateLiveCounters(); break;
       default:
-        break; // echo or unknown frame — nothing to render
+        break; // echo / unknown frame — nothing to render
     }
+  }
+  // Dispatch one inbound WebSocket frame: ANY frame (including the { echo } the
+  // server returns for each keepalive we send) counts as liveness activity, then
+  // the single deduped ingest path decides whether a row should be rendered.
+  function handleWsMessage(raw) {
+    wsLastInboundAt = Date.now();
+    ingestEvent(raw);
   }
 
   /* ========================= rules list / CRUD ====================== */
@@ -522,29 +563,58 @@
   }
 
   /* ========================= WebSocket lifecycle ====================== */
-  // Reflect connected/disconnected on the header indicator.
+  // Reflect live/polling connectivity: toggle the header indicator classes, set a
+  // short header label, and show/hide the near-list #stream-status banner that
+  // explains we're falling back to /api/events polling when no WS is available.
   function setConnected(on) {
+    var bannerText = 'Live stream disconnected — showing recent events via polling.';
     var s = $('conn-status');
-    s.classList.toggle('connected', !!on);
-    s.classList.toggle('disconnected', !on);
-    $('conn-label').textContent = on ? 'connected' : 'disconnected';
+    if (s) {
+      s.classList.toggle('connected', !!on);
+      s.classList.toggle('disconnected', !on);
+      s.title = on ? 'Live stream connected' : bannerText;
+    }
+    var label = $('conn-label');
+    if (label) label.textContent = on ? 'live' : 'polling';
+    var banner = $('stream-status');
+    if (banner) {
+      banner.hidden = !!on;
+      banner.textContent = on ? '' : bannerText;
+    }
   }
-  // Open (or re-open) the same-origin /ws socket with simple reconnect-on-close.
-  function connectWS() {
+  // True when the current socket is actually open (WebSocket.OPEN).
+  function wsIsOpen() { return !!(ws && ws.readyState === WebSocket.OPEN); }
+  // Reflect true connectivity: open => live, otherwise polling/fallback. Used at
+  // startup and on every WS state transition so the header + banner never lag
+  // behind reality (e.g. a WS that is created but never reaches open state).
+  function syncConnectivity() { setConnected(wsIsOpen()); }
+  // True only for a well-formed ws:/wss: URL on the SAME origin as this page
+  // (matching host + port). Lets us skip a guaranteed-bad WebSocket open (opaque
+  // or file: origins, empty host, etc.) and rely on the /api/events poll instead.
+  function isValidSameOriginWsUrl(url) {
     try {
-      if (ws) {
-        try { if (ws.readyState !== WebSocket.CLOSED) ws.close(); } catch (_e) { /* ignore */ }
-      }
-    } catch (_e) { /* ignore */ }
+      var u = new URL(url);
+      if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return false;
+      if (!u.hostname) return false;
+      return u.hostname === location.hostname && (u.port || '') === (location.port || '');
+    } catch (_e) { return false; }
+  }
+  // Open (or re-open) the same-origin /ws socket. Only opens a well-formed,
+  // same-origin ws:/wss: URL; otherwise skips opening and lets polling be the
+  // sole source (no pointless reconnect loop). Wires keepalive + self-heal and
+  // reconnects forever on close, so a WS that never connects still self-heals.
+  function connectWS() {
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    if (!isValidSameOriginWsUrl(url)) { setConnected(false); return; } // rely on polling
+    try { if (ws && ws.readyState !== WebSocket.CLOSED) ws.close(); } catch (_e) { /* ignore */ }
     var socket;
     try { socket = new WebSocket(url); }
     catch (_e) { setConnected(false); scheduleReconnect(); return; }
     ws = socket;
-    ws.onopen = function () { setConnected(true); };
+    ws.onopen = function () { wsLastInboundAt = Date.now(); startKeepalive(); syncConnectivity(); };
     ws.onmessage = function (ev) { handleWsMessage(ev.data); };
     ws.onerror = function () { /* a close follows — handled there */ };
-    ws.onclose = function () { setConnected(false); scheduleReconnect(); };
+    ws.onclose = function () { stopKeepalive(); syncConnectivity(); scheduleReconnect(); };
   }
   // Schedule a single retry after a short delay (guarded against stacking).
   function scheduleReconnect() {
@@ -553,6 +623,64 @@
       reconnectTimer = null;
       connectWS();
     }, WS_RECONNECT_MS);
+  }
+
+  /* ------------------------ events polling fallback ------------------ */
+  // GET /api/events and funnel every returned event through the single deduped
+  // ingest path. The server returns events oldest-first (ascending by `at`); we
+  // re-sort defensively and render oldest→newest so the newest lands on top via
+  // prependTrim, while the dedup set skips anything already shown over the WS.
+  // This is what populates the stream when no WebSocket is ever established.
+  async function pollEvents() {
+    try {
+      var res = await fetch('api/events');
+      if (!res.ok) return;
+      var data = await res.json();
+      var arr = data && Array.isArray(data.events) ? data.events.slice() : [];
+      arr.sort(function (a, b) {
+        var ta = a && typeof a.at === 'number' ? a.at : 0;
+        var tb = b && typeof b.at === 'number' ? b.at : 0;
+        return ta - tb;
+      });
+      for (var i = 0; i < arr.length; i++) ingestEvent(arr[i]);
+    } catch (_e) { /* offline / unreachable origin — keep polling silently */ }
+  }
+  // Start (or restart) exactly one polling interval. An immediate first fetch
+  // populates the stream without waiting EVENTS_POLL_MS; guarded against stacking.
+  function startEventsPolling() {
+    stopEventsPolling();
+    pollEvents();
+    eventsPollTimer = setInterval(pollEvents, EVENTS_POLL_MS);
+  }
+  // Stop the single polling interval (idempotent).
+  function stopEventsPolling() {
+    if (eventsPollTimer != null) { clearInterval(eventsPollTimer); eventsPollTimer = null; }
+  }
+
+  /* ---------------------- WS keepalive + self-heal ------------------- */
+  // While the socket is open, send a periodic text frame; the server echoes each
+  // one back (refreshing wsLastInboundAt). If no inbound frame arrives within
+  // WS_DEAD_AFTER_MS while still marked open, the link is half-open → close it
+  // and force a reconnect (onclose fires → scheduleReconnect → connectWS again),
+  // replacing the silent half-open case. Polling keeps the stream alive meanwhile.
+  function startKeepalive() {
+    stopKeepalive();
+    keepaliveTimer = setInterval(function () {
+      if (!ws) return;
+      try {
+        if (ws.readyState !== WebSocket.OPEN) return; // closing/closed; onclose handles it
+        ws.send('ping');
+        if (Date.now() - wsLastInboundAt > WS_DEAD_AFTER_MS) {
+          var dead = ws;
+          try { dead.close(); } catch (_e) { /* ignore */ }
+          if (ws === dead) { ws = null; syncConnectivity(); scheduleReconnect(); }
+        }
+      } catch (_e) { /* ignore */ }
+    }, WS_KEEPALIVE_MS);
+  }
+  // Stop the keepalive timer (idempotent); called on close and before a restart.
+  function stopKeepalive() {
+    if (keepaliveTimer != null) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
   }
 
   /* ============================== wiring ============================= */
@@ -575,10 +703,12 @@
     renderMatcherFields(curMatcherType);
     renderActionFields(curActionType);
     updateFormMode();
-    refreshStats();   // initial load: stats + rules in parallel
+    refreshStats();          // initial load: stats + rules in parallel
     refreshRules();
-    connectWS();
-    setInterval(refreshStats, STATS_POLL_MS); // fallback poll
+    connectWS();             // low-latency primary source (self-heals on close/dead)
+    syncConnectivity();      // honest baseline: polling/fallback until the WS actually opens
+    startEventsPolling();    // fallback: keeps the live stream alive without a WS
+    setInterval(refreshStats, STATS_POLL_MS); // stats fallback poll
   }
   // The script is loaded at the end of <body> so the DOM is ready; guard just in case.
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
