@@ -22,6 +22,35 @@
     <!-- Non-fatal notice banner (shown when the API is unreachable / errors) -->
     <div id="notice" class="notice" hidden></div>
 
+    <!-- Global controls: time-range filter + clear on-screen history + export -->
+    <div id="dash-controls" class="dash-controls">
+      <div class="ctl-group" role="group" aria-label="Time range">
+        <span class="ctl-label">Time</span>
+        <select id="filter-time" title="Filter displayed calls and interventions by time window (client-side, over retained buffered events)">
+          <option value="all">All retained</option>
+          <option value="5m">Last 5 min</option>
+          <option value="15m">Last 15 min</option>
+          <option value="1h">Last hour</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input id="filter-time-from" type="datetime-local" class="time-custom" hidden aria-label="Time from" />
+        <input id="filter-time-to" type="datetime-local" class="time-custom" hidden aria-label="Time to" />
+      </div>
+      <div class="ctl-group" role="group" aria-label="Clear history">
+        <button type="button" id="btn-clear-history" class="btn btn-danger"
+                title="Removes buffered events currently shown in this dashboard (client-side only). Server aggregates in the stats panel are not affected.">
+          Clear on-screen history
+        </button>
+      </div>
+      <div class="ctl-group" role="group" aria-label="Export">
+        <span class="ctl-label">Export</span>
+        <button type="button" id="btn-export-calls-json" class="btn" title="Download the currently-visible/filtered call rows as JSON">Calls · JSON</button>
+        <button type="button" id="btn-export-calls-csv" class="btn" title="Download the currently-visible/filtered call rows as CSV">Calls · CSV</button>
+        <button type="button" id="btn-export-interventions-json" class="btn" title="Download the currently-visible/filtered intervention rows as JSON">Interventions · JSON</button>
+        <button type="button" id="btn-export-interventions-csv" class="btn" title="Download the currently-visible/filtered intervention rows as CSV">Interventions · CSV</button>
+      </div>
+    </div>
+
     <main class="dash-grid">
       <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
       <section id="stream-panel" class="card">
@@ -29,6 +58,19 @@
         <!-- Shown (by app.js) only when no WebSocket is available; explains the polling fallback -->
         <div id="stream-status" class="stream-status" role="status" hidden
              style="margin:0 0 0.8rem;padding:0.5rem 0.75rem;border:1px solid var(--border);border-left:3px solid var(--amber);background:rgba(210,153,34,0.08);color:#f3d08a;border-radius:var(--radius);font-size:0.88rem;"></div>
+        <div class="stream-filters">
+          <input id="filter-tool" type="text" placeholder="Tool name…" />
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="ok">OK</option>
+            <option value="error">Error</option>
+            <option value="intervention">Intervention</option>
+            <option value="unmatched">Unmatched result</option>
+          </select>
+          <input id="filter-session" type="text" placeholder="Session key…" />
+          <span id="stream-count" class="muted small"></span>
+        </div>
         <div class="list-wrap">
           <ul id="stream-list" class="stream-list"></ul>
           <div id="stream-empty" class="empty">Waiting for tool calls…</div>
@@ -43,13 +85,13 @@
           <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>
         </div>
         <div class="stat-row">
-          <div class="stat"><span id="total-duration" class="num small">—</span><label>total (ms)</label></div>
-          <div class="stat"><span id="avg-duration" class="num small">—</span><label>avg (ms)</label></div>
+          <div class="stat"><span id="total-duration" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>total (ms)</label></div>
+          <div class="stat"><span id="avg-duration" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>avg (ms)</label></div>
         </div>
         <div class="stat-row">
-          <div class="stat"><span id="total-tokens" class="num small">—</span><label>tokens</label></div>
-          <div class="stat"><span id="input-tokens" class="num small">—</span><label>input</label></div>
-          <div class="stat"><span id="output-tokens" class="num small">—</span><label>output</label></div>
+          <div class="stat"><span id="total-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>tokens</label></div>
+          <div class="stat"><span id="input-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>input</label></div>
+          <div class="stat"><span id="output-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>output</label></div>
         </div>
         <div class="stat-row live">
           <div class="stat"><span id="live-calls" class="num small">0</span><label>this session</label></div>
@@ -58,12 +100,13 @@
         </div>
         <table class="top-tools">
           <thead>
-            <tr><th scope="col">Tool</th><th scope="col" class="num-col">Calls</th><th scope="col" class="num-col">Avg (ms)</th><th scope="col" class="num-col">Max (ms)</th></tr>
+            <tr><th scope="col">Tool</th><th scope="col" class="num-col">Calls</th><th scope="col" class="num-col" title="No data yet — appears once tool results arrive.">Avg (ms)</th><th scope="col" class="num-col" title="No data yet — appears once tool results arrive.">Max (ms)</th></tr>
           </thead>
           <tbody id="top-tools">
-            <tr><td colspan="4" class="muted">—</td></tr>
+            <tr><td colspan="4" class="muted" title="No data yet — appears once tool results arrive.">—</td></tr>
           </tbody>
         </table>
+        <div class="muted small">Values shown as "—" have no data yet; they populate as tool results arrive.</div>
         <div class="muted small">Interventions retained: <span id="interventions-retained">0</span></div>
       </section>
 
@@ -72,7 +115,11 @@
         <h2>Intervention log</h2>
         <div class="list-wrap">
           <ul id="intervention-list" class="stream-list"></ul>
-          <div id="intervention-empty" class="empty">No interventions yet.</div>
+          <div id="intervention-empty" class="empty iv-empty">
+            <svg class="iv-empty-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.5-7 4 14 2.5-7H21"/></svg>
+            <div>No interventions yet</div>
+            <div class="small muted">Policy rule actions applied to live tool calls will appear here.</div>
+          </div>
         </div>
       </section>
 
@@ -91,6 +138,7 @@
                 <option value="toolName">toolName — match by tool name</option>
                 <option value="argPattern">argPattern — match arguments</option>
               </select>
+              <div class="hint">Choose how the rule detects matching tool calls.</div>
             </div>
             <div class="field">
               <label for="action-type">Action type</label>
@@ -100,6 +148,7 @@
                 <option value="rewriteArgs">rewriteArgs — edit arguments</option>
                 <option value="injectMessage">injectMessage — add a message</option>
               </select>
+              <div class="hint">Choose what happens when a call matches.</div>
             </div>
           </div>
 
@@ -116,15 +165,17 @@
             <div class="field grow">
               <label for="rule-description">Description</label>
               <input id="rule-description" type="text" placeholder="What this rule does" />
+              <div class="hint">Shown as the rule's label in the list; optional.</div>
             </div>
             <div class="field">
               <label for="rule-priority">Priority</label>
               <input id="rule-priority" type="number" step="1" placeholder="(default)" />
+              <div class="hint">Lower number = higher precedence; leave blank for the default order.</div>
             </div>
           </div>
 
           <div class="field-row form-foot">
-            <label class="check">
+            <label class="check" title="Rule is enforced only while checked">
               <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
             </label>
             <span class="spacer"></span>

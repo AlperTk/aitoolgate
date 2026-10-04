@@ -73,3 +73,9 @@ Traps likely to cause future mistakes. Each lists Problem / Avoid / Preferred / 
 - Avoid: don't rely on duration/token metrics for concurrent-multi-client isolation.
 - Preferred: treat as sequential single-client (consistent with the existing session-key design); thread an explicit request context if true concurrency is required.
 - Evidence: `src/proxy/context.ts`, `knowledge/architecture.md` (session-key note), `tool-metrics.md`.
+
+## No DOM/browser tests for the dashboard
+- Problem: the dashboard is plain browser JS served raw (not compiled); there are NO DOM/jsdom tests, so a change that keeps `npm test` green can still break the UI silently (a missing DOM id, bad helper wiring, or a broken filter/export/drill-down).
+- Avoid: don't treat "backend suite green" as proof the dashboard works.
+- Preferred: after any dashboard edit run `node --check dashboard/app.js` (syntax) + `npm test` (~151 green) + a structural grep that the new DOM ids/classes/helpers exist in the three files, then a **manual browser smoke-test** (tooltips render, drill-down toggles, filters apply, export download fires).
+- Evidence: `dashboard/` (served raw per `tests/server-integration.test.ts`), `conventions.md`, `dashboard-ui.md`.

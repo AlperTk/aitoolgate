@@ -72,6 +72,11 @@ Locked decisions (do not re-litigate without explicit sign-off). Each lists Deci
 - Reason: previously, when a policy stage was present, context's emission was skipped and the policy stage emitted tool.calls without id/tokens and never recorded to the tracker → NO duration/tokens on the policy path. Centralizing makes default AND policy paths consistent and prevents double-count.
 - Evidence: `src/proxy/context.ts` (no `policyHandlesCallTelemetry` guard), `src/policy/policyStage.ts`, `tests/policy-stage-events.test.ts`.
 
+## Dashboard UI = enriched live stream + global controls (additive, no deps)
+- Decision: keep the vanilla-JS, zero-dependency dashboard and enrich its live stream — one row per logical tool call showing status + Duration(ms) + Tokens (call↔result paired by id, sessionKey fallback), click-to drill-down (args/result/session/ruleId), tool/status/session filters, plus a global-controls toolbar (time-range selector, clear-on-screen-history, JSON+CSV export of calls & interventions). Absent metric fields show "—" with a "no data yet" tooltip; the intervention log uses structured rows. All client-side over the bounded event buffer; NO server-side wipe endpoint added.
+- Reason: makes the live stream genuinely useful (per-call cost + what actually happened) while staying zero-dependency and single-process; it is additive on top of the existing WS/poll dual-source and `/api/stats` flow, so no backend contract changes.
+- Evidence: `dashboard/app.js` (createCallRow/updateCallRowWithResult/matchAndRenderResult, bindRowClick/renderRowDetail, applyFilters/inTimeRange/clearOnScreenHistory, buildCallsCsv/buildInterventionsCsv/exportJson, statNumCell/NO_DATA_TIP), `dashboard/index.html`, `tests/e2e-integration.test.ts`; `dashboard-ui.md`.
+
 ## Deferred scope
 - **v1.1:** multi-model + per-client routing + fallback (full LiteLLM-lite); scripting hooks; LLM-as-policy matcher; streaming; Postgres option.
 - **Later:** MCP tool gateway; skills (injected via `ToolProvider` port).

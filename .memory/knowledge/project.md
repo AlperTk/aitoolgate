@@ -9,7 +9,7 @@ A local, LiteLLM-style model proxy that is the single man-in-the-middle in the a
 - Default port **8787**.
 
 ## Status
-Complete & green: **151 tests / 0 fail** (gate: `build && typecheck && test`). Covers foundation, OpenAI+Anthropic proxy, policy engine (matchers + actions + flagship loop rule + session key), pipeline wiring + wire-fix, telemetry + SQLite storage + **tool-call metrics (per-call duration ms + tokens)**, dashboard + REST/WS API all wired into `createServer` with one shared bus/collector/tracker. See `tool-metrics.md` and `decisions.md`.
+Complete & green: **151 tests / 0 fail** (gate: `build && typecheck && test`). Covers foundation, OpenAI+Anthropic proxy, policy engine (matchers + actions + flagship loop rule + session key), pipeline wiring + wire-fix, telemetry + SQLite storage + **tool-call metrics (per-call duration ms + tokens)**, dashboard + REST/WS API all wired into `createServer` with one shared bus/collector/tracker. The dashboard is a dependency-free vanilla-JS SPA with an enriched **live tool-call panel** (per-row duration/tokens, call↔result pairing, click-to drill-down, tool/status/session filters), a structured intervention log, a rule-authoring form, and **global controls** (time-range, clear on-screen history, JSON/CSV export). See `tool-metrics.md`, `dashboard-ui.md`, and `decisions.md`.
 
 ## Key directories
 - `src/server/` — HTTP server entry (`createServer`): routing + shared bus/collector + auto-start.
@@ -21,7 +21,7 @@ Complete & green: **151 tests / 0 fail** (gate: `build && typecheck && test`). C
 - `src/storage/` — schema + SQLite repository.
 - `src/api/` — rule store + rule specs + REST `/api/*` + WebSocket server.
 - `src/ports/` — core interfaces (domain, pipeline, strategy, event-bus, storage) + barrel.
-- `config/config.ts` — `loadConfig`. `dashboard/` — vanilla-JS SPA. `tests/` — 21 suites.
+- `config/config.ts` — `loadConfig`. `dashboard/` — dependency-free vanilla-JS SPA (live per-call panel + drill-down + filters; stats tiles; structured intervention log; rule-authoring form; global controls: time-range/clear/export — see `dashboard-ui.md`). `tests/` — 21 suites.
 
 ## Commands (from `/sandbox/mcp-manager`)
 | Command | Does |

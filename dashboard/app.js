@@ -59,6 +59,18 @@
     return typeof v === 'number' && isFinite(v) ? String(Math.round(v)) : '—';
   }
 
+
+  // Tooltip shown on a stat value / table cell that is still empty ("—").
+  var NO_DATA_TIP = 'No data yet \u2014 appears once tool results arrive.';
+  // Set a stat tile's displayed value (via fmtOpt) and attach/remove the
+  // "no data yet" tooltip depending on whether the value is present.
+  function setStatValue(id, v) {
+    var tileEl = $(id);
+    var txt = fmtOpt(v);
+    tileEl.textContent = txt;
+    if (txt === '\u2014') tileEl.title = NO_DATA_TIP; else tileEl.removeAttribute('title');
+  }
+
   /* ---- module state -------------------------------------------------- */
   var ws = null;
   var reconnectTimer = null;
@@ -79,6 +91,17 @@
   var keepaliveTimer = null;       // periodic keepalive text frame while the WS is open
   var wsLastInboundAt = 0;         // epoch-ms of the last inbound WS frame (echoes count)
   var seenEventKeys = new Set();   // dedup gate: event keys already rendered (bounded)
+  var callRows = new Map();           // callId -> { li, callEv, resultEv, status, expanded }
+  var orphanResultEntries = [];       // [{ li, ev }] unmatched tool.result rows
+  var interventionsBySession = new Map(); // sessionKey -> [{ ruleId, action, at, detail }]
+  // Time-window filter applied client-side over the buffered (retained) events.
+  // mode: 'all' | 'preset' | 'custom'; startMs/endMs (epoch ms) bound the window.
+  var timeRange = { mode: 'all' };
+  // Preset minute values for the quick time-range selector (window ends at selection time).
+  var TIME_PRESETS = { '5m': 5, '15m': 15, '1h': 60 };
+  // Per-row raw data for intervention log rows (li -> { ruleId, action, at, detail,
+  // sessionKey }), used by drill-down and export; kept in sync with the DOM by trimCallData().
+  var interventionRowData = new Map();
 
   /* ---- field schemas -------------------------------------------------
    * Each dynamic form control is described here by `kind`. `readField` and
@@ -90,8 +113,8 @@
     loop: [
       { key: 'window', label: 'Window', kind: 'number', hint: 'Consecutive identical calls to flag (server default 4)' },
       { key: 'requireConsecutive', label: 'Require consecutive', kind: 'bool', def: true, hint: 'The run must sit at the tail of the sequence' },
-      { key: 'paramIdentity', label: 'Param identity', kind: 'select', options: ['', 'exact', 'normalized'] },
-      { key: 'resultIdentity', label: 'Result identity', kind: 'select', options: ['', 'exact', 'normalized'] }
+      { key: 'paramIdentity', label: 'Param identity', kind: 'select', options: ['', 'exact', 'normalized'], hint: 'How repeated args are compared: exact vs normalized. Blank = default (normalized).' },
+      { key: 'resultIdentity', label: 'Result identity', kind: 'select', options: ['', 'exact', 'normalized'], hint: 'How results are compared: exact vs normalized. Blank = default (normalized).' }
     ],
     toolName: [
       { key: 'toolName', label: 'Tool name', kind: 'text', hint: 'A single tool to match' },
@@ -116,10 +139,10 @@
       { key: 'toolName', label: 'Tool name', kind: 'text', hint: 'Target by name' },
       { key: 'toolCallId', label: 'Tool call id', kind: 'text', hint: 'Takes precedence over the name' },
       { key: 'arguments', label: 'Arguments (JSON object)', kind: 'json', required: true, hint: 'Full replacement or partial merge' },
-      { key: 'mode', label: 'Mode', kind: 'select', options: ['', 'replace', 'merge'] }
+      { key: 'mode', label: 'Mode', kind: 'select', options: ['', 'replace', 'merge'], hint: 'replace = swap all arguments; merge = update only listed keys. Blank = default (replace).' }
     ],
     injectMessage: [
-      { key: 'role', label: 'Role', kind: 'select', options: ['', 'user', 'system'] },
+      { key: 'role', label: 'Role', kind: 'select', options: ['', 'user', 'system'], hint: 'Which role the injected message appears as. Blank = default (user).' },
       { key: 'content', label: 'Content', kind: 'area', required: true, hint: 'Text injected into the stream' }
     ]
   };
@@ -143,20 +166,39 @@
   }
 
   /* ========================= stats / top tools ====================== */
+  // Render one duration/token number cell, attaching the "no data yet" tooltip
+  // only when the value is still absent (early in the run).
+  function statNumCell(v) {
+    var t = fmtOpt(v);
+    return '<td class="num-col"' + (t === '\u2014' ? ' title="' + NO_DATA_TIP + '"' : '') + '>' + t + '</td>';
+  }
   // Render the ranked top-tools table from a CollectorSummary.topTools array.
+  // Attaches the "no data yet" tooltip to empty cells and to the Avg/Max column
+  // headers whenever any duration value is still absent.
   function renderTopTools(top) {
     var tb = $('top-tools');
     tb.textContent = '';
+    var table = tb.closest('table');
+    var hasDash = false;
+    var html = '';
     if (!top || !top.length) {
-      tb.innerHTML = '<tr><td colspan="4" class="muted">—</td></tr>';
-      return;
+      hasDash = true;
+      html = '<tr><td colspan="4" class="muted" title="' + NO_DATA_TIP + '">—</td></tr>';
+    } else {
+      top.forEach(function (t) {
+        var avg = fmtOpt(t.avgDurationMs), max = fmtOpt(t.maxDurationMs);
+        if (avg === '\u2014' || max === '\u2014') hasDash = true;
+        html += '<tr><td>' + esc(t.toolName) + '</td>' +
+          '<td class="num-col">' + esc(String(t.count)) + '</td>' +
+          statNumCell(t.avgDurationMs) + statNumCell(t.maxDurationMs) + '</tr>';
+      });
     }
-    tb.innerHTML = top.map(function (t) {
-      return '<tr><td>' + esc(t.toolName) + '</td>' +
-        '<td class="num-col">' + esc(String(t.count)) + '</td>' +
-        '<td class="num-col">' + esc(fmtOpt(t.avgDurationMs)) + '</td>' +
-        '<td class="num-col">' + esc(fmtOpt(t.maxDurationMs)) + '</td></tr>';
-    }).join('');
+    tb.innerHTML = html;
+    var ths = table.querySelectorAll('th');
+    [2, 3].forEach(function (i) {
+      if (!ths[i]) return;
+      if (hasDash) ths[i].title = NO_DATA_TIP; else ths[i].removeAttribute('title');
+    });
   }
   // GET /api/stats and refresh the counts + top-tools panel. Fetched on load
   // and every STATS_POLL_MS so numbers stay current even if the WS drops.
@@ -168,11 +210,11 @@
       $('total-calls').textContent = String(typeof s.totalCalls === 'number' ? s.totalCalls : 0);
       $('total-results').textContent = String(typeof s.totalResults === 'number' ? s.totalResults : 0);
       renderTopTools(s.topTools);
-      $('total-tokens').textContent = fmtOpt(s.totalTokens);
-      $('input-tokens').textContent = fmtOpt(s.totalInputTokens);
-      $('output-tokens').textContent = fmtOpt(s.totalOutputTokens);
-      $('total-duration').textContent = fmtOpt(s.totalDurationMs);
-      $('avg-duration').textContent = fmtOpt(s.avgDurationMs);
+      setStatValue('total-tokens', s.totalTokens);
+      setStatValue('input-tokens', s.totalInputTokens);
+      setStatValue('output-tokens', s.totalOutputTokens);
+      setStatValue('total-duration', s.totalDurationMs);
+      setStatValue('avg-duration', s.avgDurationMs);
       $('interventions-retained').textContent = String(Array.isArray(s.interventions) ? s.interventions.length : 0);
       clearNotice();
     } catch (e) {
@@ -188,40 +230,306 @@
       listEl.removeChild(listEl.lastChild);
     }
   }
-  // Append a tool.call row to the live stream.
-  function addCallRow(ev) {
-    var li = el('li', 'stream-row');
-    var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
-    li.innerHTML =
-      '<span class="badge badge-call">call</span>' +
-      '<span class="s-tool">' + esc(ev.toolName) + '</span>' +
-      '<span class="s-session muted" title="' + esc(ev.sessionKey) + '">' + esc(shortSession(ev.sessionKey)) + '</span>' +
-      '<time class="s-time" title="' + esc(when) + '">' + fmtTime(ev.at) + '</time>';
+  /* ---- unified call-row rendering -----------------------------------
+   * One row per logical tool-call, tracked by call id in `callRows`. A
+   * matching tool.result pairs back to its call row (by toolCallId or same-
+   * session fallback) and updates it in place. Unmatched results are retained
+   * as standalone "orphan" rows so no data is lost.
+   */
+  // Build a single call row, register it in callRows, and prepend it to the list.
+  function createCallRow(ev) {
+    var callId = ev.id || '';
+    var li = el('li', 'stream-row call-row');
+    if (callId) li.dataset.callId = callId;
+    li.dataset.tool = ev.toolName || '';
+    li.dataset.session = ev.sessionKey || '';
+    li.dataset.status = 'pending';
+    li.dataset.at = ev.at;
+
+    var main = el('div', 'row-main');
+    main.appendChild(el('span', 'badge badge-pending', 'pending'));
+    main.appendChild(el('span', 's-tool', ev.toolName || ''));
+    var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+    sess.title = ev.sessionKey || '';
+    main.appendChild(sess);
+    var dur = el('span', 's-duration', '\u2014');
+    dur.title = 'Duration (ms)';
+    main.appendChild(dur);
+    var tok = el('span', 's-tokens', ev.tokens && typeof ev.tokens.total === 'number' ? fmtOpt(ev.tokens.total) : '\u2014');
+    tok.title = 'Tokens (turn total)';
+    main.appendChild(tok);
+    var t = el('time', 's-time', fmtTime(ev.at));
+    t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+    main.appendChild(t);
+    var exp = el('span', 's-expand', '\u25BE');
+    exp.setAttribute('aria-hidden', 'true');
+    main.appendChild(exp);
+
+    var detail = el('div', 'row-detail');
+    detail.hidden = true;
+
+    li.appendChild(main);
+    li.appendChild(detail);
+
+    var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false };
+    if (callId) callRows.set(callId, rs);
     prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
     $('stream-empty').hidden = true;
+    trimCallData();
+    bindRowClick(li, rs);
+    applyFilters();
+    return rs;
   }
-  // Interleave a tool.result status (ok/error) into the live stream.
-  function addResultRow(ev) {
+
+  // Update an existing call row in place when its tool.result arrives.
+  function updateCallRowWithResult(rs, ev) {
+    rs.resultEv = ev;
+    rs.status = ev.ok === false ? 'error' : 'ok';
+    rs.li.dataset.status = rs.status;
+    var badge = rs.li.querySelector('.badge');
+    if (badge) {
+      badge.className = 'badge ' + (ev.ok === false ? 'badge-err' : 'badge-ok');
+      badge.textContent = ev.ok === false ? 'error' : 'ok';
+    }
+    var dur = rs.li.querySelector('.s-duration');
+    if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
+    var tok = rs.li.querySelector('.s-tokens');
+    if (tok && ev.tokens && typeof ev.tokens.total === 'number') tok.textContent = fmtOpt(ev.tokens.total);
+    if (rs.expanded) renderRowDetail(rs);
+    applyFilters();
+  }
+
+  // Create a standalone row for a tool.result that could not be paired to any call.
+  function createOrphanResultRow(ev) {
+    var li = el('li', 'stream-row orphan-row');
+    li.dataset.tool = ev.toolName || '';
+    li.dataset.session = ev.sessionKey || '';
+    li.dataset.status = ev.ok === false ? 'error' : 'ok';
+    li.dataset.at = ev.at;
+
     var isErr = ev.ok === false;
-    var li = el('li', 'stream-row');
-    var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
-    li.innerHTML =
-      '<span class="badge ' + (isErr ? 'badge-err' : 'badge-ok') + '">' + (isErr ? 'error' : 'ok') + '</span>' +
-      '<span class="s-tool">' + esc(ev.toolName) + '</span>' +
-      '<span class="s-session muted" title="' + esc(ev.sessionKey) + '">' + esc(shortSession(ev.sessionKey)) + '</span>' +
-      '<time class="s-time" title="' + esc(when) + '">' + fmtTime(ev.at) + '</time>';
+    var main = el('div', 'row-main');
+    main.appendChild(el('span', 'badge ' + (isErr ? 'badge-err' : 'badge-ok'), isErr ? 'error' : 'ok'));
+    main.appendChild(el('span', 's-tool', ev.toolName || ''));
+    var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+    sess.title = ev.sessionKey || '';
+    main.appendChild(sess);
+    var dur = el('span', 's-duration', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
+    dur.title = 'Duration (ms)';
+    main.appendChild(dur);
+    var tok = el('span', 's-tokens', ev.tokens && typeof ev.tokens.total === 'number' ? fmtOpt(ev.tokens.total) : '\u2014');
+    tok.title = 'Tokens (turn total)';
+    main.appendChild(tok);
+    var t = el('time', 's-time', fmtTime(ev.at));
+    t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+    main.appendChild(t);
+    var exp = el('span', 's-expand', '\u25BE');
+    exp.setAttribute('aria-hidden', 'true');
+    main.appendChild(exp);
+
+    var detail = el('div', 'row-detail');
+    detail.hidden = true;
+
+    li.appendChild(main);
+    li.appendChild(detail);
+
+    var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'error' : 'ok', expanded: false };
+    orphanResultEntries.push({ li: li, ev: ev, rs: rs });
     prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
     $('stream-empty').hidden = true;
+    trimCallData();
+    bindRowClick(li, rs);
+    applyFilters();
   }
-  // Append a policy.intervention row to the intervention log.
+
+  // Find the pending call row that a result event belongs to.
+  function findCallForResult(ev) {
+    if (ev.toolCallId) {
+      var rs = callRows.get(ev.toolCallId);
+      if (rs && !rs.resultEv && rs.li.parentNode === $('stream-list')) return rs;
+    }
+    // Fallback: most-recent still-pending call in the same session.
+    if (ev.sessionKey) {
+      var best = null, bestAt = -1;
+      callRows.forEach(function (rs) {
+        if (rs.resultEv) return;
+        if (rs.callEv.sessionKey !== ev.sessionKey) return;
+        var at = rs.callEv.at || 0;
+        if (at >= bestAt) { bestAt = at; best = rs; }
+      });
+      if (best) return best;
+    }
+    return null;
+  }
+
+  // Pair a tool.result to its call row (or create an orphan row if unmatched).
+  function matchAndRenderResult(ev) {
+    var rs = findCallForResult(ev);
+    if (rs) { updateCallRowWithResult(rs, ev); }
+    else { createOrphanResultRow(ev); }
+  }
+
+  // Store an intervention event for later drill-down lookup by session key.
+  function storeInterventionForDrillDown(ev) {
+    var sk = ev.sessionKey || '';
+    if (!sk) return;
+    if (!interventionsBySession.has(sk)) interventionsBySession.set(sk, []);
+    interventionsBySession.get(sk).push({ ruleId: ev.ruleId, action: ev.action, at: ev.at, detail: ev.detail });
+  }
+
+  // Wire the click-to-drill-down handler on a row.
+  function bindRowClick(li, rs) {
+    li.onclick = null;
+    li.addEventListener('click', function (e) {
+      if (e.target.closest('.row-detail')) return; // clicks inside detail don't toggle
+      rs.expanded = !rs.expanded;
+      var detailEl = li.querySelector('.row-detail');
+      if (!detailEl) return;
+      if (rs.expanded) { renderRowDetail(rs); detailEl.hidden = false; }
+      else { detailEl.hidden = true; }
+      li.classList.toggle('expanded', rs.expanded);
+    });
+  }
+
+  // Fill the inline detail block under a row with args / result / session / intervention.
+  function renderRowDetail(rs) {
+    var detailEl = rs.li.querySelector('.row-detail');
+    if (!detailEl) return;
+    var ev = rs.callEv || rs.resultEv;
+    var res = rs.resultEv;
+    var html = '';
+    if (rs.callEv && rs.callEv.args != null) {
+      html += '<div class="rd-section"><div class="rd-label">Arguments</div>';
+      html += '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre></div>';
+    }
+    if (res) {
+      html += '<div class="rd-section"><div class="rd-label">Result</div>';
+      html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
+      html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? String(res.chars) : '\u2014') + '</div>';
+      html += '<div class="rd-kv"><span>durationMs:</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
+      if (res.tokens && typeof res.tokens.total === 'number') {
+        html += '<div class="rd-kv"><span>tokens:</span> ' + fmtOpt(res.tokens.total) + '</div>';
+      }
+      html += '</div>';
+    }
+    var fullSession = (ev && ev.sessionKey) || '';
+    if (fullSession) {
+      html += '<div class="rd-section"><div class="rd-label">Session</div><div class="rd-value">' + esc(fullSession) + '</div></div>';
+      var ivs = interventionsBySession.get(fullSession);
+      if (ivs && ivs.length) {
+        html += '<div class="rd-section"><div class="rd-label">Intervention</div>';
+        ivs.forEach(function (iv) {
+          html += '<div class="rd-kv"><span>rule:</span> ' + esc(iv.ruleId || '') + '</div>';
+          html += '<div class="rd-kv"><span>action:</span> ' + esc(iv.action || '') + '</div>';
+          if (iv.detail) html += '<div class="rd-kv"><span>detail:</span> ' + esc(iv.detail) + '</div>';
+        });
+        html += '</div>';
+      }
+    }
+    if (!html) html = '<div class="muted small">No additional details.</div>';
+    detailEl.innerHTML = html;
+  }
+
+  // Remove data entries whose DOM rows have been trimmed from the list.
+  function trimCallData() {
+    var list = $('stream-list');
+    var toDelete = [];
+    callRows.forEach(function (rs, id) {
+      if (rs.li.parentNode !== list) toDelete.push(id);
+    });
+    toDelete.forEach(function (id) { callRows.delete(id); });
+    orphanResultEntries = orphanResultEntries.filter(function (e) { return e.li.parentNode === list; });
+    var ivList = $('intervention-list');
+    interventionRowData.forEach(function (_d, li) {
+      if (li.parentNode !== ivList) interventionRowData.delete(li);
+    });
+  }
+
+  /* ---- client-side filters ------------------------------------------ */
+  // Apply the current filter inputs (tool / status / session) AND the active
+  // time-window to show/hide rows in both the stream list and the intervention
+  // log; update the stream "showing X of Y" count display. The filters compose:
+  // a row is shown only if it passes every active constraint.
+  function applyFilters() {
+    var toolF = ($('filter-tool').value || '').trim().toLowerCase();
+    var statusF = $('filter-status').value;
+    var sessionF = ($('filter-session').value || '').trim().toLowerCase();
+    var list = $('stream-list');
+    var visible = 0, total = 0;
+
+    for (var i = 0; i < list.children.length; i++) {
+      var child = list.children[i];
+      if (!child.classList.contains('stream-row')) continue;
+      total++;
+      var show = true;
+      if (toolF && (child.dataset.tool || '').toLowerCase().indexOf(toolF) === -1) show = false;
+      if (show && statusF) {
+        var st = child.dataset.status || '';
+        if (statusF === 'unmatched') {
+          show = !!child.classList.contains('orphan-row');
+        } else if (statusF === 'intervention') {
+          var sess2 = child.dataset.session || '';
+          var ivs = sess2 ? interventionsBySession.get(sess2) : null;
+          show = !!(ivs && ivs.length);
+        } else {
+          show = (st === statusF);
+        }
+      }
+      if (show && sessionF && (child.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) show = false;
+      if (show && !inTimeRange(child.dataset.at)) show = false;
+      child.style.display = show ? '' : 'none';
+      if (show) visible++;
+    }
+    var countEl = $('stream-count');
+    if (countEl) {
+      var anyFilter = !!(toolF || statusF || sessionF || timeRange.mode !== 'all');
+      countEl.textContent = anyFilter ? 'showing ' + visible + ' of ' + total : '';
+    }
+
+    // The intervention log has no tool/status, so it is constrained only by the
+    // session filter (when present) and the shared time-window.
+    var ivList = $('intervention-list');
+    for (var j = 0; j < ivList.children.length; j++) {
+      var ivRow = ivList.children[j];
+      if (!ivRow.classList.contains('stream-row')) continue;
+      var ivShow = true;
+      if (sessionF && (ivRow.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) ivShow = false;
+      if (ivShow && !inTimeRange(ivRow.dataset.at)) ivShow = false;
+      ivRow.style.display = ivShow ? '' : 'none';
+    }
+  }
+
+  // Wire up filter input listeners.
+  function bindFilterEvents() {
+    $('filter-tool').addEventListener('input', applyFilters);
+    $('filter-session').addEventListener('input', applyFilters);
+    $('filter-status').addEventListener('change', applyFilters);
+  }
+  // Append a policy.intervention row to the intervention log as distinct cells:
+  // Time | Rule id | Action (type badge) | Detail (message). Reuses the
+  // InterventionEvent fields (at, ruleId, action, detail?). Built via DOM so
+  // untrusted text is escaped automatically.
   function addInterventionRow(ev) {
     var li = el('li', 'stream-row intervention-row');
+    li.dataset.at = ev.at;
+    li.dataset.session = ev.sessionKey || '';
     var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
-    li.innerHTML =
-      '<span class="badge badge-interv">' + esc(ev.action || 'intervention') + '</span>' +
-      '<span class="i-rule muted">rule&nbsp;' + esc(ev.ruleId) + '</span>' +
-      '<span class="i-detail" title="' + esc(ev.detail) + '">' + esc(ev.detail || '') + '</span>' +
-      '<time class="s-time" title="' + esc(when) + '">' + fmtTime(ev.at) + '</time>';
+
+    var timeEl = el('time', 'iv-time', fmtTime(ev.at));
+    if (when) timeEl.title = when;
+    li.appendChild(timeEl);
+
+    var ruleEl = el('span', 'iv-rule muted', ev.ruleId || '');
+    if (ev.ruleId) ruleEl.title = 'Rule id: ' + ev.ruleId;
+    li.appendChild(ruleEl);
+
+    li.appendChild(el('span', 'badge badge-interv iv-action', ev.action || 'intervention'));
+
+    var detailEl = el('span', 'iv-detail', ev.detail || '');
+    if (ev.detail) detailEl.title = ev.detail;
+    li.appendChild(detailEl);
+
+    interventionRowData.set(li, { ruleId: ev.ruleId || '', action: ev.action || '', at: ev.at, detail: ev.detail || '', sessionKey: ev.sessionKey || '' });
     prependTrim($('intervention-list'), li, MAX_LIST_ITEMS);
     $('intervention-empty').hidden = true;
   }
@@ -258,11 +566,11 @@
     }
     switch (ev.type) {
       case 'tool.call':
-        localCounts.calls += 1; addCallRow(ev); updateLiveCounters(); break;
+        localCounts.calls += 1; createCallRow(ev); updateLiveCounters(); break;
       case 'tool.result':
-        localCounts.results += 1; addResultRow(ev); updateLiveCounters(); break;
+        localCounts.results += 1; matchAndRenderResult(ev); updateLiveCounters(); break;
       case 'policy.intervention':
-        localCounts.interventions += 1; addInterventionRow(ev); updateLiveCounters(); break;
+        localCounts.interventions += 1; addInterventionRow(ev); storeInterventionForDrillDown(ev); updateLiveCounters(); applyFilters(); break;
       default:
         break; // echo / unknown frame — nothing to render
     }
@@ -580,7 +888,7 @@
   // short header label, and show/hide the near-list #stream-status banner that
   // explains we're falling back to /api/events polling when no WS is available.
   function setConnected(on) {
-    var bannerText = 'Live stream disconnected — showing recent events via polling.';
+    var bannerText = 'Live stream is down — showing recent tool calls via /api/events polling. Upgrades to live automatically once a WebSocket connects.';
     var s = $('conn-status');
     if (s) {
       s.classList.toggle('connected', !!on);
@@ -696,6 +1004,209 @@
     if (keepaliveTimer != null) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
   }
 
+  /* ===================== global controls: time / clear / export ==== */
+  // True when an event timestamp (epoch ms) falls inside the active time window.
+  // 'all' keeps every row; a row with an unknown timestamp is excluded from any
+  // specific window (it cannot be proven to fall within it).
+  function inTimeRange(at) {
+    if (timeRange.mode === 'all') return true;
+    var t = (typeof at === 'number' && isFinite(at)) ? at : Number(at);
+    if (!isFinite(t)) return false;
+    if (timeRange.startMs != null && t < timeRange.startMs) return false;
+    if (timeRange.endMs != null && t > timeRange.endMs) return false;
+    return true;
+  }
+  // Parse a <input type="datetime-local"> value (local time) into epoch-ms or null.
+  function parseLocalDatetime(v) {
+    if (!v) return null;
+    var d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  // Compact local stamp for export file names, e.g. 20261004-143005.
+  function stamp() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+      '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+  // Escape a single CSV field (wrap in quotes and double any embedded quotes).
+  function csvCell(v) {
+    v = (v == null) ? '' : String(v);
+    if (/[",\r\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+    return v;
+  }
+  // Trigger a native browser download of text content via Blob + object URL (no deps).
+  function downloadFile(filename, text, mime) {
+    var blob = new Blob([text], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  // Build one export record for a logical tool-call row (call + optional result).
+  function callRecordFromRs(rs) {
+    var call = rs.callEv, res = rs.resultEv, primary = call || res;
+    return {
+      type: call ? 'call' : 'result',
+      at: primary && typeof primary.at === 'number' ? primary.at : undefined,
+      toolName: (call && call.toolName) || (res && res.toolName) || '',
+      sessionKey: (call && call.sessionKey) || (res && res.sessionKey) || '',
+      status: rs.status,
+      durationMs: res && typeof res.durationMs === 'number' ? res.durationMs : undefined,
+      tokensTotal: res && res.tokens && typeof res.tokens.total === 'number' ? res.tokens.total : undefined
+    };
+  }
+  // Build one export record from an intervention row's raw data.
+  function interventionRecord(d) {
+    return {
+      type: 'policy.intervention',
+      at: typeof d.at === 'number' ? d.at : undefined,
+      ruleId: d.ruleId || '',
+      action: d.action || '',
+      detail: d.detail || '',
+      sessionKey: d.sessionKey || ''
+    };
+  }
+  // Records for every currently-visible (post-filter) stream-list row.
+  function getVisibleCalls() {
+    var out = [];
+    var list = $('stream-list');
+    for (var i = 0; i < list.children.length; i++) {
+      var li = list.children[i];
+      if (!li.classList.contains('stream-row')) continue;
+      if (li.style.display === 'none') continue; // only rows passing the active filters
+      var rec = null;
+      if (li.classList.contains('orphan-row')) {
+        for (var k = 0; k < orphanResultEntries.length; k++) {
+          if (orphanResultEntries[k].li === li) { rec = callRecordFromRs(orphanResultEntries[k].rs); break; }
+        }
+      } else if (li.dataset.callId) {
+        var rs = callRows.get(li.dataset.callId);
+        if (rs) rec = callRecordFromRs(rs);
+      }
+      if (rec) out.push(rec);
+    }
+    return out;
+  }
+  // Records for every currently-visible (post-filter) intervention-list row.
+  function getVisibleInterventions() {
+    var out = [];
+    var list = $('intervention-list');
+    for (var i = 0; i < list.children.length; i++) {
+      var li = list.children[i];
+      if (!li.classList.contains('stream-row')) continue;
+      if (li.style.display === 'none') continue; // only rows passing the active filters
+      var d = interventionRowData.get(li);
+      if (d) out.push(interventionRecord(d));
+    }
+    return out;
+  }
+  // Serialize visible call records to RFC-4180 CSV text.
+  function buildCallsCsv(rows) {
+    var lines = ['type,at,time,toolName,sessionKey,status,durationMs,tokensTotal'];
+    rows.forEach(function (r) {
+      lines.push([
+        csvCell(r.type),
+        csvCell(r.at == null ? '' : String(Math.round(r.at))),
+        csvCell(fmtTime(r.at)),
+        csvCell(r.toolName || ''),
+        csvCell(r.sessionKey || ''),
+        csvCell(r.status),
+        csvCell(r.durationMs == null ? '' : Math.round(r.durationMs)),
+        csvCell(r.tokensTotal == null ? '' : Math.round(r.tokensTotal))
+      ].join(','));
+    });
+    return lines.join('\r\n');
+  }
+  // Serialize visible intervention records to RFC-4180 CSV text.
+  function buildInterventionsCsv(rows) {
+    var lines = ['type,at,time,ruleId,action,detail,sessionKey'];
+    rows.forEach(function (r) {
+      lines.push([
+        csvCell(r.type),
+        csvCell(r.at == null ? '' : String(Math.round(r.at))),
+        csvCell(fmtTime(r.at)),
+        csvCell(r.ruleId || ''),
+        csvCell(r.action || ''),
+        csvCell(r.detail || ''),
+        csvCell(r.sessionKey || '')
+      ].join(','));
+    });
+    return lines.join('\r\n');
+  }
+  // Download `records` as pretty-printed JSON under a timestamped filename.
+  function exportJson(records, name) {
+    downloadFile('mcp-manager-' + name + '-' + stamp() + '.json', JSON.stringify(records, null, 2), 'application/json');
+  }
+  // Download pre-built CSV text under a timestamped filename.
+  function exportCsv(text, name) {
+    downloadFile('mcp-manager-' + name + '-' + stamp() + '.csv', text, 'text/csv;charset=utf-8');
+  }
+  // Apply the custom from/to inputs to the active time window.
+  function applyCustomTimeRange() {
+    timeRange = { mode: 'custom' };
+    var f = parseLocalDatetime($('filter-time-from').value);
+    var t = parseLocalDatetime($('filter-time-to').value);
+    if (f != null) timeRange.startMs = f;
+    if (t != null) timeRange.endMs = t;
+    applyFilters();
+  }
+  // Handle the time-range preset selector: all / relative presets / custom. A
+  // relative preset captures "now" at selection time and applies a fixed window.
+  function onTimeRangeChange() {
+    var v = $('filter-time').value;
+    var showCustom = (v === 'custom');
+    $('filter-time-from').hidden = !showCustom;
+    $('filter-time-to').hidden = !showCustom;
+    if (showCustom) { applyCustomTimeRange(); return; }
+    if (v === 'all') { timeRange = { mode: 'all' }; }
+    else {
+      var mins = TIME_PRESETS[v];
+      var now = Date.now();
+      timeRange = { mode: 'preset', startMs: now - mins * 60000, endMs: now };
+    }
+    applyFilters();
+  }
+  // Clear the client-side buffered events and visible lists only. The dedup set is
+  // intentionally KEPT so already-seen events are not re-rendered by polling; new
+  // events still stream in. Server aggregates (stats panel) are NOT touched.
+  function clearOnScreenHistory() {
+    callRows.clear();
+    orphanResultEntries.length = 0;
+    interventionsBySession.clear();
+    interventionRowData.clear();
+    localCounts.calls = 0; localCounts.results = 0; localCounts.interventions = 0;
+    var sl = $('stream-list'); if (sl) sl.textContent = '';
+    var il = $('intervention-list'); if (il) il.textContent = '';
+    var se = $('stream-empty'); if (se) se.hidden = false;
+    var ie = $('intervention-empty'); if (ie) ie.hidden = false;
+    updateLiveCounters();
+    applyFilters();
+  }
+  // Wire the global controls (time range, clear on-screen history, export).
+  function bindControlEvents() {
+    var ft = $('filter-time');
+    if (ft) ft.addEventListener('change', onTimeRangeChange);
+    var tf = $('filter-time-from');
+    if (tf) tf.addEventListener('change', applyCustomTimeRange);
+    var tt = $('filter-time-to');
+    if (tt) tt.addEventListener('change', applyCustomTimeRange);
+    var bc = $('btn-clear-history');
+    if (bc) bc.addEventListener('click', clearOnScreenHistory);
+    var cej = $('btn-export-calls-json');
+    if (cej) cej.addEventListener('click', function () { exportJson(getVisibleCalls(), 'calls'); });
+    var cec = $('btn-export-calls-csv');
+    if (cec) cec.addEventListener('click', function () { exportCsv(buildCallsCsv(getVisibleCalls()), 'calls'); });
+    var iij = $('btn-export-interventions-json');
+    if (iij) iij.addEventListener('click', function () { exportJson(getVisibleInterventions(), 'interventions'); });
+    var iic = $('btn-export-interventions-csv');
+    if (iic) iic.addEventListener('click', function () { exportCsv(buildInterventionsCsv(getVisibleInterventions()), 'interventions'); });
+  }
+
   /* ============================== wiring ============================= */
   function bindFormEvents() {
     $('matcher-type').addEventListener('change', function () {
@@ -713,6 +1224,8 @@
   }
   function init() {
     bindFormEvents();
+    bindFilterEvents();
+    bindControlEvents();
     renderMatcherFields(curMatcherType);
     renderActionFields(curActionType);
     updateFormMode();
