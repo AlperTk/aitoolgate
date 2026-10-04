@@ -234,3 +234,57 @@
 .top-tools th.active ~ * {} /* no-op to keep specificity simple */
 /* Highlight active sorted column cells via a class added by JS (optional) */
 .top-tools td.sorted-col { background: rgba(76, 141, 255, 0.04); }
+
+/* ------------------------------- scrollbars ------------------------ */
+/* Refined dark-theme scrollbar scoped ONLY to the dashboard's scroll
+   containers (never document-wide). The thumb is a subtle, rounded,
+   muted-gray pill taken from tokens.css (--scroll-thumb) that lightens on
+   hover (--scroll-thumb-hover). Firefox uses the standard
+   scrollbar-width / scrollbar-color pair; WebKit/Blink use 8px pseudo
+   elements with a transparent track so only the rounded thumb shows. */
+.list-wrap,               /* stream + intervention log call lists */
+.tools-scroll,            /* stats panel Top Tools region (wide viewports) */
+#interventions-panel,     /* intervention log card (wide viewports) */
+.rule-list,               /* policy-rules list */
+.rd-pre {                 /* drill-down code/args surfaces */
+  scrollbar-width: thin;                            /* Firefox */
+  scrollbar-color: var(--scroll-thumb) transparent; /* Firefox: thumb, track */
+}
+.list-wrap::-webkit-scrollbar,
+.tools-scroll::-webkit-scrollbar,
+#interventions-panel::-webkit-scrollbar,
+.rule-list::-webkit-scrollbar,
+.rd-pre::-webkit-scrollbar {
+  width: 8px;                                   /* vertical bar */
+  height: 8px;                                  /* horizontal bar */
+  background: transparent;                       /* transparent track */
+}
+.list-wrap::-webkit-scrollbar-track,
+.tools-scroll::-webkit-scrollbar-track,
+#interventions-panel::-webkit-scrollbar-track,
+.rule-list::-webkit-scrollbar-track,
+.rd-pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+.list-wrap::-webkit-scrollbar-thumb,
+.tools-scroll::-webkit-scrollbar-thumb,
+#interventions-panel::-webkit-scrollbar-thumb,
+.rule-list::-webkit-scrollbar-thumb,
+.rd-pre::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb);
+  border-radius: 999px;                         /* fully rounded pill */
+}
+.list-wrap::-webkit-scrollbar-thumb:hover,
+.tools-scroll::-webkit-scrollbar-thumb:hover,
+#interventions-panel::-webkit-scrollbar-thumb:hover,
+.rule-list::-webkit-scrollbar-thumb:hover,
+.rd-pre::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);   /* lighter on hover */
+}
+.list-wrap::-webkit-scrollbar-corner,
+.tools-scroll::-webkit-scrollbar-corner,
+#interventions-panel::-webkit-scrollbar-corner,
+.rule-list::-webkit-scrollbar-corner,
+.rd-pre::-webkit-scrollbar-corner {
+  background: transparent;                       /* empty corner where tracks meet */
+}

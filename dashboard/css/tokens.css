@@ -38,6 +38,13 @@
   --fw-bold: 700;
   --lh-tight: 1.2;     /* stat numbers        */
   --lh-snug: 1.4;      /* data rows / table cells */
+
+  /* Scrollbar theme (dark): a subtle, rounded, muted-gray thumb that lightens on
+     hover. Values are alpha variants of --muted (#8b98a5); reused by the
+     dashboard scroll containers in components.css via --scroll-thumb and
+     --scroll-thumb-hover. */
+  --scroll-thumb: rgba(139, 152, 165, 0.5);       /* ~50% muted gray (default thumb) */
+  --scroll-thumb-hover: rgba(139, 152, 165, 0.85); /* ~85% muted gray (hover/horizontal) */
 }
 
 * { box-sizing: border-box; }

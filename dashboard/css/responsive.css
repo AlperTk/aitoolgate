@@ -43,12 +43,40 @@
     min-height: 120px;
     max-height: none;
   }
-  /* Stats + interventions become column flex boxes that scroll vertically
-     inside themselves (on the panel itself — no markup change needed). */
-  #stats-panel,
+  /* Interventions panel becomes a column flex box that scrolls vertically
+     inside itself (behaviour unchanged). */
   #interventions-panel {
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+  }
+  /* Stats panel: NO panel-level scroll. It stays a bounded column flex box; only
+     its Top Tools region scrolls internally, so the top area (h2 + count tiles +
+     footers) keeps natural height and never scrolls out of view. */
+  #stats-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;      /* shrinkable within the capped grid row (set above too) */
+  }
+  #stats-panel > *:not(.tools-scroll) { flex: none; }
+  .tools-scroll {
+    flex: 1 1 auto;     /* the single scrolling region inside the stats panel */
+    min-height: 0;
+    overflow: auto;     /* vertical + horizontal (long tool names scroll sideways) */
+  }
+  /* Sticky Top Tools column header (scoped to this table only): rows scroll beneath
+     a pinned header row. The opaque card surface hides rows passing underneath; an
+     inset shadow keeps the separator line attached to the pinned header, and the
+     active-column tint still shows on top of the opaque base. */
+  .tools-scroll .dt-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--border);
+    z-index: 2;
+  }
+  .tools-scroll .dt-table th.active {
+    background: rgba(76, 141, 255, 0.12);
   }
 }
