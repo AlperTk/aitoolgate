@@ -1,0 +1,17 @@
+{
+  "name": "mcp-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local, LiteLLM-style model proxy with a programmable tool-monitoring and interception layer over the LLM request/response stream.",
+  "scripts": {
+    "dev": "npm run build && node dist/src/server/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/src/server/index.js",
+    "test": "node --test 'dist/tests/**/*.test.js'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}

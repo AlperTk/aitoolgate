@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mcp-manager · tool-monitoring dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Header: title + WebSocket connection status indicator -->
+    <header class="app-header">
+      <div class="app-title">
+        <h1>mcp-manager</h1>
+        <span class="subtitle">tool-monitoring &amp; policy engine</span>
+      </div>
+      <div id="conn-status" class="conn disconnected" title="WebSocket connection status">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-label">disconnected</span>
+      </div>
+    </header>
+
+    <!-- Non-fatal notice banner (shown when the API is unreachable / errors) -->
+    <div id="notice" class="notice" hidden></div>
+
+    <main class="dash-grid">
+      <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
+      <section id="stream-panel" class="card">
+        <h2>Live tool calls</h2>
+        <div class="list-wrap">
+          <ul id="stream-list" class="stream-list"></ul>
+          <div id="stream-empty" class="empty">Waiting for tool calls…</div>
+        </div>
+      </section>
+
+      <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->
+      <section id="stats-panel" class="card">
+        <h2>Counts &amp; top tools</h2>
+        <div class="stat-row">
+          <div class="stat"><span id="total-calls" class="num">0</span><label>calls</label></div>
+          <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>
+        </div>
+        <div class="stat-row live">
+          <div class="stat"><span id="live-calls" class="num small">0</span><label>this session</label></div>
+          <div class="stat"><span id="live-results" class="num small">0</span><label>results</label></div>
+          <div class="stat"><span id="live-interventions" class="num small">0</span><label>interventions</label></div>
+        </div>
+        <table class="top-tools">
+          <thead>
+            <tr><th scope="col">Tool</th><th scope="col" class="num-col">Calls</th></tr>
+          </thead>
+          <tbody id="top-tools">
+            <tr><td colspan="2" class="muted">—</td></tr>
+          </tbody>
+        </table>
+        <div class="muted small">Interventions retained: <span id="interventions-retained">0</span></div>
+      </section>
+
+      <!-- Panel 3: intervention log -->
+      <section id="interventions-panel" class="card">
+        <h2>Intervention log</h2>
+        <div class="list-wrap">
+          <ul id="intervention-list" class="stream-list"></ul>
+          <div id="intervention-empty" class="empty">No interventions yet.</div>
+        </div>
+      </section>
+
+      <!-- Panel 4: rule authoring UI -->
+      <section id="rules-panel" class="card rules-card">
+        <h2>Policy rules</h2>
+        <ul id="rule-list" class="rule-list"></ul>
+        <div id="rule-empty" class="empty">No rules defined.</div>
+
+        <form id="rule-form" novalidate>
+          <div class="field-row">
+            <div class="field">
+              <label for="matcher-type">Matcher type</label>
+              <select id="matcher-type">
+                <option value="loop">loop — consecutive identical calls</option>
+                <option value="toolName">toolName — match by tool name</option>
+                <option value="argPattern">argPattern — match arguments</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="action-type">Action type</label>
+              <select id="action-type">
+                <option value="block">block — drop call + message</option>
+                <option value="hideTool">hideTool — remove tools</option>
+                <option value="rewriteArgs">rewriteArgs — edit arguments</option>
+                <option value="injectMessage">injectMessage — add a message</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field sub"><div class="sub-label">Matcher fields</div>
+              <div id="matcher-fields" class="fields"></div>
+            </div>
+            <div class="field sub"><div class="sub-label">Action fields</div>
+              <div id="action-fields" class="fields"></div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field grow">
+              <label for="rule-description">Description</label>
+              <input id="rule-description" type="text" placeholder="What this rule does" />
+            </div>
+            <div class="field">
+              <label for="rule-priority">Priority</label>
+              <input id="rule-priority" type="number" step="1" placeholder="(default)" />
+            </div>
+          </div>
+
+          <div class="field-row form-foot">
+            <label class="check">
+              <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
+            </label>
+            <span class="spacer"></span>
+            <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
+            <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
+          </div>
+          <div id="form-error" class="form-error" role="alert" hidden></div>
+        </form>
+      </section>
+    </main>
+
+    <!-- Classic (non-module) script; no bundler, no dependencies. -->
+    <script src="app.js"></script>
+  </body>
+</html>
