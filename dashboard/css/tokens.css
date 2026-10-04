@@ -15,6 +15,14 @@
   --green: #3fb950;
   --red: #f85149;
   --amber: #d29922;
+
+  /* Status-badge tones (light) — text + dot color for stream-row status/action pills.
+     Background/border alpha is derived from these same tones in components.css. */
+  --c-st-ok: #7ed491;
+  --c-st-pending: #8bbcff;
+  --c-st-error: #ff9b94;
+  --c-st-amber: #f3d08a;
+
   --radius: 10px;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 30px rgba(0, 0, 0, 0.35);
 
