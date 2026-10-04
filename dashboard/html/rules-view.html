@@ -1,0 +1,63 @@
+      <div id="view-rules" class="view">
+        <section id="rules-panel" class="card rules-card">
+        <h2>Policy rules</h2>
+        <ul id="rule-list" class="rule-list"></ul>
+        <div id="rule-empty" class="empty">No rules defined.</div>
+
+        <form id="rule-form" novalidate>
+          <div class="field-row">
+            <div class="field">
+              <label for="matcher-type">Matcher type</label>
+              <select id="matcher-type">
+                <option value="loop">loop — consecutive identical calls</option>
+                <option value="toolName">toolName — match by tool name</option>
+                <option value="argPattern">argPattern — match arguments</option>
+              </select>
+              <div class="hint">Choose how the rule detects matching tool calls.</div>
+            </div>
+            <div class="field">
+              <label for="action-type">Action type</label>
+              <select id="action-type">
+                <option value="block">block — drop call + message</option>
+                <option value="hideTool">hideTool — remove tools</option>
+                <option value="rewriteArgs">rewriteArgs — edit arguments</option>
+                <option value="injectMessage">injectMessage — add a message</option>
+              </select>
+              <div class="hint">Choose what happens when a call matches.</div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field sub"><div class="sub-label">Matcher fields</div>
+              <div id="matcher-fields" class="fields"></div>
+            </div>
+            <div class="field sub"><div class="sub-label">Action fields</div>
+              <div id="action-fields" class="fields"></div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field grow">
+              <label for="rule-description">Description</label>
+              <input id="rule-description" type="text" placeholder="What this rule does" />
+              <div class="hint">Shown as the rule's label in the list; optional.</div>
+            </div>
+            <div class="field">
+              <label for="rule-priority">Priority</label>
+              <input id="rule-priority" type="number" step="1" placeholder="(default)" />
+              <div class="hint">Lower number = higher precedence; leave blank for the default order.</div>
+            </div>
+          </div>
+
+          <div class="field-row form-foot">
+            <label class="check" title="Rule is enforced only while checked">
+              <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
+            </label>
+            <span class="spacer"></span>
+            <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
+            <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
+          </div>
+          <div id="form-error" class="form-error" role="alert" hidden></div>
+        </form>
+      </section>
+      </div>

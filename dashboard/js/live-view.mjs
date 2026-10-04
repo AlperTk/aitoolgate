@@ -45,6 +45,41 @@ export function setNumCellText(cell, v) {
   if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = fmtOpt(v);
 }
 
+
+/* ---- stream-head self-healing -------------------------------------- */
+// Canonical column headers for the live call stream, matching the shared
+// 10-track grid template used by createCallRow() rows. Normalizing the
+// header at init guarantees correct structure regardless of the served HTML
+// state (stale cache / service worker / older copy); idempotent by design.
+var STREAM_HEAD_CELLS = [
+  ['Status', ''],
+  ['Tool', ''],
+  ['Session', ''],
+  ['Time', ''],
+  ['Dur (ms)', 'num-col'],
+  ['In', 'num-col'],
+  ['Out', 'num-col'],
+  ['Total', 'num-col'],
+  ['Size', 'num-col'],
+];
+// Rebuild the .stream-head so it contains exactly the canonical 10 cells,
+// mirroring the .row-main layout. Container attributes are left intact; the
+// final empty cell carries aria-hidden instead of scope.
+export function normalizeStreamHead() {
+  var head = $('stream-head');
+  if (!head) return;
+  while (head.firstChild) head.removeChild(head.firstChild);
+  STREAM_HEAD_CELLS.forEach(function (c) {
+    var th = el('th', c[1]);
+    th.textContent = c[0];
+    th.setAttribute('scope', 'col');
+    head.appendChild(th);
+  });
+  var empty = el('th', '');
+  empty.setAttribute('aria-hidden', 'true');
+  head.appendChild(empty);
+}
+
 /* ---- unified call-row rendering ---------------------------------------
  * One row per logical tool-call, tracked by call id in `state.callRows`. A
  * matching tool.result pairs back to its call row (by toolCallId or same-
@@ -63,7 +98,9 @@ export function createCallRow(ev) {
 
   var main = el('div', 'row-main');
   main.appendChild(el('span', 'badge badge-pending', 'pending'));
-  main.appendChild(el('span', 's-tool', ev.toolName || ''));
+  var tool = el('span', 's-tool', ev.toolName || '');
+  tool.title = ev.toolName || '';
+  main.appendChild(tool);
   var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
@@ -128,7 +165,9 @@ export function createOrphanResultRow(ev) {
   var isErr = ev.ok === false;
   var main = el('div', 'row-main');
   main.appendChild(el('span', 'badge ' + (isErr ? 'badge-err' : 'badge-ok'), isErr ? 'error' : 'ok'));
-  main.appendChild(el('span', 's-tool', ev.toolName || ''));
+  var tool = el('span', 's-tool', ev.toolName || '');
+  tool.title = ev.toolName || '';
+  main.appendChild(tool);
   var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);

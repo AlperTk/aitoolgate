@@ -1,0 +1,47 @@
+/* mcp-manager dashboard css — tokens: design tokens, global reset, and page background (:root vars + box-sizing + html/body) */
+/* ==========================================================================
+ * mcp-manager dashboard — clean, modern dark theme.
+ * No external fonts / CDNs / icons. System font stack only.
+ * ========================================================================== */
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #1c232e;
+  --border: rgba(255, 255, 255, 0.09);
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #4c8dff;
+  --green: #3fb950;
+  --red: #f85149;
+  --amber: #d29922;
+  --radius: 10px;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  /* type scale */
+  --fs-2xs: 0.72rem;   /* badges, micro hints  */
+  --fs-xs:  0.8rem;    /* labels, counts       */
+  --fs-sm:  0.85rem;   /* secondary data cells, controls */
+  --fs-md:  0.9rem;    /* table rows, primary controls */
+  --fs-lg:  1.15rem;   /* stat tile small      */
+  --fs-xl:  1.25rem;   /* app title           */
+  --fs-stat: 1.8rem;   /* stat tile number    */
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --lh-tight: 1.2;     /* stat numbers        */
+  --lh-snug: 1.4;      /* data rows / table cells */
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: radial-gradient(1200px 600px at 50% -10%, #152036 0%, var(--bg) 55%) fixed, var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}

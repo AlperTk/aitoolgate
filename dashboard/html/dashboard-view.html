@@ -1,0 +1,79 @@
+      <div id="view-dashboard" class="view is-active">
+        <div class="dash-grid">
+          <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
+          <section id="stream-panel" class="card">
+        <h2>Live tool calls</h2>
+        <!-- Shown (by app.js) only when no WebSocket is available; explains the polling fallback -->
+        <div id="stream-status" class="stream-status" role="status" hidden
+             style="margin:0 0 0.8rem;padding:0.5rem 0.75rem;border:1px solid var(--border);border-left:3px solid var(--amber);background:rgba(210,153,34,0.08);color:#f3d08a;border-radius:var(--radius);font-size:0.88rem;"></div>
+        <div class="stream-filters">
+          <input id="filter-tool" type="text" placeholder="Tool name…" />
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="ok">OK</option>
+            <option value="error">Error</option>
+            <option value="intervention">Intervention</option>
+            <option value="unmatched">Unmatched result</option>
+          </select>
+          <input id="filter-session" type="text" placeholder="Session key…" />
+          <span id="stream-count" class="muted small"></span>
+        </div>
+        <div class="list-wrap">
+          <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
+            <th scope="col">Status</th>
+            <th scope="col">Tool</th>
+            <th scope="col">Session</th>
+            <th scope="col">Time</th>
+            <th scope="col" class="num-col">Dur (ms)</th>
+            <th scope="col" class="num-col">In</th>
+            <th scope="col" class="num-col">Out</th>
+            <th scope="col" class="num-col">Total</th>
+            <th scope="col" class="num-col">Size</th>
+            <th scope="col" aria-hidden="true"></th>
+          </div>
+          <ul id="stream-list" class="stream-list"></ul>
+          <div id="stream-empty" class="empty">Waiting for tool calls…</div>
+        </div>
+        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters.</div>
+      </section>
+
+      <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->
+      <section id="stats-panel" class="card">
+        <h2>Counts &amp; top tools</h2>
+        <div class="stat-row">
+          <div class="stat"><span id="total-calls" class="num">0</span><label>calls</label></div>
+          <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><span id="avg-duration" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>avg (ms)</label></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><span id="total-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>tokens</label></div>
+          <div class="stat"><span id="input-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>input</label></div>
+          <div class="stat"><span id="output-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>output</label></div>
+        </div>
+        <div class="stat-row live">
+          <div class="stat"><span id="live-calls" class="num small">0</span><label>this session</label></div>
+          <div class="stat"><span id="live-results" class="num small">0</span><label>results</label></div>
+          <div class="stat"><span id="live-interventions" class="num small">0</span><label>interventions</label></div>
+        </div>
+        <div id="top-tools"></div>
+        <div class="muted small">Values shown as "—" have no data yet; they populate as tool results arrive.</div>
+        <div class="muted small">Interventions retained: <span id="interventions-retained">0</span></div>
+      </section>
+
+      <!-- Panel 3: intervention log -->
+      <section id="interventions-panel" class="card">
+        <h2>Intervention log</h2>
+        <div class="list-wrap">
+          <ul id="intervention-list" class="stream-list"></ul>
+          <div id="intervention-empty" class="empty iv-empty">
+            <svg class="iv-empty-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.5-7 4 14 2.5-7H21"/></svg>
+            <div>No interventions yet</div>
+            <div class="small muted">Policy rule actions applied to live tool calls will appear here.</div>
+          </div>
+        </div>
+      </section>
+        </div>
+      </div>

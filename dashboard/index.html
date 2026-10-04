@@ -7,26 +7,17 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <!-- Header: title + WebSocket connection status indicator -->
-    <header class="app-header">
-      <div class="app-title">
-        <h1>mcp-manager</h1>
-        <span class="subtitle">tool-monitoring &amp; policy engine</span>
-      </div>
-      <nav class="app-nav" aria-label="Dashboard pages">
-        <a class="nav-link" href="#/">Dashboard</a>
-        <a class="nav-link" href="#/rules">Policy Rules</a>
-      </nav>
-      <div id="conn-status" class="conn disconnected" title="WebSocket connection status">
-        <span id="conn-dot" class="dot"></span>
-        <span id="conn-label">disconnected</span>
-      </div>
-    </header>
+    <!-- app-header-slot is replaced at runtime by js/layout.mjs with the markup from
+         html/header.html (the entire <header> block). -->
+    <div id="app-header-slot"></div>
 
-    <!-- Non-fatal notice banner (shown when the API is unreachable / errors) -->
+    <!-- Non-fatal notice banner (shown when the API is unreachable / errors).
+         Static markup kept in this thin shell: it sits directly between the header
+         and <main>, so it is not mounted from a fragment file. -->
     <div id="notice" class="notice" hidden></div>
 
-    <!-- Global controls: time-range filter + clear on-screen history + export -->
+    <!-- Global controls: time-range filter + clear on-screen history + export.
+         Static markup kept in this thin shell (lives between the header and <main>). -->
     <div id="dash-controls" class="dash-controls">
       <div class="ctl-group" role="group" aria-label="Time range">
         <span class="ctl-label">Time</span>
@@ -56,8 +47,11 @@
     </div>
 
     <main class="app-main">
-      <!-- Dashboard view: big live stream + counts + intervention log -->
-      <div id="view-dashboard" class="view is-active">
+            <!-- Dashboard view (live tool calls + counts/top tools + intervention log): static
+           markup kept inline in this shell so the stream header's column cells are present
+           before JS runs; app.js self-heals #stream-head via live-view.mjs
+           normalizeStreamHead() to guarantee the canonical 10-cell layout. -->
+<div id="view-dashboard" class="view is-active">
         <div class="dash-grid">
           <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
           <section id="stream-panel" class="card">
@@ -78,18 +72,19 @@
           <input id="filter-session" type="text" placeholder="Session key…" />
           <span id="stream-count" class="muted small"></span>
         </div>
-        <div class="stream-head" role="row" aria-label="Live call columns">
-          <th scope="col">Status</th>
-          <th scope="col">Tool</th>
-          <th scope="col">Session</th>
-          <th scope="col">Time</th>
-          <th scope="col" class="num-col">Duration(ms)</th>
-          <th scope="col" class="num-col">In</th>
-          <th scope="col" class="num-col">Out</th>
-          <th scope="col" class="num-col">Total</th>
-          <th scope="col" class="num-col">Size</th>
-        </div>
         <div class="list-wrap">
+          <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
+            <th scope="col">Status</th>
+            <th scope="col">Tool</th>
+            <th scope="col">Session</th>
+            <th scope="col">Time</th>
+            <th scope="col" class="num-col">Dur (ms)</th>
+            <th scope="col" class="num-col">In</th>
+            <th scope="col" class="num-col">Out</th>
+            <th scope="col" class="num-col">Total</th>
+            <th scope="col" class="num-col">Size</th>
+            <th scope="col" aria-hidden="true"></th>
+          </div>
           <ul id="stream-list" class="stream-list"></ul>
           <div id="stream-empty" class="empty">Waiting for tool calls…</div>
         </div>
@@ -116,14 +111,7 @@
           <div class="stat"><span id="live-results" class="num small">0</span><label>results</label></div>
           <div class="stat"><span id="live-interventions" class="num small">0</span><label>interventions</label></div>
         </div>
-        <table class="top-tools">
-          <thead>
-            <tr><th scope="col" class="sortable" data-sort="tool" aria-sort="none">Tool<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="calls" aria-sort="none">Calls<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="avg" aria-sort="none" title="No data yet — appears once tool results arrive.">Avg (ms)<span class="sort-ind"></span></th><th scope="col" class="num-col sortable" data-sort="max" aria-sort="none" title="No data yet — appears once tool results arrive.">Max (ms)<span class="sort-ind"></span></th></tr>
-          </thead>
-          <tbody id="top-tools">
-            <tr><td colspan="4" class="muted" title="No data yet — appears once tool results arrive.">—</td></tr>
-          </tbody>
-        </table>
+        <div id="top-tools"></div>
         <div class="muted small">Values shown as "—" have no data yet; they populate as tool results arrive.</div>
         <div class="muted small">Interventions retained: <span id="interventions-retained">0</span></div>
       </section>
@@ -142,74 +130,13 @@
       </section>
         </div>
       </div>
-
-      <!-- Policy-rules view: standalone rule authoring page -->
-      <div id="view-rules" class="view">
-        <section id="rules-panel" class="card rules-card">
-        <h2>Policy rules</h2>
-        <ul id="rule-list" class="rule-list"></ul>
-        <div id="rule-empty" class="empty">No rules defined.</div>
-
-        <form id="rule-form" novalidate>
-          <div class="field-row">
-            <div class="field">
-              <label for="matcher-type">Matcher type</label>
-              <select id="matcher-type">
-                <option value="loop">loop — consecutive identical calls</option>
-                <option value="toolName">toolName — match by tool name</option>
-                <option value="argPattern">argPattern — match arguments</option>
-              </select>
-              <div class="hint">Choose how the rule detects matching tool calls.</div>
-            </div>
-            <div class="field">
-              <label for="action-type">Action type</label>
-              <select id="action-type">
-                <option value="block">block — drop call + message</option>
-                <option value="hideTool">hideTool — remove tools</option>
-                <option value="rewriteArgs">rewriteArgs — edit arguments</option>
-                <option value="injectMessage">injectMessage — add a message</option>
-              </select>
-              <div class="hint">Choose what happens when a call matches.</div>
-            </div>
-          </div>
-
-          <div class="field-row">
-            <div class="field sub"><div class="sub-label">Matcher fields</div>
-              <div id="matcher-fields" class="fields"></div>
-            </div>
-            <div class="field sub"><div class="sub-label">Action fields</div>
-              <div id="action-fields" class="fields"></div>
-            </div>
-          </div>
-
-          <div class="field-row">
-            <div class="field grow">
-              <label for="rule-description">Description</label>
-              <input id="rule-description" type="text" placeholder="What this rule does" />
-              <div class="hint">Shown as the rule's label in the list; optional.</div>
-            </div>
-            <div class="field">
-              <label for="rule-priority">Priority</label>
-              <input id="rule-priority" type="number" step="1" placeholder="(default)" />
-              <div class="hint">Lower number = higher precedence; leave blank for the default order.</div>
-            </div>
-          </div>
-
-          <div class="field-row form-foot">
-            <label class="check" title="Rule is enforced only while checked">
-              <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
-            </label>
-            <span class="spacer"></span>
-            <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
-            <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
-          </div>
-          <div id="form-error" class="form-error" role="alert" hidden></div>
-        </form>
-      </section>
-      </div>
+      <!-- view-rules-slot is replaced at runtime by js/layout.mjs with the markup from
+           html/rules-view.html (the entire <div id="view-rules"> page view). -->
+      <div id="view-rules-slot"></div>
     </main>
 
-    <!-- Classic (non-module) script; no bundler, no dependencies. -->
+    <!-- Classic (non-module) script; no bundler, no dependencies.
+         app.js mounts the html/*.html fragments (layout.mjs) before wiring features. -->
     <script type="module" src="app.js"></script>
   </body>
 </html>

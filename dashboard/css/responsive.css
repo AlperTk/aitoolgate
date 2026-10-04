@@ -1,0 +1,13 @@
+/* mcp-manager dashboard css — responsive: trailing @media breakpoints (max-width 960px and 560px) */
+/* ------------------------------- responsive ------------------------ */
+@media (max-width: 960px) {
+  .dash-grid { grid-template-columns: 1fr; }
+  #stream-panel, #stats-panel, #interventions-panel { grid-column: span 1; }
+  /* Relax the big live-view height on small screens; let it size to content. */
+  #stream-panel { min-height: auto; }
+  #view-rules { padding: 1rem; }
+}
+@media (max-width: 560px) {
+  .field-row { grid-template-columns: 1fr; }
+  .app-header { flex-direction: column; align-items: flex-start; }
+}

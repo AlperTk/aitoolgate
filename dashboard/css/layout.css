@@ -1,0 +1,121 @@
+/* mcp-manager dashboard css — layout: app header / nav / connection status, notice banner, view switching, dashboard grid, and card panels */
+/* ------------------------------- header ---------------------------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(13, 17, 23, 0.7);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.app-title { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.app-title h1 { font-size: var(--fs-xl); letter-spacing: 0.2px; }
+.subtitle { color: var(--muted); font-size: var(--fs-md); }
+
+/* Header navigation: two client-side page links (Dashboard / Policy Rules).
+   The active link gets an accent background + underline so the current page
+   is obvious at a glance. */
+.app-nav { display: inline-flex; align-items: center; gap: 0.35rem; }
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  padding: 0.35rem 0.7rem;
+  border-radius: 7px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.nav-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.nav-link.is-active {
+  color: var(--text);
+  background: rgba(76, 141, 255, 0.16);
+  border-bottom-color: var(--accent);
+}
+
+/* Connection status indicator (green = connected, red = disconnected). */
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+}
+.conn .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
+.conn.connected { color: var(--text); }
+.conn.connected .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.conn.disconnected .dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+/* ------------------------------- notice ---------------------------- */
+.notice {
+  margin: 1rem 1.5rem 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  background: rgba(210, 153, 34, 0.08);
+  color: #f3d08a;
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+}
+.notice[hidden] { display: none; }
+
+/* ------------------------------- layout ---------------------------- */
+/* Page views: only the active view is shown. The other stays in the DOM so
+   background data flow (WS / polling / timers) keeps running across pages. */
+.view { display: none; }
+.view.is-active { display: block; }
+
+/* Dashboard view: a big live stream alongside the stats column, with a
+   full-width intervention log beneath it. */
+.dash-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 1.5rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+/* Big live view: spans two columns and grows to most of the viewport height,
+   with its own internal scroll on the call list. */
+#stream-panel {
+  grid-column: span 2;
+  min-height: clamp(460px, 62vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+#stream-panel .list-wrap {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+#stats-panel { grid-column: span 1; }
+#interventions-panel { grid-column: span 3; }
+
+/* Rules view: a clean standalone card page centered like the dashboard grid. */
+#view-rules { padding: 1.5rem; max-width: 1400px; margin: 0 auto; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem 1.1rem;
+  min-width: 0;
+}
+.card h2 {
+  font-size: 1rem;
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  margin-bottom: 0.9rem;
+}
