@@ -194,7 +194,7 @@
   gap: 0.45rem;
   width: max-content;
   justify-self: start;
-  padding: 0.2rem 0;
+  padding: 0.2rem 0.4rem;
   line-height: 1;
 }
 /* Leading status dot: a small round chip colored via currentColor so it always matches
