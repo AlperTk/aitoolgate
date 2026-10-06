@@ -57,3 +57,15 @@ test('D1 toggling correctly re-renders as the rule count crosses zero both ways'
   R.renderRules([spec('r1', false)]); // a disabled (is-disabled) rule still counts
   assert.equal(EMPTY.hidden, true, 'becomes hidden again once any rule exists');
 });
+
+test('D1 non-array inputs (null/undefined) show the empty state without throwing', () => {
+  R.renderRules(null);
+  assert.equal(EMPTY.hidden, false, 'null input → empty state visible');
+  assert.equal(LIST.children.length, 0, 'no rule cards rendered');
+  R.renderRules(undefined);
+  assert.equal(EMPTY.hidden, false, 'undefined input → empty state visible');
+  assert.equal(LIST.children.length, 0);
+  R.renderRules(spec('r1', true)); // a single spec object (not wrapped in an array)
+  assert.equal(EMPTY.hidden, false, 'non-array single spec treated as zero rules');
+  assert.equal(LIST.children.length, 0);
+});

@@ -232,3 +232,24 @@ test('D2 readStreamFilters normalizes controls; rowPassesFilters ANDs all constr
   FS.value = '';
   assert.equal(M.lv.rowPassesFilters(hit, M.lv.readStreamFilters()), true, 'empty status imposes no constraint');
 });
+
+test('D2 tool filter AND time-range combine; clearing one does not reset the other', () => {
+  const now = Date.now();
+  const recent = addRow({ tool: 'Search', status: 'ok', session: 's1', at: now - 60_000 });
+  const oldMatch = addRow({ tool: 'Search', status: 'ok', session: 's2', at: now - 3 * 3600_000 });
+  const recentOther = addRow({ tool: 'ReadFile', status: 'ok', session: 's3', at: now - 60_000 });
+  // Activate both tool and time filters simultaneously (all four controls combine as AND).
+  setF('filter-tool', 'search'); fire('filter-tool', 'input');
+  FTIME.value = '1h'; fire('filter-time', 'change');
+  assert.deepEqual(visibleRows(), [recent], 'only the recent Search row passes both constraints');
+  assert.match(S.byId('stream-count')!.textContent, /^showing 1 of 3$/);
+  // Clearing the TIME filter (back to "all") must NOT reset the tool filter.
+  FTIME.value = 'all'; fire('filter-time', 'change');
+  assert.equal(M.state.timeRange.mode, 'all');
+  assert.deepEqual(visibleRows(), [recent, oldMatch], 'tool filter still active after time reset');
+  // Clearing the TOOL filter must NOT reset the time filter (set it again first).
+  FTIME.value = '1h'; fire('filter-time', 'change');
+  setF('filter-tool', ''); fire('filter-tool', 'input');
+  assert.equal(M.state.timeRange.mode, 'preset', 'time filter survives a tool reset');
+  assert.deepEqual(visibleRows(), [recent, recentOther], 'only recent rows remain');
+});

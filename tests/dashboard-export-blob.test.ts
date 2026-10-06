@@ -168,3 +168,29 @@ test('D3 all four exports handle the empty case gracefully without throwing', ()
     assert.ok(typeof lastAnchor().download === 'string' && lastAnchor().download.length > 0);
   }
 });
+
+test('D3 empty JSON export produces exactly [] and empty CSV is header-only (single line)', async () => {
+  // Calls JSON empty → exactly "[]" (not null, not missing)
+  S.blobs.length = 0;
+  CJSON.click();
+  const cjText = await lastBlob().text();
+  assert.deepEqual(JSON.parse(cjText), [], 'empty calls JSON is an empty array');
+  assert.match(cjText.trim(), /^\[\]$/, 'pretty-printed empty array');
+  // Interventions JSON empty → exactly "[]"
+  S.blobs.length = 0;
+  IJSON.click();
+  const ijText = await lastBlob().text();
+  assert.deepEqual(JSON.parse(ijText), [], 'empty interventions JSON is an empty array');
+  // Calls CSV empty → exactly one line (the header row)
+  S.blobs.length = 0;
+  CCSV.click();
+  const ccsvText = await lastBlob().text();
+  assert.equal(ccsvText.split('\r\n').length, 1, 'header-only: no data rows');
+  assert.match(ccsvText, /^type,at,time,toolName,sessionKey,status,durationMs,tokensInput,tokensOutput,tokensTotal,sizeChars$/);
+  // Interventions CSV empty → exactly one line (the header row)
+  S.blobs.length = 0;
+  ICCSV.click();
+  const iccsvText = await lastBlob().text();
+  assert.equal(iccsvText.split('\r\n').length, 1, 'header-only: no data rows');
+  assert.match(iccsvText, /^type,at,time,ruleId,action,detail,sessionKey$/);
+});
