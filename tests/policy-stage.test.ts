@@ -112,6 +112,98 @@ test('hideTool: removes the named tools from the request tool list', async () =>
   assert.ok(names.includes('write'), 'write should remain available');
 });
 
+/** The set of tool-definition names carried on a raw provider request body. */
+function toolNamesOf(raw: unknown): string[] {
+  const record = raw as { tools?: { function?: { name?: string }; name?: string }[] } | undefined;
+  return (record?.tools ?? []).map((tool) => tool.function?.name ?? tool.name).filter((n): n is string => n !== undefined);
+}
+
+/** Type guard: a non-null, non-array object. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+test('hideTool: strips hidden-tool definitions AND their references from OpenAI message history', async () => {
+  const stage = createPolicyStage({
+    engine: createRuleEngine([ruleOf('hide-bash-refs', createHideToolAction({ toolNames: ['bash'] }), alwaysMatch())]),
+  });
+  const messages: Message[] = [
+    SYSTEM,
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'bash-1', type: 'function', function: { name: 'bash', arguments: '{}' } },
+        { id: 'read-1', type: 'function', function: { name: 'read', arguments: '{}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'bash-1', name: 'bash', content: 'out' },
+    { role: 'tool', tool_call_id: 'read-1', name: 'read', content: 'in' },
+    USER,
+  ];
+  const raw = {
+    model: 'gpt-test',
+    messages,
+    tools: [{ type: 'function', function: { name: 'bash' } }, { type: 'function', function: { name: 'read' } }],
+  };
+  const processed = await stage.onRequest!(makeRequest(messages, raw));
+
+  // Definitions: hidden removed, kept preserved.
+  assert.ok(!toolNamesOf(processed.raw).includes('bash'), 'the bash definition is removed from tools');
+  assert.ok(toolNamesOf(processed.raw).includes('read'), 'the read definition remains in tools');
+
+  // References: the assistant's bash tool call is dropped; read is kept.
+  const assistant = processed.messages.find((m) => isPlainRecord(m) && m.role === 'assistant');
+  const remainingCalls = ((isPlainRecord(assistant) ? (assistant.tool_calls ?? []) : []) as { function?: { name?: string } }[])
+    .map((call) => call.function?.name ?? '');
+  assert.deepEqual(remainingCalls, ['read'], 'only the non-hidden tool call remains on the assistant message');
+
+  // Results: the bash tool result is dropped; read's is kept.
+  const results = processed.messages.filter((m) => isPlainRecord(m) && m.role === 'tool') as Record<string, unknown>[];
+  assert.deepEqual(results.map((m) => (typeof m.name === 'string' ? m.name : '')), ['read'], 'the hidden tool result is dropped from history');
+});
+
+test('hideTool (Anthropic shape): strips tool_use blocks and their tool_result references', async () => {
+  const stage = createPolicyStage({
+    engine: createRuleEngine([ruleOf('hide-bash-refs-anth', createHideToolAction({ toolNames: ['bash'] }), alwaysMatch())]),
+  });
+  const messages: Message[] = [
+    SYSTEM,
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'hi' },
+        { type: 'tool_use', id: 'bash-1', name: 'bash', input: {} },
+        { type: 'tool_use', id: 'read-1', name: 'read', input: {} },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'bash-1', content: 'out' },
+        { type: 'tool_result', tool_use_id: 'read-1', content: 'in' },
+      ],
+    },
+  ];
+  const raw = { model: 'claude-test', messages, tools: [{ name: 'bash' }, { name: 'read' }] };
+  const processed = await stage.onRequest!(makeRequest(messages, raw));
+
+  assert.ok(!toolNamesOf(processed.raw).includes('bash'), 'the bash definition is removed from tools');
+  assert.ok(toolNamesOf(processed.raw).includes('read'), 'the read definition remains in tools');
+
+  const assistantContent = (processed.messages.find((m) => isPlainRecord(m) && m.role === 'assistant') as Record<string, unknown> | undefined)?.content;
+  const remainingUse = ((Array.isArray(assistantContent) ? assistantContent : []) as Record<string, unknown>[])
+    .filter((block) => block.type === 'tool_use')
+    .map((block) => (typeof block.name === 'string' ? block.name : ''));
+  assert.deepEqual(remainingUse, ['read'], 'only the non-hidden tool_use block remains');
+
+  const userContent = (processed.messages.find((m) => isPlainRecord(m) && m.role === 'user') as Record<string, unknown> | undefined)?.content;
+  const remainingResults = ((Array.isArray(userContent) ? userContent : []) as Record<string, unknown>[])
+    .filter((block) => block.type === 'tool_result')
+    .map((block) => (typeof block.tool_use_id === 'string' ? block.tool_use_id : ''));
+  assert.deepEqual(remainingResults, ['read-1'], 'the hidden tool_result reference is dropped');
+});
+
 // --- injectMessage (loop feedback) -------------------------------------------
 
 test('injectMessage (loop): a corrective message is injected into the request', async () => {

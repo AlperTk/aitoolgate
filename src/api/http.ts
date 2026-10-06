@@ -9,6 +9,7 @@
  * - `POST   /api/rules`        → `201` serialized rule; `400 { error }` on an invalid spec/body
  * - `PATCH  /api/rules/{id}`   → `200` serialized rule; `404 { error:'not_found' }` unknown; `400` bad body
  * - `DELETE /api/rules/{id}`   → `204`; `404 { error:'not_found' }` unknown
+ * - `GET    /api/tool-results/{id}` → `200 { ok, content, chars }`; `404 { error:'not_found' }` unknown
  *
  * Non-`/api` requests return `false` WITHOUT writing a response, so the server
  * can chain this handler before the proxy handler (true = handled, false =
@@ -16,6 +17,7 @@
  */
 import type * as http from 'node:http';
 import type { Collector } from '../telemetry/collector';
+import type { ToolResultStore } from '../telemetry/toolResultStore';
 import type { RuleStore, RulePatch } from './ruleStore';
 import type { PolicyRule } from '../policy/ruleEngine';
 import type { RuleSpec, MatcherSpec, ActionSpec } from './ruleSpec';
@@ -42,6 +44,11 @@ export interface ApiOptions {
    * when omitted.
    */
   specs?: Map<string, RuleSpec>;
+  /**
+   * Optional raw-tool-result store backing `GET /api/tool-results/:id`. When omitted,
+   * that route responds `404 { error:'not_found' }` (no results available).
+   */
+  toolResultStore?: ToolResultStore;
 }
 
 /** Result of a PATCH attempt, so callers can map each case to an HTTP status. */
@@ -92,7 +99,7 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
  */
 export function createApiHandler(options: ApiOptions): RequestHandler {
   const specs = (options.specs ??= new Map<string, RuleSpec>());
-  const { ruleStore, collector } = options;
+  const { ruleStore, collector, toolResultStore } = options;
 
   /** Serialize a rule: prefer its stored spec for fidelity, else a best-effort descriptor. */
   const serialize = (rule: PolicyRule): RuleSpec => specs.get(rule.id) ?? describeRule(rule);
@@ -218,6 +225,27 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
           sendJson(res, 200, serialize(result.rule));
           return true;
         }
+      }
+
+      const resultMatch = /^\/api\/tool-results\/([^/]+)$/.exec(path);
+      if (resultMatch && method === 'GET') {
+        const id = decodeURIComponent(resultMatch[1]);
+        // Memory hit is the fast path; fall back to the durable store on a miss.
+        const memHit = toolResultStore?.get(id);
+        let entry = memHit;
+        if (entry === undefined && toolResultStore?.resolve !== undefined) {
+          entry = (await toolResultStore.resolve(id)) ?? undefined;
+        }
+        if (entry === undefined) {
+          sendJson(res, 404, { error: 'not_found' });
+          return true;
+        }
+        sendJson(res, 200, {
+          content: entry.content,
+          chars: entry.chars,
+          ...(entry.ok !== undefined ? { ok: entry.ok } : {}),
+        });
+        return true;
       }
 
       // Unknown API route.

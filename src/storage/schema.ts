@@ -12,7 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** The highest migration version applied by {@link applyMigrations}. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export interface Migration {
   /** Monotonically increasing, unique, ascending version number. */
@@ -50,6 +50,19 @@ export const MIGRATIONS: readonly Migration[] = [
       );
       CREATE INDEX IF NOT EXISTS idx_interventions_rule_id ON interventions (rule_id);
       CREATE INDEX IF NOT EXISTS idx_interventions_created_at ON interventions (created_at);
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE IF NOT EXISTS tool_results (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        chars INTEGER NOT NULL,
+        ok INTEGER,
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_results_at ON tool_results (at);
     `,
   },
 ];

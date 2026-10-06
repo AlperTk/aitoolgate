@@ -19,6 +19,9 @@ export const state = {
   // matcher "loop" (all fields optional) + action "block" (all fields optional).
   curMatcherType: 'loop',
   curActionType: 'block',
+  // Last rule list fetched from the server (serialized RuleSpec[]). Cached so a
+  // deep-link to #/rules/{id} can open the editor instantly without a round trip.
+  rules: [],
 
   /* ---- resilience state for the dual-source live stream -----------
    * The WebSocket is the low-latency primary source. A /api/events poll is the

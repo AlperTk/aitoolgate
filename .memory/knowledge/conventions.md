@@ -18,7 +18,10 @@ All telemetry emission goes through `safeEmit()` (try/catch guarded). New instru
 Do not scatter OpenAI↔Anthropic conversion. Add conversions in `src/proxy/translate.ts` (request + response rehydration).
 
 ## Config shape
-`loadConfig()` reads env vars + defaults. Structure: top-level `port`, nested `upstream.*`. Storage path is opt-in via server options (`options.telemetry.storage`), not a config field.
+`loadConfig()` reads env vars + defaults. Structure: top-level `port`, nested `upstream.*`, and nested `toolResults.*` (gates optional tool-result-value persistence, default off). Base storage path is opt-in via server options (`options.telemetry.storage`), not a config field — only the tool-result persistence toggle lives in config.
+
+## Heavy payload values are stored out-of-band and fetched on demand
+Do NOT put large tool-result/output values into telemetry events or WS frames (they bloat every broadcast and unbound memory). Capture them out-of-band at the emission site into an in-memory store keyed by a stable id, expose a REST getter, and load lazily in the UI (fetch once, cache). Any durability layer plugs in behind a port (OCP/DIP) and is gated behind a config flag defaulting off. Evidence: `toolResultStore.ts` / `ToolResultPersister` / `GET /api/tool-results/:id`.
 
 ## API / error shape
 REST endpoints return JSON; errors are `{ error: string }` with appropriate HTTP status codes.

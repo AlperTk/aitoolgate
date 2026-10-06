@@ -37,4 +37,4 @@ GET /health → { "status": "ok" }
 ## Browser verification (dashboard UI changes)
 - The dev server HTTP-caches static assets; a plain reload of a long-lived tab can render stale CSS/JS. Verify UI changes in a **fresh browser context** (clean cache), not just a page reload.
 - WS sanity check: element `.conn` text reads "live" when connected; console/pageerrors must be empty.
-- Current test baseline: 186 tests passing (`npm run build && npm test`).
+- Current test baseline: 242 tests passing (`npm run build && npm test`) as of 2026-10-06 (after the on-demand tool-result value feature). Representative suites for it: `tool-result-store.test.ts`, `tool-result-store-e2e.test.ts`, `sqlite-tool-result-persister.test.ts`.

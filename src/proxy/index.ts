@@ -17,6 +17,7 @@ import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
 import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
 import type { SqliteStorage } from '../storage/sqlite';
+import type { ToolResultStore } from '../telemetry/toolResultStore';
 
 export type { FetchLike, UpstreamClient };
 
@@ -71,6 +72,13 @@ export interface ProxyOptions {
    * `handler.telemetry` stays `undefined` for backward compatibility).
    */
   telemetry?: ProxyTelemetryOptions;
+  /**
+   * Optional raw-tool-result store capturing each resolved tool result's RAW content
+   * (keyed by its stable id) for later retrieval over the REST API. Threaded into every
+   * request path so both the buffered and streamed emission sites persist to it. The
+   * emitted WS event stays metadata-only. When omitted, nothing is stored.
+   */
+  toolResultStore?: ToolResultStore;
 }
 
 /**
@@ -264,7 +272,7 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
     pipeline = options.pipeline ?? createPipeline();
   }
 
-  const deps = { upstream: options.upstream, pipeline, bus, tracker };
+  const deps = { upstream: options.upstream, pipeline, bus, tracker, toolResultStore: options.toolResultStore };
 
   const handler = async function handleProxyRequest(
     req: http.IncomingMessage,

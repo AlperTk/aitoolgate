@@ -9,7 +9,7 @@
 - None. **Zero third-party runtime dependencies** (`dependencies` empty) — the entire server is built on the Node standard library only.
 
 ## Persistence
-- SQLite via the Node built-in `node:sqlite` module (`DatabaseSync`), wrapped by `src/storage/sqlite.ts` + `schema.ts`. Storage is opt-in (server forwards `options.telemetry.storage`); default path not verified.
+- SQLite via the Node built-in `node:sqlite` module (`DatabaseSync`), wrapped by `src/storage/sqlite.ts` + `schema.ts` (a migration adds a `tool_results` table). Base storage is opt-in (server forwards `options.telemetry.storage`); tool-result-value persistence is a separate config toggle `toolResults.enabled` (default off), drained asynchronously (WAL mode, batched inserts) so the request hot path does no synchronous disk I/O.
 
 ## Transport
 - HTTP server via `node:http`.

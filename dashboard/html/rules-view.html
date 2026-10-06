@@ -1,41 +1,72 @@
-      <div id="view-rules" class="view">
-        <section id="rules-panel" class="card rules-card">
+<div id="view-rules" class="view">
+  <!-- Transient save-confirmation note; shown (and auto-dismissed) after a rule
+       is created / updated. Lives on the shared shell so it is visible whether
+       the user is on the list or the editor. Flashed by js/rules.mjs. -->
+  <div id="rule-saved-note" class="rule-saved-note" role="status" hidden></div>
+
+  <!-- ============================ LIST sub-view (default #/rules) ======================== -->
+  <div id="rule-list-view" class="view-sub is-active">
+    <section id="rules-panel" class="card">
+      <div class="page-head">
         <h2>Policy rules</h2>
-        <ul id="rule-list" class="rule-list"></ul>
-        <div id="rule-empty" class="empty">No rules defined.</div>
+        <button type="button" id="btn-add-rule" class="btn btn-primary"
+                title="Create a new policy rule">+ Add rule</button>
+      </div>
 
-        <form id="rule-form" novalidate>
-          <div class="field-row">
-            <div class="field">
-              <label for="matcher-type">Matcher type</label>
-              <select id="matcher-type">
-                <option value="loop">loop — consecutive identical calls</option>
-                <option value="toolName">toolName — match by tool name</option>
-                <option value="argPattern">argPattern — match arguments</option>
-              </select>
-              <div class="hint">Choose how the rule detects matching tool calls.</div>
-            </div>
-            <div class="field">
-              <label for="action-type">Action type</label>
-              <select id="action-type">
-                <option value="block">block — drop call + message</option>
-                <option value="hideTool">hideTool — remove tools</option>
-                <option value="rewriteArgs">rewriteArgs — edit arguments</option>
-                <option value="injectMessage">injectMessage — add a message</option>
-              </select>
-              <div class="hint">Choose what happens when a call matches.</div>
-            </div>
+      <div id="rule-empty" class="empty empty-lg" hidden>
+        <svg class="empty-icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 4v10l-7 4-7-4V7z"/><path d="M9.5 12h5"/></svg>
+        <div>No rules yet</div>
+        <div class="small muted">Add your first rule to start shaping live tool traffic.</div>
+        <a href="#/rules/new" class="btn btn-primary empty-cta">+ Add rule</a>
+      </div>
+
+      <div id="rule-list" class="rule-grid"></div>
+    </section>
+  </div>
+
+  <!-- ==================== EDITOR sub-view (add #/rules/new · edit #/rules/:id) =========== -->
+  <div id="view-rule-editor" class="view-sub">
+    <section id="rules-editor-panel" class="card">
+      <div class="page-head">
+        <a href="#/rules" id="rule-back" class="link-back" title="Return to the rules list">&larr;&nbsp;Back to rules</a>
+        <h2 id="rule-editor-title">New rule</h2>
+      </div>
+
+      <form id="rule-form" novalidate>
+        <!-- Section: matcher -->
+        <div class="form-section">
+          <h3 class="section-title">Matcher</h3>
+          <div class="field">
+            <label for="matcher-type">Matcher type</label>
+            <select id="matcher-type">
+              <option value="loop">loop — consecutive identical calls</option>
+              <option value="toolName">toolName — match by tool name</option>
+              <option value="argPattern">argPattern — match arguments</option>
+            </select>
+            <div class="hint">Choose how the rule detects matching tool calls.</div>
           </div>
+          <div class="fields" id="matcher-fields"></div>
+        </div>
 
-          <div class="field-row">
-            <div class="field sub"><div class="sub-label">Matcher fields</div>
-              <div id="matcher-fields" class="fields"></div>
-            </div>
-            <div class="field sub"><div class="sub-label">Action fields</div>
-              <div id="action-fields" class="fields"></div>
-            </div>
+        <!-- Section: action -->
+        <div class="form-section">
+          <h3 class="section-title">Action</h3>
+          <div class="field">
+            <label for="action-type">Action type</label>
+            <select id="action-type">
+              <option value="block">block — drop call + message</option>
+              <option value="hideTool">hideTool — remove tools</option>
+              <option value="rewriteArgs">rewriteArgs — edit arguments</option>
+              <option value="injectMessage">injectMessage — add a message</option>
+            </select>
+            <div class="hint">Choose what happens when a call matches. The coloured pill on each rule shows this action's severity.</div>
           </div>
+          <div class="fields" id="action-fields"></div>
+        </div>
 
+        <!-- Section: details & status -->
+        <div class="form-section">
+          <h3 class="section-title">Details &amp; status</h3>
           <div class="field-row">
             <div class="field grow">
               <label for="rule-description">Description</label>
@@ -48,16 +79,18 @@
               <div class="hint">Lower number = higher precedence; leave blank for the default order.</div>
             </div>
           </div>
+          <label class="check rule-enabled-check" title="The rule is enforced only while checked">
+            <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
+          </label>
+        </div>
 
-          <div class="field-row form-foot">
-            <label class="check" title="Rule is enforced only while checked">
-              <input id="rule-enabled" type="checkbox" checked /><span>Enabled</span>
-            </label>
-            <span class="spacer"></span>
-            <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
-            <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
-          </div>
-          <div id="form-error" class="form-error" role="alert" hidden></div>
-        </form>
-      </section>
-      </div>
+        <div class="form-foot">
+          <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
+          <span class="spacer"></span>
+          <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
+        </div>
+        <div id="form-error" class="form-error" role="alert" hidden></div>
+      </form>
+    </section>
+  </div>
+</div>

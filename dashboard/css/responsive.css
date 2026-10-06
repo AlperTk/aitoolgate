@@ -20,13 +20,15 @@
   /* Cap the grid (padding included, box-sizing:border-box) just under the
      chrome above/below it (~header 61px + controls 45px + grid padding 48px). */
   .dash-grid {
-    max-height: calc(100dvh - 160px);
-    /* Make the long-content row (row 1: stream + stats) deterministic and
-       bounded within the cap so it can compress below natural content height
-       and its panels scroll internally; the full-width interventions row
-       (row 2) stays sized to its short content. Columns are already
+    max-height: calc(130dvh - 160px);
+    /* Split the capped height across the two rows instead of sizing row 2 to
+       its natural content: give the long-content row (row 1: stream + stats)
+       the large share and hold the full-width interventions row (row 2) to a
+       smaller share, so the Counts/Top Tools list (and the stream) grow much
+       taller and show many entries at once while still fitting inside the
+       viewport cap (no page-level vertical overflow). Columns are already
        minmax(0, 1fr) so the stream column can shrink. */
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 4fr) minmax(0, 1fr);
   }
   /* Allow every grid item to shrink below its natural content size so the
      capped row tracks can compress without overflowing the page. */
@@ -61,7 +63,7 @@
   #stats-panel > *:not(.tools-scroll) { flex: none; }
   .tools-scroll {
     flex: 1 1 auto;     /* the single scrolling region inside the stats panel */
-    min-height: 0;
+    min-height: 240px;  /* keep the Top Tools list visibly tall: reliably shows ~5-8+ records at once */
     overflow: auto;     /* vertical + horizontal (long tool names scroll sideways) */
   }
   /* Sticky Top Tools column header (scoped to this table only): rows scroll beneath

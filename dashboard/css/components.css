@@ -127,6 +127,32 @@
 }
 .rd-value { word-break: break-all; }
 
+/* Tab strip inside row detail */
+.rd-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+.rd-tab {
+  background: none;
+  border: none;
+  padding: 0.3rem 0.7rem;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.rd-tab:hover { color: var(--text); }
+.rd-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.rd-tab-panel[hidden] { display: none; }
+.rd-trunc { margin-top: 0.25rem; }
+.rd-err { color: var(--red); font-size: var(--fs-sm); }
+
 /* Filter bar above the stream list */
 .stream-filters {
   display: flex;

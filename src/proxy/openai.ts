@@ -19,6 +19,7 @@ import {
 import { createSseToolCallExtractor } from '../telemetry/stream-extract';
 import type { TelemetryEmitter } from '../telemetry/events';
 import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
+import type { ToolResultStore } from '../telemetry/toolResultStore';
 
 /** Dependencies for the OpenAI-compatible route handlers. */
 export interface OpenAIHandlerDeps {
@@ -28,6 +29,8 @@ export interface OpenAIHandlerDeps {
   bus?: TelemetryEmitter;
   /** Shared tool-call latency tracker (optional) pairing issued calls with their later results. */
   tracker?: ToolMetricsTracker;
+  /** Optional raw-tool-result store capturing each resolved result's RAW content (keyed by stable id). */
+  toolResultStore?: ToolResultStore;
 }
 
 /**
@@ -67,7 +70,7 @@ export async function handleOpenAIRoute(
       deps.pipeline,
       requestCtx,
       (request) => forwardOpenAIRequest(deps.upstream, request as OpenAIChatRequest),
-      { bus: deps.bus, tracker: deps.tracker },
+      { bus: deps.bus, tracker: deps.tracker, toolResultStore: deps.toolResultStore },
     );
     sendJSON(res, status, body);
     return true;
@@ -106,7 +109,7 @@ async function streamSameProtocol(
   // so pending issued calls recorded by an earlier same-session request (buffered or streamed)
   // pair into a REAL tool.result even when this response itself is streamed. A no-op here when
   // the incoming messages carry no tool results or none match a pending issued call.
-  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx);
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore);
   // Ask the upstream to include per-turn token usage on the stream so the passthrough SSE carries
   // a trailing `usage` chunk the extractor reads into turn-level `tokens` (OpenAI only emits it
   // when asked via `stream_options.include_usage`). Preserves any client-provided `stream_options`.

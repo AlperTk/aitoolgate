@@ -50,7 +50,12 @@ export type ToolCallEvent = {
   id?: string;
   /** Upstream token usage of the turn that produced this call (OpenAI prompt/completion/total or Anthropic input/output, normalized); omitted when the upstream didn't report usage. */
   tokens?: { input?: number; output?: number; total?: number };
-  /** When it occurred (epoch milliseconds). */
+  /**
+   * When the TURN containing this call was observed (epoch milliseconds). All calls in one
+   * streamed/buffered turn share ONE turn-level `at` (token-turn dedup collapses the turn);
+   * per-call DURATION attribution is carried on the matched {@link ToolResultEvent.durationMs},
+   * which the tracker measures from that call's own issue time (see `toolMetrics`).
+   */
   at: number;
 };
 

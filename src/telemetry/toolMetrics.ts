@@ -9,12 +9,40 @@
  *
  * Retention is enforced LAZILY inside each method — never via timers or
  * `setInterval` (which would hang the test event loop) — using an injectable
- * clock (default {@link Date.now}, epoch milliseconds). On every public call we
- * FIRST sweep stale entries (`now() - at > ttlMs`), THEN enforce capacity: if the
- * retained set exceeds {@link ToolMetricsOptions.maxPending} we evict the
- * oldest-by-`at` entries (ties resolved by earliest-inserted first) until within
- * the cap.
+ * clock (default {@link monotonicEpochMs}, epoch milliseconds). On every public
+ * call we FIRST sweep stale entries (`now() - at > ttlMs`), THEN enforce
+ * capacity: if the retained set exceeds {@link ToolMetricsOptions.maxPending} we
+ * evict the oldest-by-`at` entries (ties resolved by earliest-inserted first)
+ * until within the cap.
+ *
+ * Duration attribution: each resolved result measures the span between its
+ * MATCHED call's issue time and that result's arrival time, pairing on the
+ * stable tool-call id — NEVER on message position — so interleaved / out-of-
+ * order arrivals each take their own duration without fabricating any spread.
+ * Batched calls whose results genuinely arrive together correctly share an
+ * equal duration. Orphaned results (no matching pending call) are silently
+ * skipped; unresolved calls simply stay pending until TTL-swept (they never
+ * produce a bogus/negative/NaN duration); measured durations are clamped to
+ * `>= 0`.
  */
+import process from 'node:process';
+
+/** Wall-clock anchor (epoch ms) captured once at module load; base of {@link monotonicEpochMs}. */
+const CLOCK_BASE_WALL_MS = Date.now();
+/** High-resolution monotonic base captured once at module load; drift source of {@link monotonicEpochMs}. */
+const CLOCK_BASE_HRTIME = process.hrtime.bigint();
+
+/**
+ * Monotonically non-decreasing, wall-clock-aligned epoch-millisecond time: the
+ * module-load wall anchor plus high-resolution monotonic elapsed time
+ * (`process.hrtime`). Unlike a raw {@link Date.now} reading it never steps
+ * backward (immune to NTP corrections), so issue→result spans measured across
+ * telemetry components cannot go negative or jump. Used as the DEFAULT timing
+ * source across telemetry; tests inject their own clock for determinism.
+ */
+export function monotonicEpochMs(): number {
+  return CLOCK_BASE_WALL_MS + Math.max(0, Number((process.hrtime.bigint() - CLOCK_BASE_HRTIME) / 1_000_000n));
+}
 
 /** Options for {@link createToolMetricsTracker}. */
 export interface ToolMetricsOptions {
@@ -22,7 +50,7 @@ export interface ToolMetricsOptions {
   maxPending?: number;
   /** A pending entry whose issue time is older than this (epoch-ms delta) is swept. Default 300000 (5 min). */
   ttlMs?: number;
-  /** Clock returning the current time in epoch milliseconds. Defaults to {@link Date.now}. */
+  /** Clock returning the current time in epoch milliseconds. Defaults to {@link monotonicEpochMs}. */
   now?: () => number;
 }
 
@@ -30,7 +58,12 @@ export interface ToolMetricsOptions {
 export interface IssuedCall {
   /** Stable tool-call id (links to a later {@link ToolResultIn.toolCallId}). */
   id: string;
-  /** When it was issued (epoch milliseconds). */
+  /**
+   * When THAT specific call was issued/observed (epoch milliseconds). Calls batched in one
+   * buffered response turn share the turn-level time (they were all observed at once); an
+   * emitter that observes calls individually (e.g. the streamed SSE extractor) records each
+   * call's own first-observation time so its duration measures a true per-call span.
+   */
   at: number;
   /** Name of the invoked tool, when known (carried onto the resolved result as its `toolName`). */
   name?: string;
@@ -102,7 +135,9 @@ interface PendingEntry {
 export function createToolMetricsTracker(options: ToolMetricsOptions = {}): ToolMetricsTracker {
   const maxPending = options.maxPending ?? DEFAULT_MAX_PENDING;
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-  const clock = options.now ?? Date.now;
+  // Default to the shared monotonic wall-clock (never steps backward); inject a controllable
+  // clock via `now` for deterministic tests.
+  const clock = options.now ?? monotonicEpochMs;
 
   // Keyed by `${sessionKey}\u0000${id}`.
   const entries = new Map<string, PendingEntry>();

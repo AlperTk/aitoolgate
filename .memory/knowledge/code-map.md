@@ -43,11 +43,13 @@ Everything else depends on these; changing behavior here ripples downstream.
 - `event-bus.ts` — `TelemetryEventBus`, `createEventBus()`.
 - `collector.ts` — `createCollector()` (events → storage).
 - `toolMetrics.ts` — `createToolMetricsTracker()`, `.recordIssued()`.
-- `events.ts` — `TelemetryEvent`, `ToolCallEvent`, `InterventionEvent`.
+- `events.ts` — `TelemetryEvent`, `ToolCallEvent`, `InterventionEvent` (+ metadata-only `ToolResultEvent`).
 - `stream-extract.ts` — `createSseToolCallExtractor()`, `normalizeStreamUsage()`, `mergeUsage()`, `stableStreamCallId()`.
+- `toolResultStore.ts` — `ToolResultEntry`, `ToolResultPersister` port (optional async `persist`/`lookup`), `createToolResultStore()` (bounded in-memory store of raw tool-result values keyed by tool-call id; async `resolve(id)` = memory-first then DB-fallback).
+- `sqliteToolResultPersister.ts` — `createSqliteToolResultPersister()`: optional SQLite impl of the port; async batched drain (bounded buffer + timer flush, WAL mode), indexed `lookup()`.
 
 ## `src/api/` — REST + WebSocket control plane
-- `http.ts` — `createApiHandler()` (REST rule CRUD), `readJSONBody()` (only throwing handler).
+- `http.ts` — `createApiHandler()` (REST rule CRUD + `GET /api/tool-results/:id` via `store.resolve`; `ApiOptions.toolResultStore?`), `readJSONBody()` (only throwing handler).
 - `ruleStore.ts` — in-memory `RuleStore`.
 - `ruleSpec.ts` — rule spec shape/validation.
 - `ws.ts` — `createWsServer()`, `IncomingFrame`.
@@ -60,16 +62,16 @@ Everything else depends on these; changing behavior here ripples downstream.
 
 ## `src/storage/`
 - `sqlite.ts` — `SqliteStorage` (node:sqlite `DatabaseSync` impl of the storage port).
-- `schema.ts` — table/migration schema, `createDataTable()`.
+- `schema.ts` — table/migration schema, `createDataTable()`; migration v2 adds `tool_results`.
 
 ## `config/`
-- `config.ts` — `loadConfig()` (env vars + defaults: top-level `port`, nested `upstream.*`).
+- `config.ts` — `loadConfig()` (env vars + defaults: top-level `port`, nested `upstream.*`, nested `toolResults.*`).
 
 ## `dashboard/`
 - `index.html` — inlined dashboard view incl. `#stream-head`; `app.js` — boot/composition root.
 - `js/layout.mjs` — fragment mounting (FRAGMENTS = header + rules only).
 - `js/table.mjs` — `createDataTable()` widget (Top Tools / rules tables).
-- `js/live-view.mjs` — real-time session/tool/intervention view (`storeInterventionForDrillDown()`, `normalizeStreamHead()`).
+- `js/live-view.mjs` — real-time session/tool/intervention view (`storeInterventionForDrillDown()`, `normalizeStreamHead()`); row detail rendered as an `Arguments | Response | Details` tab strip where the Response tab lazily fetches `api/tool-results/<id>` once and caches it.
 - `js/stats.mjs` — stats panel columns (avg column renders integers via `fmtOpt`).
 - `js/dom.mjs` — `$` (getElementById), `el()`, `fmtOpt()`.
 - `js/ingest.mjs` — event ingestion (`ingestEvent()`).
@@ -80,7 +82,7 @@ Everything else depends on these; changing behavior here ripples downstream.
 - `html/header.html`, `html/rules-view.html` — mounted fragments; `html/dashboard-view.html` — dead reference copy of the inlined view.
 
 ## `tests/`
-- Run against compiled JS in `dist/`. Representative suites: `server-integration.test.ts`, `e2e-integration.test.ts`, `e2e-policy.test.ts`, `proxy.test.ts`, `rule-engine.test.ts`, `policy-stage.test.ts`, `policy-matchers.test.ts`, `feedback-store.test.ts`, `storage.test.ts`, `telemetry*.test.ts`, `ws.test.ts`, `http-api.test.ts`, `health.test.ts`, `dashboard-ws-url.test.ts`. Integration/e2e markers: `*-integration.test.ts`, `e2e-*.test.ts`.
+- Run against compiled JS in `dist/`. Representative suites: `server-integration.test.ts`, `e2e-integration.test.ts`, `e2e-policy.test.ts`, `proxy.test.ts`, `rule-engine.test.ts`, `policy-stage.test.ts`, `policy-matchers.test.ts`, `feedback-store.test.ts`, `storage.test.ts`, `telemetry*.test.ts`, `ws.test.ts`, `http-api.test.ts`, `health.test.ts`, `dashboard-ws-url.test.ts`, `tool-result-store.test.ts`, `tool-result-store-e2e.test.ts`, `sqlite-tool-result-persister.test.ts`. Integration/e2e markers: `*-integration.test.ts`, `e2e-*.test.ts`.
 
 ## `dist/` — generated (ignore)
 
@@ -120,4 +122,14 @@ proxy/policy producers --safeEmit--> TelemetryEventBus (event-bus.ts)
     ├── createCollector --> SqliteStorage (opt-in)
     ├── createToolMetricsTracker
     └── ws broadcast --> dashboard
+```
+
+### Tool-result value (on-demand)
+```
+resolveAndEmitToolResults (proxy/context.ts) captures raw result value (capped ~16 KB)
+    ↓  (out-of-band; WS event stays metadata-only)
+toolResultStore (memory primary, bounded)
+    └─(optional, toolResults.enabled)→ sqliteToolResultPersister → SQLite (async batched, WAL)
+GET /api/tool-results/:id (api/http.ts) → store.resolve(id) [memory-first, DB-fallback]
+dashboard Response tab: fetch('api/tool-results/<id>') once → cache → render value
 ```

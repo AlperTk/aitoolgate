@@ -3,6 +3,8 @@ import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/d
 import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from '../telemetry/events';
 import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
+import { monotonicEpochMs } from '../telemetry/toolMetrics';
+import type { ToolResultStore } from '../telemetry/toolResultStore';
 import type { UpstreamClient, UpstreamResult } from './upstream';
 
 /** Read and parse a JSON request body; an empty body resolves to `{}`. */
@@ -187,6 +189,19 @@ export interface RunPipelineOptions {
    * detected in the incoming request's messages. When omitted, no pairing/emission occurs.
    */
   tracker?: ToolMetricsTracker;
+  /**
+   * Optional timing source (epoch milliseconds) for this request's telemetry timestamps
+   * — the issue time recorded for this response's tool calls AND the arrival time used
+   * when pairing incoming results. Defaults to the shared monotonic wall-clock
+   * ({@link monotonicEpochMs}); inject a controllable clock for deterministic tests.
+   */
+  now?: () => number;
+  /**
+   * Optional raw-tool-result store; when provided, each resolved result's RAW content is
+   * held here (keyed by its stable id) for later retrieval over the REST API. The emitted
+   * WS event stays metadata-only. When omitted, nothing is stored (behavior unchanged).
+   */
+  toolResultStore?: ToolResultStore;
 }
 
 export async function runThroughPipeline(
@@ -221,7 +236,7 @@ export async function runThroughPipeline(
   // unconditionally; a no-op when no bus/tracker is wired or nothing to pair. It reads
   // the request messages independently (never touches rehydration) and does not disturb
   // policy-stage ordering.
-  resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx);
+  resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx, opts?.now, opts?.toolResultStore);
 
   const result = await forward(processedRequest.raw);
   const summary = summarizeResponse(result.body);
@@ -242,7 +257,7 @@ export async function runThroughPipeline(
   // shared tracker. No synthetic per-response tool.result is emitted here; real results
   // are emitted in the request phase above once the client feeds them back. A no-op when
   // neither a bus nor a tracker is wired (pure passthrough — behavior unchanged).
-  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage);
+  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, opts?.now);
   return { status: result.status, body: processedResponse.raw };
 }
 
@@ -266,10 +281,14 @@ export type NormalizedUsage = { input?: number; output?: number; total?: number 
  * Emit one `tool.call` event per observed tool call (carrying its stable `id` and the
  * turn's upstream `tokens`) and record each issued call into the shared tracker — all in
  * one response-emission pass with a single shared timestamp, so the pairing math stays
- * consistent. Does NOT emit a synthetic per-response `tool.result` (removed); real results
- * are emitted later via {@link resolveAndEmitToolResults}. A no-op for both effects when
- * the respective bus/tracker is undefined. Each dispatch is guarded so a throwing/rejecting
- * emitter can never break the request flow.
+ * consistent. A BUFFERED response delivers all of its tool calls at once, so every call
+ * in the turn genuinely shares this issue time; the STREAMED path (see
+ * `telemetry/stream-extract.ts`) instead records each call's own first-observation time.
+ * Does NOT emit a synthetic per-response `tool.result` (removed); real results are
+ * emitted later via {@link resolveAndEmitToolResults}. A no-op for both effects when
+ * the respective bus/tracker is undefined. Each dispatch is guarded so a throwing/
+ * rejecting emitter can never break the request flow. The timestamp comes from the
+ * caller's injectable timing source (default: shared monotonic wall-clock).
  */
 function emitResponseTelemetry(
   bus: TelemetryEmitter | undefined,
@@ -277,10 +296,11 @@ function emitResponseTelemetry(
   requestCtx: RequestContext,
   toolCalls: ToolCall[],
   usage: NormalizedUsage | undefined,
+  now?: () => number,
 ): void {
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
   const clientId = toClientId(requestCtx.client);
-  const at = Date.now();
+  const at = (now ?? monotonicEpochMs)();
   // Assign EVERY issued call a stable, turn-unique id (the upstream tool_call id when present,
   // else a deterministic `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch
   // turn NEVER share an identical id — the field the dashboard dedups on. The same id feeds both
@@ -361,9 +381,15 @@ function stableToolCallId(
 /**
  * Detect tool results arriving from the incoming request's messages, pair them against
  * previously-issued calls via the shared tracker, and emit one REAL `tool.result` event
- * per resolved entry (`durationMs = now - issueAt`, plus the result's `chars`). This is
- * now the ONLY source of `tool.result` events on this path (the synthetic per-response
- * result was removed). It reads the request messages independently (does not touch
+ * per resolved entry (`durationMs = resultArrivalAt - issuedCall.at`, plus the result's
+ * `chars`). DURATIONS ARE ATTRIBUTED PER CALL BY STABLE ID, NEVER BY MESSAGE POSITION:
+ * every result in one request shares ONE honest arrival time (requests arrive atomically),
+ * while each result's duration subtracts its OWN matched call's issue time — so
+ * interleaved/out-of-order arrivals each take their own span, batched co-arrivals keep an
+ * equal (correct, parallel-run) duration, orphaned results are silently skipped, and no
+ * bogus/negative/NaN duration can ever reach the event stream. This is now the ONLY
+ * source of `tool.result` events on this path (the synthetic per-response result was
+ * removed). It reads the request messages independently (does not touch
  * rehydration) and understands both protocols: OpenAI `role:'tool'` messages (paired by
  * `tool_call_id`) and Anthropic `type:'tool_result'` content blocks (paired by
  * `tool_use_id`). Each resolved result carries a REAL `toolName` taken from the recorded
@@ -376,23 +402,32 @@ function stableToolCallId(
  * {@link runThroughPipeline} path and the streamed `streamSameProtocol` paths — guaranteeing
  * that pending issued calls recorded by an earlier same-session request (whether that response
  * was buffered or streamed) are paired into a REAL `tool.result` regardless of how the later
- * request is delivered. Each path invokes it exactly once, so it never double-resolves.
+ * request is delivered. Each path invokes it exactly once, so it never double-resolves. The
+ * shared arrival timestamp comes from the caller's injectable timing source (the optional
+ * `now` parameter; default: the shared monotonic wall-clock) so tests can pin result
+ * arrival times deterministically.
  */
 export function resolveAndEmitToolResults(
   tracker: ToolMetricsTracker | undefined,
   bus: TelemetryEmitter | undefined,
   requestCtx: RequestContext,
+  now?: () => number,
+  store?: ToolResultStore,
 ): void {
   if (tracker === undefined || bus === undefined) return;
   const incoming = extractIncomingToolResults(requestCtx.messages);
   if (incoming.length === 0) return;
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
   const clientId = toClientId(requestCtx.client);
-  const at = Date.now();
+  // ONE honest shared arrival time per request (requests arrive atomically), taken from the
+  // caller's injectable timing source (default: the shared monotonic wall-clock). Every result
+  // in this request subtracts its OWN matched call's issue time from this single arrival time.
+  const at = (now ?? monotonicEpochMs)();
   const resolved = tracker.resolveResults(
     sessionKey,
     incoming.map((result) => ({ toolCallId: result.toolCallId, at, chars: result.chars })),
   );
+  let seq = 0;
   for (const entry of resolved) {
     // Prefer the recorded issued-call's tool name — captured authoritatively at the point the
     // call was ISSUED (both protocol paths), so every resolved result carries a real toolName.
@@ -418,6 +453,19 @@ export function resolveAndEmitToolResults(
       at,
     } as ToolResultEvent;
     safeEmit(bus, event);
+    // Hold the RAW result content in the optional store, keyed by the SAME stable id
+    // the event carries above. The emitted event stays metadata-only — no content is
+    // added to it or the WS frame here; only the durable store captures the payload.
+    if (store !== undefined) {
+      const source = incoming.find((result) => result.toolCallId === entry.toolCallId);
+      const stableId =
+        typeof entry.toolCallId === 'string' && entry.toolCallId.length > 0
+          ? entry.toolCallId
+          : `${sessionKey}:${at}:unmatched-${seq}`;
+      const stored = rawContentToString(source?.content);
+      store.put(stableId, { id: stableId, content: stored.content, chars: stored.chars, at });
+    }
+    seq += 1;
   }
 }
 
@@ -429,6 +477,8 @@ interface IncomingToolResult {
   toolName?: string;
   /** Character length of the result payload, if measurable. */
   chars?: number;
+  /** Raw result payload (both protocols), captured for the raw-result store. */
+  content?: unknown;
 }
 
 /**
@@ -447,6 +497,7 @@ function extractIncomingToolResults(messages: unknown[]): IncomingToolResult[] {
         toolCallId: typeof message.tool_call_id === 'string' ? message.tool_call_id : undefined,
         toolName: typeof message.name === 'string' ? message.name : undefined,
         chars: measureContentLength(message.content),
+        content: message.content,
       });
       continue;
     }
@@ -457,6 +508,7 @@ function extractIncomingToolResults(messages: unknown[]): IncomingToolResult[] {
           results.push({
             toolCallId: typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined,
             chars: measureContentLength(block.content),
+            content: block.content,
           });
         }
       }
@@ -474,6 +526,30 @@ function measureContentLength(content: unknown): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Cap applied to the RAW tool-result content held in the in-memory store (caller-side value bound). */
+export const MAX_TOOL_RESULT_CONTENT_CHARS = 16384;
+
+/**
+ * Convert a raw tool-result payload into bounded stored content: the stringified
+ * payload truncated to {@link MAX_TOOL_RESULT_CONTENT_CHARS}, alongside the FULL
+ * (uncapped) character length. Returns empty when the payload is absent/unstringifiable.
+ */
+function rawContentToString(content: unknown): { content: string; chars: number } {
+  let full: string;
+  if (typeof content === 'string') {
+    full = content;
+  } else if (content == null) {
+    return { content: '', chars: 0 };
+  } else {
+    try {
+      full = JSON.stringify(content);
+    } catch {
+      return { content: '', chars: 0 };
+    }
+  }
+  return { content: full.slice(0, MAX_TOOL_RESULT_CONTENT_CHARS), chars: full.length };
 }
 
 /** True for finite numeric values. */

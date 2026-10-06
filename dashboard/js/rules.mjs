@@ -20,40 +20,65 @@ import { state } from './state.mjs';
 import { MATCHER_FIELDS, ACTION_FIELDS } from './rule-schema.mjs';
 
 /* ========================= rules list / CRUD ====================== */
-// Build one <li> for a serialized RuleSpec with an enabled toggle + buttons.
+// Build one rule card for a serialized RuleSpec: an enabled toggle + action
+// "severity" pill + name, then matcher / action (/priority) summaries, then id
+// + edit/delete actions. Disabled rules render de-emphasized (.is-disabled).
 export function renderRuleRow(spec) {
-  var li = el('li', 'rule');
-  var main = el('div', 'rule-main');
+  var enabled = spec.enabled === true;
+  var card = el('article', 'rule-card' + (enabled ? '' : ' is-disabled'));
+  if (spec.id) card.dataset.id = spec.id;
+
+  // Top row: enabled toggle, action "severity" pill, and the rule name.
+  var top = el('div', 'rc-top');
   var toggle = el('label', 'rule-toggle check');
   var cb = document.createElement('input');
   cb.type = 'checkbox';
-  cb.checked = spec.enabled === true;
+  cb.checked = enabled;
+  cb.setAttribute('aria-label', 'Enabled');
   toggle.appendChild(cb);
-  var text = el('div', 'rule-text');
-  text.appendChild(el('div', 'rule-desc', spec.description || ('Rule ' + spec.id)));
-  text.appendChild(el('div', 'rule-id muted', spec.id || ''));
-  main.appendChild(toggle);
-  main.appendChild(text);
-  var actions = el('div', 'rule-actions');
-  var editBtn = el('button', 'btn', 'Edit');
-  editBtn.type = 'button';
+  toggle.appendChild(el('span', null, enabled ? 'Enabled' : 'Disabled'));
+  var sevType = spec.action && spec.action.type ? String(spec.action.type) : '\u2014';
+  top.appendChild(toggle);
+  top.appendChild(el('span', 'badge rc-sev ' + severityClass(sevType), sevType));
+  top.appendChild(el('div', 'rc-name', spec.description || ('Rule ' + spec.id)));
+  card.appendChild(top);
+
+  // Body: matcher / action summaries (+ priority when set).
+  var body = el('div', 'rc-body');
+  body.appendChild(summaryCell('Matcher', matcherSummary(spec.matcher)));
+  body.appendChild(summaryCell('Action', actionSummary(spec.action)));
+  if (typeof spec.priority === 'number') body.appendChild(summaryCell('Priority', String(spec.priority)));
+  card.appendChild(body);
+
+  // Footer: rule id on the left, edit + delete actions on the right.
+  var foot = el('div', 'rc-foot');
+  foot.appendChild(el('span', 'rc-id muted', spec.id || ''));
+  var actions = el('div', 'rc-actions');
+  var editBtn = el('a', 'btn', 'Edit');
+  editBtn.href = '#/rules/' + encodeURIComponent(spec.id || '');
+  editBtn.title = 'Edit rule';
   var delBtn = el('button', 'btn btn-danger', 'Delete');
   delBtn.type = 'button';
+  delBtn.title = 'Delete rule';
   actions.appendChild(editBtn);
   actions.appendChild(delBtn);
-  li.appendChild(main);
-  li.appendChild(actions);
+  foot.appendChild(actions);
+  card.appendChild(foot);
+
+  // Wire behaviour. Edit navigates to the editor sub-view via its hash route.
   cb.addEventListener('change', function () { toggleEnabled(spec, cb.checked); });
-  editBtn.addEventListener('click', function () { loadSpecIntoForm(spec); });
   delBtn.addEventListener('click', function () { deleteRule(spec); });
-  return li;
+  return card;
 }
 // Render the whole rule list from a RuleSpec[] and manage the empty state.
 export function renderRules(rules) {
   var list = $('rule-list');
+  if (!list) return;
   list.textContent = '';
   var arr = Array.isArray(rules) ? rules : [];
-  $('rule-empty').hidden = arr.length !== 0;
+  state.rules = arr; // cache so openEditRuleForm can deep-link instantly
+  var empty = $('rule-empty');
+  if (empty) empty.hidden = arr.length !== 0;
   arr.forEach(function (spec) { list.appendChild(renderRuleRow(spec)); });
 }
 // GET /api/rules and re-render — called after every mutation so the list is
@@ -93,6 +118,75 @@ export async function deleteRule(spec) {
   } catch (e) {
     showNotice('Delete error: ' + errMsg(e));
   }
+}
+
+/* ============ list summaries + severity tones (pure helpers) =========== */
+// Action type -> tokenized status tone used as a "severity" pill in the list.
+// Derived from how intrusive each action is (no field in the spec declares it).
+var SEVERITY_CLASS_BY_ACTION = {
+  block: 'badge-err',           // most impactful: drops the call + message
+  hideTool: 'badge-interv',     // high: removes tools from the model's set
+  rewriteArgs: 'badge-pending', // moderate: rewrites arguments in place
+  injectMessage: 'badge-ok'     // low: adds a message to the stream
+};
+function severityClass(actionType) {
+  return SEVERITY_CLASS_BY_ACTION[actionType] || 'badge';
+}
+function truncate(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
+// One-line human summary of a matcher spec (shown under "Matcher" in a row).
+function matcherSummary(m) {
+  if (!m) return '\u2014';
+  switch (m.type) {
+    case 'toolName': {
+      var names = [];
+      if (typeof m.toolName === 'string' && m.toolName) names.push(m.toolName);
+      if (Array.isArray(m.toolNames)) Array.prototype.push.apply(names, m.toolNames);
+      return names.length ? names.join(', ') : 'any tool';
+    }
+    case 'argPattern': {
+      var parts = [];
+      if (typeof m.toolName === 'string' && m.toolName) parts.push(m.toolName);
+      else if (Array.isArray(m.toolNames) && m.toolNames.length) parts.push('[' + m.toolNames.join(', ') + ']');
+      if (typeof m.pattern === 'string' && m.pattern) parts.push('args \u220b ' + truncate(m.pattern, 48));
+      return parts.length ? parts.join(' \u00B7 ') : 'all calls';
+    }
+    case 'loop': {
+      var bits = [];
+      if (typeof m.window === 'number') bits.push(m.window + '\u00D7 in a row');
+      if (m.requireConsecutive === false) bits.push('anywhere in run');
+      if (m.paramIdentity === 'exact') bits.push('exact params');
+      else if (m.resultIdentity === 'exact') bits.push('exact results');
+      return bits.length ? bits.join(' \u00B7 ') : 'consecutive identical calls';
+    }
+    default: return '\u2014';
+  }
+}
+// One-line human summary of an action spec (shown under "Action" in a row).
+function actionSummary(a) {
+  if (!a) return '\u2014';
+  switch (a.type) {
+    case 'block':
+      return typeof a.message === 'string' && a.message ? 'block \u00B7 \u201C' + truncate(a.message, 60) + '\u201D'
+        : typeof a.reason === 'string' && a.reason ? 'block \u00B7 reason: ' + truncate(a.reason, 60)
+          : typeof a.template === 'string' && a.template ? 'block \u00B7 template' : 'block call + message';
+    case 'hideTool':
+      return Array.isArray(a.toolNames) && a.toolNames.length ? 'hide ' + a.toolNames.join(', ') : 'hide tools';
+    case 'rewriteArgs': {
+      var mode = a.mode ? ' (' + a.mode + ')' : '';
+      var target = a.toolCallId ? 'id ' + a.toolCallId : (typeof a.toolName === 'string' && a.toolName ? a.toolName : 'arguments');
+      return 'rewrite args' + (target !== 'arguments' ? ' \u00B7 ' + target : '') + mode;
+    }
+    case 'injectMessage':
+      return (a.role ? a.role + ' message' : 'inject message') + (typeof a.content === 'string' && a.content ? ' \u00B7 \u201C' + truncate(a.content, 60) + '\u201D' : '');
+    default: return '\u2014';
+  }
+}
+// One labelled summary cell for the rule-card body.
+function summaryCell(label, value) {
+  var cell = el('div', 'rc-cell');
+  cell.appendChild(el('div', 'rc-label', label));
+  cell.appendChild(el('div', 'rc-value', value));
+  return cell;
 }
 
 /* ========================= dynamic form build ===================== */
@@ -285,8 +379,12 @@ export function resetForm() {
 // Reflect edit vs. add mode in the form buttons.
 export function updateFormMode() {
   var editing = state.editingId !== '';
-  $('btn-cancel').hidden = !editing;
-  $('btn-add').textContent = editing ? 'Save changes' : 'Add rule';
+  var cancelBtn = $('btn-cancel');
+  if (cancelBtn) cancelBtn.hidden = !editing;
+  var addBtn = $('btn-add');
+  if (addBtn) addBtn.textContent = editing ? 'Save changes' : 'Add rule';
+  var title = $('rule-editor-title');
+  if (title) title.textContent = editing ? 'Edit rule' : 'New rule';
 }
 // Submit the form: POST (add) or PATCH (edit) a RuleSpec, then re-render.
 export async function saveRule(spec) {
@@ -305,8 +403,10 @@ export async function saveRule(spec) {
       showFormError(data && data.error ? data.error : 'Request failed (' + res.status + ')');
       return;
     }
+    var wasEdit = state.editingId !== '';
     resetForm();
-    refreshRules();
+    flashSavedNote(wasEdit ? 'Changes saved.' : 'Rule added.');
+    location.hash = '#/rules'; // return to the list so the change is visible
   } catch (e) {
     showFormError('Network error: ' + errMsg(e));
   }
@@ -319,20 +419,71 @@ export function submitRule(e) {
   saveRule(r.spec);
 }
 
+/* ========================= route -> form entry ====================== */
+// Module-scope handle for the auto-dismissing save note's timer.
+var savedTimer = null;
+// Flash a transient save-confirmation note at the top of the rules page.
+function flashSavedNote(msg) {
+  var n = $('rule-saved-note');
+  if (!n) return;
+  n.textContent = msg;
+  n.hidden = false;
+  if (savedTimer) clearTimeout(savedTimer);
+  savedTimer = setTimeout(function () { n.hidden = true; }, 2600);
+}
+// Open the editor in ADD mode: a clean, default form.
+export function openNewRuleForm() {
+  resetForm();
+}
+// Open the editor in EDIT mode for `id`. Uses the cached list when available so a
+// deep-link opens instantly; otherwise fetches once. Falls back to the list (with a
+// notice) when the rule cannot be found.
+export async function openEditRuleForm(id) {
+  var spec = (state.rules || []).find(function (r) { return r && r.id === id; });
+  if (!spec) {
+    try {
+      var res = await fetch('api/rules');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      renderRules(await res.json());
+      spec = (state.rules || []).find(function (r) { return r && r.id === id; });
+    } catch (e) {
+      showNotice('Rules unavailable: ' + errMsg(e));
+      return;
+    }
+  }
+  if (!spec) {
+    showNotice('Rule not found: ' + id);
+    location.hash = '#/rules';
+    return;
+  }
+  loadSpecIntoForm(spec);
+}
+
 /* ========================= wiring =============================== */
-// Wire the rule form's controls: matcher/action type changes rebuild the
-// dynamic fields and refresh mode; form submit collects + saves; cancel resets.
+// Wire the rule form's controls and the list's "Add rule" affordance:
+//   - matcher/action type changes rebuild the dynamic fields and refresh mode;
+//   - form submit collects + saves (POST for add, PATCH for edit);
+//   - Cancel returns to the rules list (the form resets on the next open);
+//   - the list toolbar's "Add rule" button opens the editor in add mode.
+// (The editor's "Back to rules" link is a plain <a href="#/rules"> — native
+// hash navigation drives the router, so it needs no handler here.)
 export function bindFormEvents() {
-  $('matcher-type').addEventListener('change', function () {
+  var mt = $('matcher-type');
+  if (mt) mt.addEventListener('change', function () {
     state.curMatcherType = this.value;
     renderMatcherFields(state.curMatcherType);
     updateFormMode();
   });
-  $('action-type').addEventListener('change', function () {
+  var at = $('action-type');
+  if (at) at.addEventListener('change', function () {
     state.curActionType = this.value;
     renderActionFields(state.curActionType);
     updateFormMode();
   });
-  $('rule-form').addEventListener('submit', submitRule);
-  $('btn-cancel').addEventListener('click', resetForm);
+  var form = $('rule-form');
+  if (form) form.addEventListener('submit', submitRule);
+  var cancel = $('btn-cancel');
+  if (cancel) cancel.addEventListener('click', function () { location.hash = '#/rules'; });
+  var addRuleBtn = $('btn-add-rule');
+  if (addRuleBtn) addRuleBtn.addEventListener('click', function () { location.hash = '#/rules/new'; });
 }

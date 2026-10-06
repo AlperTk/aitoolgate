@@ -6,6 +6,8 @@ import { createProxyHandler, type ProxyOptions, type ProxyHandler } from '../pro
 import { createApiHandler, type RequestHandler } from '../api/http';
 import { createWsServer, type WsServer } from '../api/ws';
 import { createRuleStore, type RuleStore } from '../api/ruleStore';
+import { createToolResultStore, type ToolResultStore } from '../telemetry/toolResultStore';
+import { createSqliteToolResultPersister, type SqliteToolResultPersister } from '../telemetry/sqliteToolResultPersister';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
 import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
@@ -21,6 +23,8 @@ import type { PolicyRule } from '../policy/ruleEngine';
 export interface MountOptions {
   /** Live rule registry backing the `/api/rules` CRUD routes (default: fresh empty store). */
   ruleStore?: RuleStore;
+  /** Live raw-tool-result store backing `/api/tool-results/:id` (default: fresh empty store). */
+  toolResultStore?: ToolResultStore;
   /** Rules to seed the rule store with (default: none). */
   initialRules?: PolicyRule[];
   /** Explicit directory containing the dashboard assets; overrides the on-disk resolver. */
@@ -41,6 +45,10 @@ export interface McmServerHandle {
   storage?: SqliteStorage;
   /** In-memory rule registry backing the rule CRUD routes. */
   ruleStore: RuleStore;
+  /** Live raw-tool-result store backing the `/api/tool-results/:id` route (always present). */
+  toolResultStore: ToolResultStore;
+  /** SQLite-backed tool-result persister, present only when `toolResults` is enabled in config. */
+  toolResultPersister?: SqliteToolResultPersister;
   /** Mounted REST API request handler (`true` = handled, `false` = fall through). */
   apiHandler: RequestHandler;
   /** Built-in WebSocket server attached to the HTTP server (broadcasts the shared bus). */
@@ -177,6 +185,23 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   const tracker = options?.telemetry?.tracker ?? createToolMetricsTracker();
   const storage = options?.telemetry?.storage;
 
+  // Shared raw-tool-result store: the proxy WRITES each resolved result's RAW content here and the
+  // REST API READS it back over `/api/tool-results/:id`. When tool-result persistence is enabled
+  // via config, a SQLite-backed persister mirrors every put() fire-and-forget; the API route
+  // falls back to it on an in-memory cache miss.
+  let toolResultPersister: SqliteToolResultPersister | undefined;
+  if (config.toolResults.enabled) {
+    toolResultPersister = createSqliteToolResultPersister({
+      dbPath: config.toolResults.dbPath,
+      flushIntervalMs: config.toolResults.flushIntervalMs,
+      batchSize: config.toolResults.batchSize,
+      fsyncPerBatch: config.toolResults.fsyncPerBatch,
+    });
+  }
+  const toolResultStore: ToolResultStore =
+    mount?.toolResultStore ??
+    createToolResultStore(toolResultPersister !== undefined ? { persister: toolResultPersister } : {});
+
   const proxyOptions: ProxyOptions = {
     ...(options ?? {}),
     upstream:
@@ -189,13 +214,14 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     // Reuse any caller-provided bus/collector; otherwise default to fresh instances
     // that share the configured bus so the live view always sees the stage's events.
     telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
+    toolResultStore,
   };
   const handleProxyRequest: ProxyHandler = createProxyHandler(proxyOptions);
 
   // Shared rule registry + REST API, both backed by the same collector/bus above.
   const ruleStore: RuleStore =
     mount?.ruleStore ?? createRuleStore(mount?.initialRules ? { initial: mount.initialRules } : {});
-  const api: RequestHandler = createApiHandler({ ruleStore, collector });
+  const api: RequestHandler = createApiHandler({ ruleStore, collector, toolResultStore });
   const dashboardDir = resolveDashboardDir(mount?.dashboardDir);
 
   const server = http.createServer((req, res) => {
@@ -243,6 +269,14 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     server.once('close', () => ws.close());
   }
 
+  // Graceful shutdown: flush any buffered tool results and close the SQLite DB.
+  // Only wired when a persister was configured; best-effort (never throws).
+  if (toolResultPersister !== undefined) {
+    server.once('close', () => {
+      void toolResultPersister.close();
+    });
+  }
+
   // Expose a test-facing handle as a NON-enumerable property without changing how
   // the server is invoked (existing callers/tests keep working unchanged).
   Object.defineProperty(server, 'mcm', {
@@ -252,6 +286,8 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
       tracker,
       ...(storage !== undefined ? { storage } : {}),
       ruleStore,
+      toolResultStore,
+      ...(toolResultPersister !== undefined ? { toolResultPersister } : {}),
       apiHandler: api,
       ws: ws as WsServer,
     },

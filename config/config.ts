@@ -1,6 +1,20 @@
 /** Protocol the upstream model provider speaks. */
 export type UpstreamProtocol = 'openai' | 'anthropic';
 
+/** Configuration for optional SQLite-backed tool-result persistence. */
+export interface ToolResultsConfig {
+  /** Enable SQLite persistence of raw tool results (default `false`). */
+  enabled: boolean;
+  /** Path to the SQLite database file (default `data/tool-results.db`). */
+  dbPath: string;
+  /** Milliseconds between batched flushes to disk (default `50`). */
+  flushIntervalMs: number;
+  /** Number of entries that trigger an immediate flush (default `100`). */
+  batchSize: number;
+  /** Whether each batch flush fsyncs (default `false`; `true` for durability over throughput). */
+  fsyncPerBatch: boolean;
+}
+
 /** Minimal, framework-agnostic runtime configuration. */
 export interface Config {
   /** Port the HTTP server listens on. */
@@ -16,6 +30,8 @@ export interface Config {
     /** Protocol the upstream speaks: `openai` (default) or `anthropic`. */
     protocol: UpstreamProtocol;
   };
+  /** Optional SQLite-backed tool-result persistence (defaults: disabled). */
+  toolResults: ToolResultsConfig;
 }
 
 /** Sensible defaults so the server boots with zero configuration. */
@@ -26,6 +42,13 @@ const DEFAULTS: Config = {
     model: 'gpt-4o-mini',
     protocol: 'openai',
   },
+  toolResults: {
+    enabled: false,
+    dbPath: 'data/tool-results.db',
+    flushIntervalMs: 50,
+    batchSize: 100,
+    fsyncPerBatch: false,
+  },
 };
 
 /**
@@ -33,7 +56,9 @@ const DEFAULTS: Config = {
  * {@link DEFAULTS} for anything unset.
  *
  * Recognized env vars: `PORT`, `UPSTREAM_BASE_URL`, `UPSTREAM_MODEL`,
- * `UPSTREAM_API_KEY`, `UPSTREAM_PROTOCOL`.
+ * `UPSTREAM_API_KEY`, `UPSTREAM_PROTOCOL`, `TOOL_RESULTS_ENABLED`,
+ * `TOOL_RESULTS_DB`, `TOOL_RESULTS_FLUSH_MS`, `TOOL_RESULTS_BATCH_SIZE`,
+ * `TOOL_RESULTS_FSYNC`.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port =
@@ -50,10 +75,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       protocol: parseProtocol(env.UPSTREAM_PROTOCOL),
       ...(env.UPSTREAM_API_KEY ? { apiKey: env.UPSTREAM_API_KEY } : {}),
     },
+    toolResults: {
+      enabled: parseBool(env.TOOL_RESULTS_ENABLED) ?? DEFAULTS.toolResults.enabled,
+      dbPath: env.TOOL_RESULTS_DB ?? DEFAULTS.toolResults.dbPath,
+      flushIntervalMs: parsePositiveInt(env.TOOL_RESULTS_FLUSH_MS) ?? DEFAULTS.toolResults.flushIntervalMs,
+      batchSize: parsePositiveInt(env.TOOL_RESULTS_BATCH_SIZE) ?? DEFAULTS.toolResults.batchSize,
+      fsyncPerBatch: parseBool(env.TOOL_RESULTS_FSYNC) ?? DEFAULTS.toolResults.fsyncPerBatch,
+    },
   };
 }
 
 /** Interpret the `UPSTREAM_PROTOCOL` env var; anything but `anthropic` defaults to `openai`. */
 function parseProtocol(value: string | undefined): UpstreamProtocol {
   return value === 'anthropic' ? 'anthropic' : 'openai';
+}
+
+/** Parse a boolean env var: `'true'`/`'1'` → `true`, `'false'`/`'0'` → `false`, else `undefined`. */
+function parseBool(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return undefined;
+}
+
+/** Parse a positive-integer env var; returns `undefined` for unset/invalid values. */
+function parsePositiveInt(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }

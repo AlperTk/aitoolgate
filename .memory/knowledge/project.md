@@ -7,8 +7,8 @@ Local, LiteLLM-style model proxy that sits in the agentic loop as a man-in-the-m
 - Forward LLM chat traffic to a single configured upstream model (OpenAI- or Anthropic-compatible).
 - Apply declarative policy rules to the stream: block tool calls, detect tool-call loops, hide tools from the model, inject corrective feedback messages, rewrite tool arguments.
 - Bidirectional protocol translation between OpenAI and Anthropic wire formats (request and response, including SSE streams).
-- REST API for rule CRUD plus a live WebSocket feed for the dashboard.
-- Persist rules, telemetry events, and per-tool metrics to SQLite (opt-in).
+- REST API for rule CRUD plus a live WebSocket feed for the dashboard, plus an on-demand endpoint (`GET /api/tool-results/:id`) exposing a tool call's actual returned value.
+- Persist rules, telemetry events, and per-tool metrics to SQLite (opt-in), with optional persistence of tool-result values gated by `toolResults.enabled` (default off).
 - Serve the static local dashboard (real-time view of sessions, tool calls, and interventions).
 
 ## Domain Concepts
@@ -20,6 +20,7 @@ Local, LiteLLM-style model proxy that sits in the agentic loop as a man-in-the-m
 - **SessionKey**: identity derived from headers/messages used to scope per-session state (feedback store, session token).
 - **TelemetryEvent / ToolCallEvent / InterventionEvent**: events emitted for requests, tool calls, and policy interventions; consumed by the collector, tool-metrics tracker, and dashboard.
 - **FeedbackMessage**: injected corrective message stored per session for dashboard drill-down.
+- **ToolResult value (on-demand)**: a tool call's actual returned output, captured out-of-band into an in-memory store (key = tool-call id) and fetched lazily by the dashboard; optionally persisted to SQLite when `toolResults.enabled`.
 
 ## External Systems
 - **Upstream model API** — the single configured target (OpenAI/Anthropic endpoint) that all LLM traffic forwards to.

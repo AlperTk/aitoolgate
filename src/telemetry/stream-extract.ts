@@ -24,12 +24,19 @@
  *   Anthropic `message_start` / `message_delta` `usage` frame) when the provider reports
  *   usage on the stream — omitted rather than fabricated when no usage is present.
  *
+ * Per-call DURATION attribution, however, rides on the TRACKER, not the events: each
+ * call's own FIRST-OBSERVATION time (when it first appeared on the stream) is recorded
+ * as its issue time — via an injectable `now` clock, defaulting to the shared monotonic
+ * wall-clock — so batched or interleaved calls in one streamed turn each measure their
+ * TRUE issue→result span when their results later resolve, without disturbing the
+ * shared turn-level event `at` the token-turn dedup depends on.
+ *
  * Best-effort throughout: unparseable lines are ignored, a missing/undefined `bus`
  * yields a pure passthrough, and no internal error can propagate into the stream.
  */
 import { Transform } from 'node:stream';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from './events';
-import type { ToolMetricsTracker } from './toolMetrics';
+import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -39,19 +46,34 @@ interface StreamToolCall {
   args: string;
   /** The stable tool-call id (`tool_calls[].id` / Anthropic `tool_use.id`), when present. */
   id: string;
+  /**
+   * When THIS specific call was FIRST observed on the stream (epoch milliseconds), captured
+   * once at its first fragment/block. Recorded into the shared tracker as that call's issue
+   * time so its later result measures a true per-call span: sibling calls in one batched or
+   * interleaved streamed turn generally carry distinct first-observation times even though
+   * their EMITTED events share ONE turn-level `at` (which token-turn dedup relies on).
+   */
+  firstSeenAt?: number;
 }
 
 /**
  * Create a passthrough {@link Transform} extracting tool-call telemetry from an SSE byte
  * stream. See the module doc for the exact emission semantics. Safe with an undefined
  * `bus` (pure passthrough); `clientId` is attached to emitted events only when provided.
+ * An optional injectable timing source (`now`, epoch milliseconds — defaulting to the
+ * shared monotonic wall-clock) controls BOTH the shared turn-level event `at` and each
+ * call's per-first-observation issue time recorded into the shared tracker.
  */
 export function createSseToolCallExtractor(
   bus: TelemetryEmitter | undefined,
   sessionKey: string,
   clientId?: string,
   tracker?: ToolMetricsTracker,
+  now?: () => number,
 ): Transform {
+  // Injectable timing source (epoch milliseconds); defaults to the shared monotonic wall-clock.
+  const clockNow = now ?? monotonicEpochMs;
+
   /** Emit through the optional bus, swallowing any synchronous or async failure. */
   const emitEvent = (event: ToolCallEvent | ToolResultEvent): void => {
     if (bus === undefined) return;
@@ -76,7 +98,7 @@ export function createSseToolCallExtractor(
   // collector's per-(sessionKey, at) token dedup collapses a multi-call turn into one.
   let turnAt: number | undefined;
   const turnTimestamp = (): number => {
-    if (turnAt === undefined) turnAt = Date.now();
+    if (turnAt === undefined) turnAt = clockNow();
     return turnAt;
   };
   // A set of ids already assigned this stream so the stable-id fallback never hands two sibling
@@ -105,9 +127,15 @@ export function createSseToolCallExtractor(
     byIndex.delete(index);
     if (acc.name === '') return;
     const args = parseArgs(acc.args);
-    // Every tool call emitted this stream shares ONE turn-level `at`, so the collector's
-    // per-(sessionKey, at) token dedup collapses a multi-call turn into a single contribution.
+    // The EMITTED event keeps ONE shared turn-level `at` so the collector's per-(sessionKey, at)
+    // token dedup collapses a multi-call turn into a single contribution. The TRACKER instead
+    // records THIS call's own first-observation time (captured when the call first appeared on
+    // the stream) as its issue time, so its later result measures a TRUE per-call span — even
+    // for batched/interleaved calls in one streamed turn observed at different times. Results
+    // that genuinely arrive together keep equal (correct, parallel-run) durations; out-of-order
+    // arrivals each take their own span, paired by id (see `toolMetrics`).
     const at = turnTimestamp();
+    const issuedAt = acc.firstSeenAt ?? at;
     // Assign a stable, turn-unique id (the upstream id when present, else a deterministic
     // `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch turn NEVER share an
     // identical id — the field the dashboard dedups on. The same id feeds both the emitted event
@@ -124,12 +152,12 @@ export function createSseToolCallExtractor(
       ...(streamUsage !== undefined ? { tokens: streamUsage } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
     });
-    // Record the issued call (sharing the same turn-level timestamp, plus its name so a
-    // resolved result can surface a real toolName) so its later result can be paired. Every
-    // emitted call now carries a non-empty stable id, so every emitted call is recorded.
+    // Record the issued call with ITS OWN issue time (plus its name so a resolved result can
+    // surface a real toolName) so its later result can be paired per-call. Every emitted call
+    // now carries a non-empty stable id, so every emitted call is recorded.
     if (tracker !== undefined && id !== '') {
       try {
-        tracker.recordIssued(sessionKey, [{ id, at, ...(acc.name !== '' ? { name: acc.name } : {}) }]);
+        tracker.recordIssued(sessionKey, [{ id, at: issuedAt, ...(acc.name !== '' ? { name: acc.name } : {}) }]);
       } catch {
         // A throwing tracker must never break the stream pass-through.
       }
@@ -167,6 +195,8 @@ export function createSseToolCallExtractor(
       acc = { name: '', args: '', id: '' };
       byIndex.set(index, acc);
     }
+    // First observation of this call: pin ITS issue time once (per-call duration attribution).
+    if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
     if (typeof record.id === 'string' && record.id !== '') acc.id = record.id;
     const fn = record.function;
     if (isRecord(fn)) {
@@ -197,6 +227,8 @@ export function createSseToolCallExtractor(
           acc = { name: '', args: '', id: '' };
           byIndex.set(index, acc);
         }
+        // First observation of this tool_use block: pin ITS issue time once.
+        if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
         if (typeof block.id === 'string' && block.id !== '') acc.id = block.id;
         if (typeof block.name === 'string' && block.name !== '') acc.name = block.name;
         break;
@@ -208,7 +240,10 @@ export function createSseToolCallExtractor(
         if (!isRecord(jsonDelta) || typeof jsonDelta.partial_json !== 'string') return;
         const index = typeof parsed.index === 'number' ? parsed.index : -1;
         const acc = byIndex.get(index);
-        if (acc !== undefined) acc.args += jsonDelta.partial_json;
+        if (acc !== undefined) {
+          if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
+          acc.args += jsonDelta.partial_json;
+        }
         break;
       }
       default:

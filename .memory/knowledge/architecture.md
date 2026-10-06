@@ -28,9 +28,11 @@ Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contract
 - `toolMetrics.ts` — `createToolMetricsTracker()` aggregates per-tool metrics.
 - `events.ts` — event type defs (`TelemetryEvent`, `ToolCallEvent`, `InterventionEvent`).
 - `stream-extract.ts` — extracts tool calls + usage from SSE streams.
+- `toolResultStore.ts` — `createToolResultStore()`: bounded in-memory store of raw tool-result values keyed by tool-call id (primary source); `ToolResultPersister` port (optional async `persist`/`lookup`) for out-of-band persistence; async `resolve(id)` = memory-first then DB-fallback.
+- `sqliteToolResultPersister.ts` — `createSqliteToolResultPersister()`: optional SQLite impl of the port; async batched drain (bounded buffer + timer flush, WAL mode) so the request hot path never does synchronous disk I/O.
 
 ### `src/api/` — Control-plane HTTP
-- `http.ts` — `createApiHandler()`: REST rule CRUD; `readJSONBody` is the only throwing handler.
+- `http.ts` — `createApiHandler()`: REST rule CRUD + `GET /api/tool-results/:id` (stored tool-result value via `store.resolve`; `ApiOptions.toolResultStore?` injected from composition root); `readJSONBody` is the only throwing handler.
 - `ruleStore.ts` — in-memory `RuleStore`.
 - `ruleSpec.ts` — rule spec shape/validation.
 - `ws.ts` — `createWsServer()` live WebSocket feed (`IncomingFrame`).
@@ -39,7 +41,7 @@ Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contract
 - `session/session.ts` — `deriveSessionKey()`, per-session state/token.
 - `pipeline/index.ts` — `DefaultPipeline` / `createPipeline()` base pipeline over the ports contract.
 - `storage/sqlite.ts` + `schema.ts` — SQLite persistence + table/migration schema (`createDataTable`).
-- `config/config.ts` — `loadConfig()` reads env vars + defaults (top-level `port`, nested `upstream.*`).
+- `config/config.ts` — `loadConfig()` reads env vars + defaults (top-level `port`, nested `upstream.*`, nested `toolResults.*` gating optional tool-result-value persistence, default off).
 
 ### `dashboard/`
 - Static real-time web UI (vanilla JS `.mjs`), served from disk on the app port (`http://localhost:8787/`), driven by REST + WebSocket; consumes intervention/tool events for drill-down views.
@@ -79,9 +81,12 @@ TelemetryEventBus (createEventBus)
     └── ws.ts broadcast → dashboard live view (SSE/WebSocket)
 ```
 
+## Tool-Result Value (On-Demand Drill-Down)
+The WS `ToolResultEvent` stays metadata-only (`ok`/`durationMs`/`chars`/tokens). Raw result **values** are captured out-of-band at `resolveAndEmitToolResults` into an in-memory `toolResultStore` (bounded, key = tool-call id), served by `GET /api/tool-results/:id`; the dashboard loads them lazily (Response tab fetches once, caches). When `config.toolResults.enabled` is on, an async batched SQLite drain persists them (default off).
+
 ## External Dependencies
 | System | Purpose |
 |---|---|
 | Upstream model API (OpenAI/Anthropic) | Single LLM target all traffic forwards to |
-| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics |
+| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics; optional tool-result values when `toolResults.enabled` |
 | Dashboard browser client | Real-time viewing of sessions, tool calls, interventions |

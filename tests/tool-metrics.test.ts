@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createToolMetricsTracker } from '../src/telemetry/toolMetrics';
+import { createToolMetricsTracker, monotonicEpochMs } from '../src/telemetry/toolMetrics';
 
 /** A controllable clock so time-dependent behavior stays deterministic. */
 function makeClock(start = 0) {
@@ -197,4 +197,134 @@ test('results only match a pending call in the same session', () => {
     { toolCallId: 'x', durationMs: 1000 },
   ]);
   assert.equal(tracker.pendingCount(), 1);
+});
+
+// --- per-call duration attribution (batched / interleaved / orphaned) -----------
+
+test('a batched same-arrival batch resolves with EQUAL per-id durations, paired by id not position', () => {
+  const clock = makeClock(3000); // fresh relative to every issue/arrival time below
+  const tracker = createToolMetricsTracker({ now: clock.now });
+
+  // Three sibling calls observed together in ONE turn share the same issue time.
+  tracker.recordIssued('sess-1', [
+    { id: 'a', at: 1000, name: 't_a' },
+    { id: 'b', at: 1000, name: 't_b' },
+    { id: 'c', at: 1000, name: 't_c' },
+  ]);
+  assert.equal(tracker.pendingCount(), 3);
+
+  // All three results arrive TOGETHER (one atomic request) but listed in reversed order:
+  // each pairs by its OWN id and they correctly share an EQUAL duration (parallel run) —
+  // no fabricated spread, no single bogus shared value detached from the ids.
+  assert.deepEqual(
+    tracker.resolveResults('sess-1', [
+      { toolCallId: 'c', at: 2500, chars: 3 },
+      { toolCallId: 'a', at: 2500, chars: 1 },
+      { toolCallId: 'b', at: 2500, chars: 2 },
+    ]),
+    [
+      { toolCallId: 'c', durationMs: 1500, toolName: 't_c', chars: 3 },
+      { toolCallId: 'a', durationMs: 1500, toolName: 't_a', chars: 1 },
+      { toolCallId: 'b', durationMs: 1500, toolName: 't_b', chars: 2 },
+    ],
+  );
+  assert.equal(tracker.pendingCount(), 0);
+});
+
+test('interleaved / out-of-order arrivals each take their OWN span (matched by id)', () => {
+  const clock = makeClock(5000); // fresh relative to every issue/arrival time below
+  const tracker = createToolMetricsTracker({ now: clock.now });
+
+  tracker.recordIssued('sess-1', [
+    { id: 'a', at: 1000 },
+    { id: 'b', at: 1200 },
+    { id: 'c', at: 1400 },
+  ]);
+
+  // Results arrive INTERLEAVED across successive requests, in an order matching NEITHER the
+  // issue order NOR the arrival chronology of the later batch: c first, then a, then b.
+  assert.deepEqual(tracker.resolveResults('sess-1', [{ toolCallId: 'c', at: 3000 }]), [
+    { toolCallId: 'c', durationMs: 1600 },
+  ]);
+  assert.equal(tracker.pendingCount(), 2);
+  assert.deepEqual(
+    tracker.resolveResults('sess-1', [
+      { toolCallId: 'a', at: 3500 },
+      { toolCallId: 'b', at: 4000 },
+    ]),
+    [
+      { toolCallId: 'a', durationMs: 2500 },
+      { toolCallId: 'b', durationMs: 2800 },
+    ],
+  );
+  assert.equal(tracker.pendingCount(), 0);
+});
+
+test('an orphaned (never-resolved) call never yields a bogus duration; nothing matches after its TTL sweep', () => {
+  const clock = makeClock(0);
+  const tracker = createToolMetricsTracker({ now: clock.now, ttlMs: 1000 });
+
+  tracker.recordIssued('sess-1', [{ id: 'orphan', at: 0 }]);
+  assert.equal(tracker.pendingCount(), 1);
+
+  // No result arrives: while it stays pending, nothing is measured or emitted.
+  assert.deepEqual(tracker.resolveResults('sess-1', []), []);
+  assert.equal(tracker.pendingCount(), 1);
+
+  // After the TTL sweep a late result can no longer match it — no negative/NaN duration exists:
+  clock.set(2000);
+  assert.deepEqual(tracker.resolveResults('sess-1', [{ toolCallId: 'orphan', at: 2000 }]), []);
+  assert.equal(tracker.pendingCount(), 0);
+});
+
+test('empty / zero batches are safe on both record and resolve sides', () => {
+  const clock = makeClock(1000);
+  const tracker = createToolMetricsTracker({ now: clock.now });
+
+  tracker.recordIssued('sess-1', []); // empty issued batch: no-op
+  assert.equal(tracker.pendingCount(), 0);
+  assert.deepEqual(tracker.resolveResults('sess-1', []), []); // empty results batch: no-op
+  // A result with NO tool-call id cannot match any pending call and is skipped safely:
+  tracker.recordIssued('sess-1', [{ id: 'known', at: 1000 }]);
+  assert.deepEqual(tracker.resolveResults('sess-1', [{ at: 2000 }]), []);
+  assert.equal(tracker.pendingCount(), 1);
+});
+
+test('the cross-session fallback still resolves by id with that call OWN span', () => {
+  const clock = makeClock(4000);
+  const tracker = createToolMetricsTracker({ now: clock.now });
+
+  tracker.recordIssued('sess-A', [{ id: 'x', at: 1000, name: 't_x' }]);
+  tracker.recordIssued('sess-B', [{ id: 'y', at: 1500 }]);
+
+  // Resolving from a DIVERGING session key (no exact bucket) falls back to the same id in
+  // another session and measures THAT call's own issue→result span:
+  assert.deepEqual(tracker.resolveResults('sess-C', [{ toolCallId: 'x', at: 3000 }]), [
+    { toolCallId: 'x', durationMs: 2000, toolName: 't_x' },
+  ]);
+  assert.equal(tracker.pendingCount(), 1); // sess-B's distinct call stays untouched
+  assert.deepEqual(tracker.resolveResults('sess-C', [{ toolCallId: 'y', at: 3500 }]), [
+    { toolCallId: 'y', durationMs: 2000 },
+  ]);
+  assert.equal(tracker.pendingCount(), 0);
+});
+
+// --- monotonic default clock ----------------------------------------------------
+
+test('monotonicEpochMs never steps backward and stays aligned with the wall clock', () => {
+  const t0 = monotonicEpochMs();
+  const t1 = monotonicEpochMs();
+  assert.ok(t1 >= t0, 'successive readings are monotonically non-decreasing');
+  assert.ok(Math.abs(monotonicEpochMs() - Date.now()) < 5000, 'stays within 5s of the wall clock');
+});
+
+test('the default (uninjected) clock measures exact issue->result spans via monotonicEpochMs', () => {
+  const tracker = createToolMetricsTracker(); // no injected clock -> monotonic default
+  const t0 = monotonicEpochMs();
+  tracker.recordIssued('sess-1', [{ id: 'a', at: t0 }]);
+  const t1 = monotonicEpochMs();
+  assert.ok(t1 - t0 >= 0, 'a monotonic default clock cannot produce a negative span');
+  assert.deepEqual(tracker.resolveResults('sess-1', [{ toolCallId: 'a', at: t1 }]), [
+    { toolCallId: 'a', durationMs: t1 - t0 },
+  ]);
 });

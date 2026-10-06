@@ -19,6 +19,7 @@ import {
 import { createSseToolCallExtractor } from '../telemetry/stream-extract';
 import type { TelemetryEmitter } from '../telemetry/events';
 import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
+import type { ToolResultStore } from '../telemetry/toolResultStore';
 
 /** Dependencies for the Anthropic-compatible route handlers. */
 export interface AnthropicHandlerDeps {
@@ -28,6 +29,8 @@ export interface AnthropicHandlerDeps {
   bus?: TelemetryEmitter;
   /** Shared tool-call latency tracker (optional) pairing issued calls with their later results. */
   tracker?: ToolMetricsTracker;
+  /** Optional raw-tool-result store capturing each resolved result's RAW content (keyed by stable id). */
+  toolResultStore?: ToolResultStore;
 }
 
 /**
@@ -63,7 +66,7 @@ export async function handleAnthropicRoute(
       deps.pipeline,
       requestCtx,
       (request) => forwardAnthropicRequest(deps.upstream, request as AnthropicRequest),
-      { bus: deps.bus, tracker: deps.tracker },
+      { bus: deps.bus, tracker: deps.tracker, toolResultStore: deps.toolResultStore },
     );
     sendJSON(res, status, body);
     return true;
@@ -99,7 +102,7 @@ async function streamSameProtocol(
   // Request-phase tool-RESULT detection runs on EVERY proxied request — including streamed ones —
   // so pending issued calls recorded by an earlier same-session request pair into a REAL
   // tool.result even when this response itself is streamed (a no-op when nothing matches).
-  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx);
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore);
   const upstreamResponse = await streamAnthropicRequest(deps.upstream, processed.raw as AnthropicRequest);
   // Pipe the raw SSE through a passthrough transformer that extracts tool-call telemetry
   // onto the shared bus WITHOUT altering forwarded bytes (a no-op when no bus is wired).

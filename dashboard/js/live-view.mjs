@@ -251,17 +251,57 @@ export function bindRowClick(li, rs) {
   });
 }
 
-// Fill the inline detail block under a row with args / result / session / intervention.
+// Fill the inline detail block under a row with a tab strip: Arguments | Response | Details.
+// Only one tab panel is visible at a time; the active tab is tracked per row in rs.activeTab.
+// The Response tab lazily fetches api/tool-results/<id> on first activation and caches
+// the result in rs.response so re-opening never refetches.
 export function renderRowDetail(rs) {
   var detailEl = rs.li.querySelector('.row-detail');
   if (!detailEl) return;
+  if (!rs.activeTab) rs.activeTab = 'arguments';
+  var html = '<div class="rd-tabs">';
+  ['arguments', 'response', 'details'].forEach(function (tab) {
+    var label = tab.charAt(0).toUpperCase() + tab.slice(1);
+    html += '<button type="button" class="rd-tab' + (rs.activeTab === tab ? ' active' : '') + '" data-tab="' + tab + '">' + label + '</button>';
+  });
+  html += '</div>';
+  html += '<div class="rd-tab-panel" data-panel="arguments">' + buildArgsPanel(rs) + '</div>';
+  html += '<div class="rd-tab-panel" data-panel="response">' + renderResponseValue(rs) + '</div>';
+  html += '<div class="rd-tab-panel" data-panel="details">' + buildDetailsPanel(rs) + '</div>';
+  detailEl.innerHTML = html;
+  // Show only the active tab panel; hide the rest.
+  detailEl.querySelectorAll('.rd-tab-panel').forEach(function (p) {
+    p.hidden = p.dataset.panel !== rs.activeTab;
+  });
+  // Wire tab-switch click handlers.
+  detailEl.querySelectorAll('.rd-tab').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var tab = btn.dataset.tab;
+      if (rs.activeTab === tab) return;
+      rs.activeTab = tab;
+      detailEl.querySelectorAll('.rd-tab').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
+      detailEl.querySelectorAll('.rd-tab-panel').forEach(function (p) { p.hidden = p.dataset.panel !== tab; });
+      if (tab === 'response') maybeFetchResponse(rs, detailEl);
+    });
+  });
+  // If the Response tab was already active when we rebuilt, ensure it is fetched/rendered.
+  if (rs.activeTab === 'response') maybeFetchResponse(rs, detailEl);
+}
+
+// Build the Arguments tab panel content from callEv.args.
+function buildArgsPanel(rs) {
+  if (rs.callEv && rs.callEv.args != null) {
+    return '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre>';
+  }
+  return '<div class="muted small">No arguments.</div>';
+}
+
+// Build the Details tab panel content: result metadata + session + interventions.
+function buildDetailsPanel(rs) {
   var ev = rs.callEv || rs.resultEv;
   var res = rs.resultEv;
   var html = '';
-  if (rs.callEv && rs.callEv.args != null) {
-    html += '<div class="rd-section"><div class="rd-label">Arguments</div>';
-    html += '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre></div>';
-  }
   if (res) {
     html += '<div class="rd-section"><div class="rd-label">Result</div>';
     html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
@@ -286,8 +326,72 @@ export function renderRowDetail(rs) {
       html += '</div>';
     }
   }
-  if (!html) html = '<div class="muted small">No additional details.</div>';
-  detailEl.innerHTML = html;
+  return html || '<div class="muted small">No additional details.</div>';
+}
+
+// Derive the stable per-row id used to look up the stored tool result via REST.
+function deriveResponseId(rs) {
+  var re = rs.resultEv;
+  var ce = rs.callEv;
+  return (re && (re.toolCallId || re.id)) || (ce && ce.id) || rs.li.dataset.callId || '';
+}
+
+// Lazily fetch the tool-result content on first activation of the Response tab.
+// Fires exactly one fetch per row; subsequent activations render the cached state.
+function maybeFetchResponse(rs, detailEl) {
+  var panelEl = detailEl.querySelector('[data-panel="response"]');
+  if (!panelEl) return;
+  var id = deriveResponseId(rs);
+  if (!id) {
+    panelEl.innerHTML = '<div class="muted small">Not available.</div>';
+    return;
+  }
+  // Already dispatched (in-flight or settled) — just render the cached state
+  // without refetching, so a re-click while loading cannot fire a second fetch.
+  if (rs.response) {
+    panelEl.innerHTML = renderResponseValue(rs);
+    return;
+  }
+  // First activation: fire exactly one fetch and store the result in row state.
+  rs.response = { state: 'loading' };
+  panelEl.innerHTML = '<div class="muted small">Loading\u2026</div>';
+  fetch('api/tool-results/' + encodeURIComponent(id))
+    .then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function (data) {
+      rs.response = { state: 'ok', data: data };
+      if (panelEl.parentNode) panelEl.innerHTML = renderResponseValue(rs);
+    })
+    .catch(function (err) {
+      rs.response = err.message === 'HTTP 404'
+        ? { state: 'notfound' }
+        : { state: 'error', errMsg: err.message };
+      if (panelEl.parentNode) panelEl.innerHTML = renderResponseValue(rs);
+    });
+}
+
+// Render the Response tab panel content from the cached rs.response state.
+function renderResponseValue(rs) {
+  var r = rs.response;
+  if (!r || r.state === 'loading') return '<div class="muted small">Loading\u2026</div>';
+  if (r.state === 'notfound') return '<div class="muted small">Not available / not stored.</div>';
+  if (r.state === 'error') return '<div class="rd-err">' + esc(r.errMsg || 'Error') + '</div>';
+  // state === 'ok'
+  var content = r.data.content;
+  var chars = r.data.chars;
+  if (typeof content !== 'string' || content === '') return '<div class="muted small">Empty.</div>';
+  var html;
+  try {
+    html = '<pre class="rd-pre">' + esc(JSON.stringify(JSON.parse(content), null, 2)) + '</pre>';
+  } catch (_e) {
+    html = '<pre class="rd-pre">' + esc(content) + '</pre>';
+  }
+  if (typeof chars === 'number' && content.length < chars) {
+    html += '<div class="muted small rd-trunc">\u2026 (' + chars + ' total chars)</div>';
+  }
+  return html;
 }
 
 // Remove data entries whose DOM rows have been trimmed from the list.
@@ -306,14 +410,57 @@ export function trimCallData() {
 }
 
 /* ---- client-side filters ------------------------------------------ */
-// Apply the current filter inputs (tool / status / session) AND the active
-// time-window to show/hide rows in both the stream list and the intervention
-// log; update the stream "showing X of Y" count display. The filters compose:
-// a row is shown only if it passes every active constraint.
+// Centralize the four stream filters (tool / status / session / time-window)
+// into a single re-render path. readStreamFilters() normalizes the three
+// text/select controls; rowPassesFilters() is the one AND-combined predicate —
+// a row shows only when it passes EVERY active constraint, including the shared
+// time window held in state.timeRange. applyFilters() is the ONLY place that
+// toggles row visibility: both manual control changes and newly-streamed rows
+// funnel through it, so the live view stays consistent while filtering. A
+// control left at its "All"/empty value imposes no constraint, so clearing any
+// input (or re-selecting its "All" option) cleanly restores the full set.
+export function readStreamFilters() {
+  // Read each control defensively: a missing element yields its "all"/empty
+  // default instead of throwing, while an existing element behaves identically.
+  var toolEl = $('filter-tool');
+  var statusEl = $('filter-status');
+  var sessionEl = $('filter-session');
+  return {
+    tool: (toolEl && toolEl.value ? String(toolEl.value) : '').trim().toLowerCase(),
+    status: statusEl ? String(statusEl.value || '') : '',
+    session: (sessionEl && sessionEl.value ? String(sessionEl.value) : '').trim().toLowerCase()
+  };
+}
+// True when `row` satisfies every active filter constraint (tool AND status AND
+// session AND time window). An absent/empty control value skips its constraint.
+export function rowPassesFilters(row, f) {
+  f = f || readStreamFilters();
+  // All four constraints combine as AND: a row shows only when it passes every
+  // active filter (tool AND status AND session AND time window). An absent/empty
+  // control value skips that constraint. A concrete status (pending/ok/error) is
+  // never the category of an orphan ("Unmatched result") row — orphans are their
+  // own category and match only "unmatched" or all — so they are excluded here.
+  if (f.tool && (row.dataset.tool || '').toLowerCase().indexOf(f.tool) === -1) return false;
+  if (f.status) {
+    var isOrphan = !!row.classList.contains('orphan-row');
+    var statusMatch = false;
+    if (f.status === 'unmatched') statusMatch = isOrphan;
+    else if (f.status === 'intervention') {
+      var sess = row.dataset.session || '';
+      var ivs = sess ? state.interventionsBySession.get(sess) : null;
+      statusMatch = !!(ivs && ivs.length);
+    } else if (isOrphan) statusMatch = false;
+    else statusMatch = ((row.dataset.status || '') === f.status);
+    if (!statusMatch) return false;
+  }
+  if (f.session && (row.dataset.session || '').toLowerCase().indexOf(f.session) === -1) return false;
+  return inTimeRange(row.dataset.at);
+}
+// Show/hide rows in the stream list + intervention log per the active filters;
+// update the "showing X of Y" count display. The single re-render path for all
+// four filters (see readStreamFilters / rowPassesFilters above).
 export function applyFilters() {
-  var toolF = ($('filter-tool').value || '').trim().toLowerCase();
-  var statusF = $('filter-status').value;
-  var sessionF = ($('filter-session').value || '').trim().toLowerCase();
+  var f = readStreamFilters();
   var list = $('stream-list');
   var visible = 0, total = 0;
 
@@ -321,28 +468,13 @@ export function applyFilters() {
     var child = list.children[i];
     if (!child.classList.contains('stream-row')) continue;
     total++;
-    var show = true;
-    if (toolF && (child.dataset.tool || '').toLowerCase().indexOf(toolF) === -1) show = false;
-    if (show && statusF) {
-      var st = child.dataset.status || '';
-      if (statusF === 'unmatched') {
-        show = !!child.classList.contains('orphan-row');
-      } else if (statusF === 'intervention') {
-        var sess2 = child.dataset.session || '';
-        var ivs = sess2 ? state.interventionsBySession.get(sess2) : null;
-        show = !!(ivs && ivs.length);
-      } else {
-        show = (st === statusF);
-      }
-    }
-    if (show && sessionF && (child.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) show = false;
-    if (show && !inTimeRange(child.dataset.at)) show = false;
+    var show = rowPassesFilters(child, f);
     child.style.display = show ? '' : 'none';
     if (show) visible++;
   }
   var countEl = $('stream-count');
   if (countEl) {
-    var anyFilter = !!(toolF || statusF || sessionF || state.timeRange.mode !== 'all');
+    var anyFilter = !!(f.tool || f.status || f.session || state.timeRange.mode !== 'all');
     countEl.textContent = anyFilter ? 'showing ' + visible + ' of ' + total : '';
   }
 
@@ -353,17 +485,24 @@ export function applyFilters() {
     var ivRow = ivList.children[j];
     if (!ivRow.classList.contains('stream-row')) continue;
     var ivShow = true;
-    if (sessionF && (ivRow.dataset.session || '').toLowerCase().indexOf(sessionF) === -1) ivShow = false;
+    if (f.session && (ivRow.dataset.session || '').toLowerCase().indexOf(f.session) === -1) ivShow = false;
     if (ivShow && !inTimeRange(ivRow.dataset.at)) ivShow = false;
     ivRow.style.display = ivShow ? '' : 'none';
   }
 }
 
-// Wire up filter input listeners.
+// Wire up the tool / status / session filter listeners. The fourth filter — the
+// time-window <select> — is wired in ./controls.mjs (onTimeRangeChange). Every
+// control funnels through the single applyFilters() re-render above, so live-
+// appended rows and manual re-renders both honor the active filters. Each
+// binding is guarded so a missing control can never abort app boot.
 export function bindFilterEvents() {
-  $('filter-tool').addEventListener('input', applyFilters);
-  $('filter-session').addEventListener('input', applyFilters);
-  $('filter-status').addEventListener('change', applyFilters);
+  var toolEl = $('filter-tool');
+  if (toolEl) toolEl.addEventListener('input', applyFilters);
+  var sessionEl = $('filter-session');
+  if (sessionEl) sessionEl.addEventListener('input', applyFilters);
+  var statusEl = $('filter-status');
+  if (statusEl) statusEl.addEventListener('change', applyFilters);
 }
 
 // Append a policy.intervention row to the intervention log as distinct cells:
