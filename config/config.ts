@@ -15,6 +15,14 @@ export interface ToolResultsConfig {
   fsyncPerBatch: boolean;
 }
 
+/** Configuration for optional SQLite-backed rule persistence. */
+export interface RulesConfig {
+  /** Enable SQLite persistence of user-created rules across restarts (default `true`). */
+  enabled: boolean;
+  /** Path to the SQLite database file (default `data/rules.db`; mirrors `toolResults.dbPath`). Optional. */
+  dbPath?: string;
+}
+
 /** Minimal, framework-agnostic runtime configuration. */
 export interface Config {
   /** Port the HTTP server listens on. */
@@ -32,6 +40,8 @@ export interface Config {
   };
   /** Optional SQLite-backed tool-result persistence (defaults: disabled). */
   toolResults: ToolResultsConfig;
+  /** Optional SQLite-backed rule persistence (defaults: enabled). */
+  rules: RulesConfig;
 }
 
 /** Sensible defaults so the server boots with zero configuration. */
@@ -49,6 +59,10 @@ const DEFAULTS: Config = {
     batchSize: 100,
     fsyncPerBatch: false,
   },
+  rules: {
+    enabled: true,
+    dbPath: 'data/rules.db',
+  },
 };
 
 /**
@@ -58,7 +72,7 @@ const DEFAULTS: Config = {
  * Recognized env vars: `PORT`, `UPSTREAM_BASE_URL`, `UPSTREAM_MODEL`,
  * `UPSTREAM_API_KEY`, `UPSTREAM_PROTOCOL`, `TOOL_RESULTS_ENABLED`,
  * `TOOL_RESULTS_DB`, `TOOL_RESULTS_FLUSH_MS`, `TOOL_RESULTS_BATCH_SIZE`,
- * `TOOL_RESULTS_FSYNC`.
+ * `TOOL_RESULTS_FSYNC`, `RULES_ENABLED`, `RULES_DB_PATH`.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port =
@@ -81,6 +95,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       flushIntervalMs: parsePositiveInt(env.TOOL_RESULTS_FLUSH_MS) ?? DEFAULTS.toolResults.flushIntervalMs,
       batchSize: parsePositiveInt(env.TOOL_RESULTS_BATCH_SIZE) ?? DEFAULTS.toolResults.batchSize,
       fsyncPerBatch: parseBool(env.TOOL_RESULTS_FSYNC) ?? DEFAULTS.toolResults.fsyncPerBatch,
+    },
+    rules: {
+      enabled: parseBool(env.RULES_ENABLED) ?? DEFAULTS.rules.enabled,
+      dbPath: env.RULES_DB_PATH ?? DEFAULTS.rules.dbPath,
     },
   };
 }

@@ -20,8 +20,14 @@ import type { LoopDetectorOptions } from './matchers';
 export interface PolicyAction {
   /** Unique action name. */
   name: string;
-  /** Apply the behavior; return the produced effect, or `null` for a no-op. */
-  apply(ctx: PolicyContext): ActionEffect | null;
+  /**
+   * Apply the behavior; return the produced effect, or `null` for a no-op. The
+   * optional {@link Match} describes WHY the rule fired (e.g. which tool-call
+   * names matched) so an action can scope its effect to the MATCHED calls rather
+   * than every call observable on the context. Actions that do not need it omit
+   * the parameter (a fewer-parameter implementation remains valid).
+   */
+  apply(ctx: PolicyContext, match?: Match): ActionEffect | null;
 }
 
 /**
@@ -110,7 +116,7 @@ export function createRuleEngine(rules: PolicyRule[] | (() => PolicyRule[])): Ru
       for (const rule of ordered) {
         const match = rule.matcher.matches(ctx);
         if (match === null) continue;
-        const effect = rule.action.apply(ctx);
+        const effect = rule.action.apply(ctx, match);
         if (effect !== null) {
           effects.push(effect);
           applied.push({ ruleId: rule.id, effect });

@@ -1,4 +1,4 @@
-import type { Action, PolicyContext } from '../types';
+import type { Action, Match, PolicyContext } from '../types';
 
 /**
  * The effect a policy {@link Action} applies to the stream when a rule fires.
@@ -63,8 +63,8 @@ const UNKNOWN_TOOL = 'unknown';
 export function createBlockAction(config: BlockActionConfig): Action {
   return {
     name: 'block',
-    apply(ctx: PolicyContext): ActionEffect {
-      const { ids, names } = extractFromContext(ctx);
+    apply(ctx: PolicyContext, match?: Match): ActionEffect {
+      const { ids, names } = extractFromContext(ctx, matchedNamesOf(match));
       const effect: Extract<ActionEffect, { type: 'block' }> = {
         type: 'block',
         message: buildMessage(config, dedupe(names)),
@@ -114,13 +114,22 @@ function nonEmptyString(value: unknown): value is string {
  *
  * Prefers the parsed `ToolCall[]` (`ResponseContext.toolCalls`); when that is
  * absent, falls back to parsing OpenAI-shape `tool_calls` out of assistant
- * messages (`RequestContext.messages`) — mirroring the matcher extraction.
+ * messages (`RequestContext.messages`) — mirroring the matcher extraction. When
+ * {@link matchedNamesOf} yields a non-empty target set (i.e. the rule's match
+ * identified specific tool names), ONLY calls whose name is in that set are
+ * returned, so a block scopes to the MATCHED calls rather than every call on the
+ * context. With no target info (e.g. an "always" rule) every observable call
+ * applies, preserving the prior behavior.
  */
-function extractFromContext(ctx: PolicyContext): { ids: string[]; names: string[] } {
+function extractFromContext(ctx: PolicyContext, matchedNames?: string[]): { ids: string[]; names: string[] } {
+  const allowed = matchedNames !== undefined ? new Set(matchedNames) : undefined;
+  const matchesTarget = (name: unknown): boolean =>
+    allowed === undefined || (typeof name === 'string' && allowed.has(name));
   const ids: string[] = [];
   const names: string[] = [];
   if ('toolCalls' in ctx) {
     for (const call of ctx.toolCalls ?? []) {
+      if (!matchesTarget(call.name)) continue;
       pushIf(ids, call.id);
       pushIf(names, call.name);
     }
@@ -131,15 +140,24 @@ function extractFromContext(ctx: PolicyContext): { ids: string[]; names: string[
       if (!Array.isArray(toolCalls)) continue;
       for (const raw of toolCalls) {
         if (!isRecord(raw)) continue;
-        pushIf(ids, raw.id);
         const fn = isRecord(raw.function) ? raw.function : undefined;
-        if (fn) pushIf(names, fn.name);
+        const name = fn && typeof fn.name === 'string' ? fn.name : undefined;
+        if (!matchesTarget(name)) continue;
+        pushIf(ids, raw.id);
+        if (fn) pushIf(names, name);
       }
     }
   }
   return { ids, names };
 }
 
+/** The tool-call names a match actually targeted (undefined when it carries none). */
+function matchedNamesOf(match: Match | undefined): string[] | undefined {
+  const raw = match?.details?.matchedToolNames;
+  if (!Array.isArray(raw)) return undefined;
+  const names = raw.filter((name): name is string => typeof name === 'string' && name.length > 0);
+  return names.length > 0 ? names : undefined;
+}
 /** Append `value` to `target` when it is a non-empty string. */
 function pushIf(target: string[], value: unknown): void {
   if (typeof value === 'string' && value.length > 0) target.push(value);

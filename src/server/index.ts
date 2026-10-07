@@ -6,12 +6,14 @@ import { createProxyHandler, type ProxyOptions, type ProxyHandler } from '../pro
 import { createApiHandler, type RequestHandler } from '../api/http';
 import { createWsServer, type WsServer } from '../api/ws';
 import { createRuleStore, type RuleStore } from '../api/ruleStore';
+import { createPersistentRuleStore } from '../api/persistentRuleStore';
+import type { RuleSpec } from '../api/ruleSpec';
 import { createToolResultStore, type ToolResultStore } from '../telemetry/toolResultStore';
 import { createSqliteToolResultPersister, type SqliteToolResultPersister } from '../telemetry/sqliteToolResultPersister';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
 import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
-import type { SqliteStorage } from '../storage/sqlite';
+import { createSqliteStorage, type SqliteStorage } from '../storage/sqlite';
 import type { PolicyRule } from '../policy/ruleEngine';
 
 /**
@@ -162,6 +164,44 @@ function serveStaticFile(
 }
 
 /**
+ * Ensure the parent directory of the resolved rules DB file exists before it is
+ * opened, so a fresh checkout with no `data/` directory still persists rules.
+ * A bare filename (dirname `'.'` or empty) is skipped because its directory already
+ * resolves; a throwing mkdir is caught by the caller and falls back to memory-only.
+ */
+function ensureRulesDbParentDir(dbFile: string | undefined): void {
+  if (typeof dbFile !== 'string' || dbFile.length === 0) return;
+  const dir = path.dirname(dbFile);
+  if (dir === '' || dir === '.') return;
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * Build a write-through persistent {@link RuleStore} backed by SQLite when rule
+ * persistence is enabled, or an in-memory store as a fallback. Opens the existing
+ * `rules` table via the shared {@link createSqliteStorage} (no new tables or
+ * migrations), seeds the base store from any persisted rules, and mirrors every
+ * mutation back to disk. If opening the database fails, log a warning and return a
+ * non-persistent in-memory store so the server still boots.
+ */
+function openPersistentRuleStore(
+  dbPath: string | undefined,
+  initial: PolicyRule[] | undefined,
+  specs: Map<string, RuleSpec>,
+): RuleStore {
+  const baseOptions = initial ? { initial } : {};
+  try {
+    ensureRulesDbParentDir(dbPath);
+    const storage = createSqliteStorage({ file: dbPath });
+    const base = createRuleStore(baseOptions);
+    return createPersistentRuleStore({ base, storage, dbFile: dbPath ?? ':memory:', specs });
+  } catch (err) {
+    console.warn('mcp-manager: rule persistence disabled (could not open the rules database):', err);
+    return createRuleStore(baseOptions);
+  }
+}
+
+/**
  * Create the mcp-manager HTTP server, mounting the model-proxy routes alongside
  * a REST API (`/api/*`), a built-in WebSocket server (the `/ws` upgrade), and
  * the dashboard static files. A single shared telemetry bus + collector feeds
@@ -202,6 +242,41 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     mount?.toolResultStore ??
     createToolResultStore(toolResultPersister !== undefined ? { persister: toolResultPersister } : {});
 
+  // Shared spec registry: the REST API stores each submitted/merged {@link RuleSpec}
+  // here keyed by rule id; the persistent rule store reads it so a write-through mirrors
+  // the exact spec to SQLite losslessly (a PolicyRule's matcher/action are closures and
+  // would be dropped by JSON.stringify).
+  const ruleSpecs = new Map<string, RuleSpec>();
+
+  // Live rule registry backing the REST API's rule CRUD routes AND the proxy policy
+  // stage (read live via ruleStore.list()). Created BEFORE the proxy handler below so
+  // the engine can read it LIVE via a getter — letting rules POSTed at runtime (via
+  // /api/rules) reach the engine without a restart. When config.rules.enabled and no
+  // caller-supplied store is given, wrap the base store so user-created rules persist
+  // across restarts; opening the DB failing falls back to a memory-only store (the
+  // server still boots).
+  let ruleStore: RuleStore;
+  if (mount?.ruleStore !== undefined) {
+    ruleStore = mount.ruleStore;
+  } else if (config.rules.enabled) {
+    ruleStore = openPersistentRuleStore(config.rules.dbPath, mount?.initialRules, ruleSpecs);
+  } else {
+    ruleStore = createRuleStore(mount?.initialRules ? { initial: mount.initialRules } : {});
+  }
+
+  // The policy stage evaluates against the LIVE rule collection: statically supplied
+  // rules PLUS whatever the REST rule store holds at evaluation time. A caller that
+  // already wires its own `rules` source (array or getter, per the full-stack
+  // convention) is honored as-is. An empty collection is a clean no-op, so request
+  // passthrough is never altered.
+  const callerRules = options?.policy?.rules;
+  const policyRules: PolicyRule[] | (() => PolicyRule[]) =
+    typeof callerRules === 'function'
+      ? callerRules
+      : () => [
+          ...(Array.isArray(callerRules) ? callerRules : []),
+          ...ruleStore.list(),
+        ];
   const proxyOptions: ProxyOptions = {
     ...(options ?? {}),
     upstream:
@@ -215,13 +290,15 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     // that share the configured bus so the live view always sees the stage's events.
     telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
     toolResultStore,
+    policy: {
+      ...(options?.policy ?? {}),
+      rules: policyRules,
+    },
   };
   const handleProxyRequest: ProxyHandler = createProxyHandler(proxyOptions);
 
-  // Shared rule registry + REST API, both backed by the same collector/bus above.
-  const ruleStore: RuleStore =
-    mount?.ruleStore ?? createRuleStore(mount?.initialRules ? { initial: mount.initialRules } : {});
-  const api: RequestHandler = createApiHandler({ ruleStore, collector, toolResultStore });
+  // Shared REST API, backed by the same rule store + collector/bus above.
+  const api: RequestHandler = createApiHandler({ ruleStore, collector, toolResultStore, specs: ruleSpecs });
   const dashboardDir = resolveDashboardDir(mount?.dashboardDir);
 
   const server = http.createServer((req, res) => {

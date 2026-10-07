@@ -34,8 +34,13 @@ const DEFAULT_SESSION_HEADER = 'x-session-id';
  * the request context so the stage can use it in `deriveSessionKey`.
  */
 export interface PolicyOptions {
-  /** The rules evaluated by the rule engine against each request/response. */
-  rules: PolicyRule[];
+  /**
+   * The rules evaluated by the rule engine against each request/response. A plain
+   * array is used as-is; a getter (`() => PolicyRule[]`) is re-resolved on every
+   * evaluation so runtime add/remove (e.g. from a live rule store) is reflected
+   * without rebuilding the handler.
+   */
+  rules: PolicyRule[] | (() => PolicyRule[]);
   /**
    * Per-session feedback queue bridging response-side actions into the NEXT
    * request. Defaults to a fresh in-memory {@link SessionFeedbackStore}.

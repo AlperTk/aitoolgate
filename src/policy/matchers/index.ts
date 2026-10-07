@@ -34,3 +34,5 @@ export function toPortMatcher(policyMatcher: PolicyMatcher): Matcher {
 
 export { createLoopDetector } from './loopDetector';
 export type { LoopDetectorOptions } from './loopDetector';
+export { createAlwaysMatcher, ALWAYS_MATCHER_BRAND } from './always';
+export type { AlwaysMatcher } from './always';

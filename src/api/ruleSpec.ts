@@ -26,8 +26,10 @@ import {
   createLoopDetector,
   createToolNameMatcher,
   createArgPatternMatcher,
+  createAlwaysMatcher,
+  ALWAYS_MATCHER_BRAND,
 } from '../policy/matchers';
-import type { LoopDetectorOptions } from '../policy/matchers';
+import type { LoopDetectorOptions, AlwaysMatcher } from '../policy/matchers';
 import {
   createBlockAction,
   createHideToolAction,
@@ -72,6 +74,10 @@ export type MatcherSpec =
       paramIdentity?: 'exact' | 'normalized';
       /** How to compare tool results (default `'normalized'`). */
       resultIdentity?: 'exact' | 'normalized';
+    }
+  | {
+      /** Unconditionally match every request (fires on all phases, including turn-1). */
+      type: 'always';
   };
 
 /** JSON-serializable action descriptor, discriminated by `type`. */
@@ -137,6 +143,11 @@ function asPolicyAction(action: Action): PolicyAction {
   return action as PolicyAction;
 }
 
+/** True when the given matcher is the unconditional "always" matcher. */
+function isAlwaysMatcher(matcher: PolicyMatcher): boolean {
+  return (matcher as AlwaysMatcher)[ALWAYS_MATCHER_BRAND] === true;
+}
+
 /**
  * Build a concrete {@link PolicyMatcher} from a {@link MatcherSpec}, dispatching
  * on `type` to the right existing factory. Throws a descriptive error when a
@@ -165,6 +176,9 @@ export function buildMatcher(spec: MatcherSpec): PolicyMatcher {
       if (spec.resultIdentity === 'exact' || spec.resultIdentity === 'normalized') options.resultIdentity = spec.resultIdentity;
       return createLoopDetector(options);
     }
+    case 'always':
+      // Unconditional: fire on every request (including a fresh turn-1).
+      return createAlwaysMatcher();
   }
 }
 
@@ -241,26 +255,55 @@ export function buildRuleFromSpec(spec: RuleSpec): PolicyRule {
  * original {@link RuleSpec} (which the HTTP layer stores) is what makes
  * round-tripping exact.
  */
+/** Best-effort action descriptor derived from the closure's readable `name`. */
+function describeAction(rule: PolicyRule): ActionSpec {
+  switch (rule.action.name) {
+    case 'block':
+      return { type: 'block' };
+    case 'hideTool':
+      return { type: 'hideTool', toolNames: [] };
+    case 'rewriteArgs':
+      return { type: 'rewriteArgs', arguments: {} };
+    default:
+      return { type: 'injectMessage', content: rule.description ?? '(unrecoverable action)' };
+  }
+}
+
 export function describeRule(rule: PolicyRule): RuleSpec {
-  const loopDescriptor: MatcherSpec =
-    rule.id === 'flagship-loop-rule'
-      ? { type: 'loop', window: 4, requireConsecutive: true, paramIdentity: 'normalized', resultIdentity: 'normalized' }
-      : { type: 'toolName', toolNames: [] };
+  let matcherDescriptor: MatcherSpec;
+  if (rule.id === 'flagship-loop-rule') {
+    matcherDescriptor = {
+      type: 'loop',
+      window: 4,
+      requireConsecutive: true,
+      paramIdentity: 'normalized',
+      resultIdentity: 'normalized',
+    };
+  } else if (isAlwaysMatcher(rule.matcher)) {
+    // The unconditional matcher is recognizable via its brand, so render it faithfully.
+    matcherDescriptor = { type: 'always' };
+  } else {
+    // A neutral, valid placeholder: a generic matcher's config is not recoverable from the closure.
+    matcherDescriptor = { type: 'toolName', toolNames: [] };
+  }
   return {
     id: rule.id,
     enabled: rule.enabled,
     priority: rule.priority,
     description: rule.description,
-    matcher: loopDescriptor,
-    // A neutral, always-valid placeholder: effect config is not recoverable from the closure.
-    action: { type: 'injectMessage', content: rule.description ?? '(unrecoverable action)' },
+    matcher: matcherDescriptor,
+    // Derive the action TYPE from the readable closure name (the port Action sets
+    // `name` to its discriminator); params are not recoverable from the closure, so
+    // emit empty/placeholder fields that stay valid for each type.
+    action: describeAction(rule),
   };
 }
 
-const KNOWN_MATCHER_TYPES = new Set<['toolName' | 'argPattern' | 'loop'][number]>([
+const KNOWN_MATCHER_TYPES = new Set<['toolName' | 'argPattern' | 'loop' | 'always'][number]>([
   'toolName',
   'argPattern',
   'loop',
+  'always',
 ]);
 
 const KNOWN_ACTION_TYPES = new Set<['block' | 'hideTool' | 'rewriteArgs' | 'injectMessage'][number]>([
@@ -289,6 +332,9 @@ function validateMatcher(value: unknown): string | null {
       if (value.window !== undefined && typeof value.window !== 'number') {
         return '"window" must be a number when provided';
       }
+      break;
+    case 'always':
+      // Unconditional: no fields are required.
       break;
     default:
       break;

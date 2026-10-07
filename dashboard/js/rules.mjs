@@ -158,6 +158,8 @@ function matcherSummary(m) {
       else if (m.resultIdentity === 'exact') bits.push('exact results');
       return bits.length ? bits.join(' \u00B7 ') : 'consecutive identical calls';
     }
+    case 'always':
+      return 'always';
     default: return '\u2014';
   }
 }
@@ -328,7 +330,7 @@ export function clientValidate(spec) {
 export function collectSpec() {
   var spec = { enabled: $('rule-enabled').checked };
   spec.matcher = { type: state.curMatcherType };
-  var err = readSection(MATCHER_FIELDS[state.curMatcherType], $('matcher-fields'), spec.matcher);
+  var err = readSection(MATCHER_FIELDS[state.curMatcherType] || [], $('matcher-fields'), spec.matcher);
   if (err) return { error: err };
   spec.action = { type: state.curActionType };
   err = readSection(ACTION_FIELDS[state.curActionType], $('action-fields'), spec.action);

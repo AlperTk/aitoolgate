@@ -4,7 +4,10 @@ import {
   createToolNameMatcher,
   createArgPatternMatcher,
   createLoopDetector,
+  createAlwaysMatcher,
+  ALWAYS_MATCHER_BRAND,
 } from '../src/policy/matchers';
+import type { AlwaysMatcher } from '../src/policy/matchers';
 import type { Match } from '../src/policy/types';
 import type { Message } from '../src/session/session';
 import type { RequestContext } from '../src/ports/pipeline';
@@ -221,4 +224,26 @@ test('loopDetector: reordered args keys match under paramIdentity "normalized" b
   );
   assert.equal(normalized.matched, true);
   assert.strictEqual(createLoopDetector({ paramIdentity: 'exact' }).matches(makeRequest(messages)), null);
+});
+
+// --- always (unconditional) ------------------------------------------------
+
+test('always: matches a FRESH turn-1 request (no prior tool calls) → non-null Match', () => {
+  const match = expectMatch(createAlwaysMatcher().matches(makeRequest(prefix())), 'fresh turn-1');
+  assert.equal(match.matched, true);
+  assert.ok(typeof match.reason === 'string' && match.reason.length > 0, 'carries a human-readable reason');
+});
+
+test('always: never returns null — even an otherwise-empty request still matches', () => {
+  assert.notStrictEqual(createAlwaysMatcher().matches(makeRequest([])), null);
+});
+
+test('always: matches unconditionally regardless of what tool calls are present', () => {
+  // A context that DOES carry tool calls also matches (the matcher is unconditional).
+  assert.notStrictEqual(createAlwaysMatcher().matches(makeRequest(bashCall())), null);
+});
+
+test('always: the produced matcher carries the ALWAYS brand (recognizable by describeRule)', () => {
+  const matcher = createAlwaysMatcher() as AlwaysMatcher;
+  assert.equal(matcher[ALWAYS_MATCHER_BRAND], true);
 });
