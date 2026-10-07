@@ -16,6 +16,8 @@
   --red: #f85149;
   --amber: #d29922;
 
+  --text-faint: rgba(139, 152, 165, 0.6); /* dimmer than --muted: placeholder / secondary data ("—") */
+
   /* Status-badge tones (light) — text + dot color for stream-row status/action pills.
      Background/border alpha is derived from these same tones in components.css. */
   --c-st-ok: #7ed491;
@@ -33,6 +35,7 @@
   --fs-md:  0.9rem;    /* table rows, primary controls */
   --fs-lg:  1.15rem;   /* stat tile small      */
   --fs-xl:  1.25rem;   /* app title           */
+  --fs-2xl: 1.35rem;   /* page title (H1)     */
   --fs-stat: 1.8rem;   /* stat tile number    */
   --fw-semibold: 600;
   --fw-bold: 700;

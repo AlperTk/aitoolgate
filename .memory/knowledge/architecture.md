@@ -1,92 +1,80 @@
+---
+name: architecture
+description: Module responsibilities, request/event/tool-result data flows, external systems, entry points, and key architectural decisions in mcp-manager. Read when you need to understand how components fit together or where a change belongs.
+---
+
 # Architecture
 
 ## Style
-Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contracts live in `src/ports/`; implementation modules depend on those ports, and `createXxx(...)` composition factories wire everything together in the single server entry point.
+Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contracts live in `src/ports/` (`domain`, `pipeline`, `strategy`, `storage`, `event-bus`). Implementation modules depend on those ports (not on each other), and `createXxx(...)` composition factories wire everything together in the single server entry point. The server is the **only composition root**.
 
-## Main Components
+## Modules (one-line responsibility)
+- `src/server/index.ts` — **composition root**: `createServer()` boots config→telemetry→proxy→rule-store→REST→static dashboard→WS; returns an `http.Server` with a non-enumerable `.mcm` handle (`bus, collector, tracker, storage?, ruleStore, toolResultStore, toolResultPersister?, apiHandler, ws`). Auto-starts only when run as main.
+- `src/proxy/` — forwarding + protocol translation. `index.ts` = `createProxyHandler()` (protocol router + `SessionTokenPipeline`, exposes `.use()`); `openai.ts`/`anthropic.ts` = per-protocol route handlers; `context.ts` = `buildRequestContext()`, `runThroughPipeline()`, rehydration, `emitResponseTelemetry()`, tool-result pairing (largest file); `translate.ts` = centralized OpenAI↔Anthropic conversion; `upstream.ts` = forwards to the single upstream (JSON/SSE).
+- `src/policy/` — rule engine + matchers + actions + feedback. `ruleEngine.ts` (`createRuleEngine`, `PolicyRule`/`PolicyAction`, built-in `flagshipLoopRule`); `policyStage.ts` (`createPolicyStage` mounts the engine as a pipeline stage); `matchers/` (toolName, argPattern, loopDetector, always + `normalize.ts`); `actions/` (block, hideTool, injectMessage, rewriteArgs); `feedbackStore.ts` (`SessionFeedbackStore`).
+- `src/telemetry/` — event emission + metrics. `event-bus.ts` (`TelemetryEventBus`), `collector.ts` (`createCollector`), `toolMetrics.ts` (`createToolMetricsTracker`), `events.ts` (event types), `stream-extract.ts` (SSE tool-call extraction), `toolResultStore.ts` (in-memory raw values + `ToolResultPersister` port), `sqliteToolResultPersister.ts` (optional SQLite drain), `aggregate-exclusions.ts`.
+- `src/api/` — control-plane HTTP + WS. `http.ts` (`createApiHandler`: REST rule CRUD/stats/events/tool-result fetch; `readJSONBody` is the only throwing handler); `ruleStore.ts` (in-memory `RuleStore`); `persistentRuleStore.ts` (write-through SQLite wrapper); `ruleSpec.ts` (RuleSpec shape/validation); `ws.ts` (`createWsServer`, RFC6455).
+- `src/session/` — `deriveSessionKey()` + per-session state/token.
+- `src/pipeline/index.ts` — `DefaultPipeline`/`createPipeline()` base over the ports contract.
+- `src/storage/` — `sqlite.ts` (`SqliteStorage`/`createSqliteStorage`) + `schema.ts` (migrations).
+- `config/config.ts` — `loadConfig()` reads env vars + defaults.
+- `dashboard/` — static vanilla-JS real-time UI served on the app port.
 
-### `src/server/` — Composition root
-- `createServer()` boots the whole process: loads config, constructs telemetry (event bus + collector + tool-metrics tracker), proxy handler, rule store, REST API handler, dashboard static server, and WebSocket server; returns a non-enumerable `.mcm` handle for tests. Auto-starts only when run as main.
-
-### `src/proxy/` — Forwarding + translation
-- `index.ts` — `createProxyHandler()` builds the protocol router + `SessionTokenPipeline` wrapper (exposes `.use()` to mount stages).
-- `openai.ts` / `anthropic.ts` — per-protocol route handlers (`handleOpenAIRoute`, `handleAnthropicRoute`, `streamSameProtocol`, `modelListResponse`).
-- `context.ts` — `buildRequestContext()`, `runThroughPipeline()` (runs request/response through stages), translate/rehydrate bodies, `emitResponseTelemetry()`, tool-result pairing (`resolveAndEmitToolResults`). Largest file in the proxy.
-- `translate.ts` — centralized bidirectional OpenAI↔Anthropic translation (`openaiToAnthropicRequest` + response rehydration).
-- `upstream.ts` — forwards to the configured upstream model (`forwardOpenAIRequest`, `forwardAnthropicRequest`, `streamToEndpoint`, `pipeUpstreamStream`).
-
-### `src/policy/` — Rule engine & actions
-- `ruleEngine.ts` — `createRuleEngine()` evaluates rules against a `PolicyContext` → `RuleEvaluationResult`; defines `PolicyRule`/`PolicyAction` and built-in `flagshipLoopRule()`.
-- `policyStage.ts` — `createPolicyStage()` mounts the rule engine as a pipeline stage.
-- `matchers/` — `loopDetector` (repeated tool-call loops via `signature`/`extractPairs`), `argPattern`, `toolName`; `normalize.ts` for consistent matching.
-- `actions/` — `block`, `hideTool`, `injectMessage`, `rewriteArgs` (each `createXxxAction()`).
-- `feedbackStore.ts` — `SessionFeedbackStore` persists injected corrective messages per session for drill-down.
-
-### `src/telemetry/` — Event emission & metrics
-- `event-bus.ts` — `TelemetryEventBus` (`createEventBus`). Emission guarded by `safeEmit` so it never breaks the request flow.
-- `collector.ts` — `createCollector()` consumes events into storage.
-- `toolMetrics.ts` — `createToolMetricsTracker()` aggregates per-tool metrics.
-- `events.ts` — event type defs (`TelemetryEvent`, `ToolCallEvent`, `InterventionEvent`).
-- `stream-extract.ts` — extracts tool calls + usage from SSE streams.
-- `toolResultStore.ts` — `createToolResultStore()`: bounded in-memory store of raw tool-result values keyed by tool-call id (primary source); `ToolResultPersister` port (optional async `persist`/`lookup`) for out-of-band persistence; async `resolve(id)` = memory-first then DB-fallback.
-- `sqliteToolResultPersister.ts` — `createSqliteToolResultPersister()`: optional SQLite impl of the port; async batched drain (bounded buffer + timer flush, WAL mode) so the request hot path never does synchronous disk I/O.
-
-### `src/api/` — Control-plane HTTP
-- `http.ts` — `createApiHandler()`: REST rule CRUD + `GET /api/tool-results/:id` (stored tool-result value via `store.resolve`; `ApiOptions.toolResultStore?` injected from composition root); `readJSONBody` is the only throwing handler.
-- `ruleStore.ts` — in-memory `RuleStore`.
-- `ruleSpec.ts` — rule spec shape/validation.
-- `ws.ts` — `createWsServer()` live WebSocket feed (`IncomingFrame`).
-
-### `src/session/`, `src/pipeline/`, `src/storage/`, `config/`
-- `session/session.ts` — `deriveSessionKey()`, per-session state/token.
-- `pipeline/index.ts` — `DefaultPipeline` / `createPipeline()` base pipeline over the ports contract.
-- `storage/sqlite.ts` + `schema.ts` — SQLite persistence + table/migration schema (`createDataTable`).
-- `config/config.ts` — `loadConfig()` reads env vars + defaults (top-level `port`, nested `upstream.*`, nested `toolResults.*` gating optional tool-result-value persistence, default off).
-
-### `dashboard/`
-- Static real-time web UI (vanilla JS `.mjs`), served from disk on the app port (`http://localhost:8787/`), driven by REST + WebSocket; consumes intervention/tool events for drill-down views.
-- DOM composition: `app.js` is the boot/composition root. `js/layout.mjs` FRAGMENTS mounts only `html/header.html` + `html/rules-view.html` — the dashboard view is **inlined directly in `index.html`** (`html/dashboard-view.html` is a dead reference copy, not mounted). `normalizeStreamHead()` self-heals the stream table header at boot.
-- CSS layering: `css/styles.css` aggregates via `@import` in order: tokens → base → layout → components → rules → controls → table → responsive. Import order matters: later sheets win at equal specificity.
-
-## Main Request Flow
+## Request flow
 ```
 Client (OpenAI or Anthropic endpoint)
-    ↓  node:http
+   │  node:http
+   ▼
 createProxyHandler route (openai.ts / anthropic.ts)
-    ↓
-buildRequestContext (context.ts) — parse body, derive SessionKey, model/client config
-    ↓
-runThroughPipeline (stages: policy stage on request, session-token stage)
-    ├── PolicyStage → createRuleEngine → matchers → actions
-    │      (may mutate messages / set feedback / emit InterventionEvent)
-    ↓
+   ▼
+buildRequestContext (context.ts): parse body, derive SessionKey, model/client config
+   ▼
+runThroughPipeline: [session-token stage] → [policy stage]
+      policy stage: drain+splice per-session feedback → evaluate rules (all enabled, by priority)
+                    → apply effects (hide/block/rewrite/inject) → emit InterventionEvent
+   ▼
 translate to upstream protocol if needed (translate.ts)
-    ↓
-forward to upstream (upstream.ts) — JSON or SSE pipe
-    ↓
-response: run response stages → rehydrate to client protocol → sync body
-    ↓
-emit telemetry (response / ToolCallEvent / usage) via safeEmit
-    ↓
-stream JSON back to client (sendJSON / SSE)
+   ▼
+forward to upstream (upstream.ts) — buffered JSON  OR  SSE pipe (same-protocol stream bypasses buffer)
+   ▼
+response stages → rehydrate to client protocol → emit tool-call/result telemetry (centralized, safeEmit)
+   ▼
+send JSON/SSE back to client
 ```
 
-## Event Flow
+## Event flow
 ```
-Proxy / Policy / Telemetry producers
-    ↓  (safeEmit)
-TelemetryEventBus (createEventBus)
-    ├── Collector → storage (SQLite, opt-in)
-    ├── ToolMetricsTracker → per-tool metrics
-    └── ws.ts broadcast → dashboard live view (SSE/WebSocket)
+Producers (proxy / policy stage / SSE extractor)
+   │  safeEmit (never throws into request path)
+   ▼
+TelemetryEventBus (createEventBus)  [sync dispatch, each handler isolated]
+   ├── Collector          → storage (SQLite, opt-in)  +  /api/stats, /api/events
+   ├── ToolMetricsTracker → per-tool duration/token metrics
+   └── ws.ts broadcast    → dashboard live view (raw TelemetryEvent JSON frames)
 ```
 
-## Tool-Result Value (On-Demand Drill-Down)
-The WS `ToolResultEvent` stays metadata-only (`ok`/`durationMs`/`chars`/tokens). Raw result **values** are captured out-of-band at `resolveAndEmitToolResults` into an in-memory `toolResultStore` (bounded, key = tool-call id), served by `GET /api/tool-results/:id`; the dashboard loads them lazily (Response tab fetches once, caches). When `config.toolResults.enabled` is on, an async batched SQLite drain persists them (default off).
+## Tool-result value (on-demand drill-down)
+The WS `ToolResultEvent` stays **metadata-only** (`ok`/`durationMs`/`chars`/tokens). Raw result **values** are captured out-of-band at `resolveAndEmitToolResults` into an in-memory `toolResultStore` (bounded, key = tool-call id), served by `GET /api/tool-results/:id` (memory-first, then optional DB fallback). When `config.toolResults.enabled` is on, an async batched SQLite drain persists them (default off) so the hot path never does synchronous disk I/O.
 
-## External Dependencies
+## Entry points
+- **HTTP:** `GET /health`; OpenAI `GET /v1/models`, `POST /v1/chat/completions`; Anthropic `POST /v1/messages`; REST `GET /api/stats|events|rules`, `POST /api/rules`, `PATCH/DELETE /api/rules/:id`, `GET /api/tool-results/:id`; static `dashboard/`.
+- **WebSocket:** HTTP `upgrade` (conventionally `/ws`) → broadcasts each `TelemetryEvent` as a JSON frame; client text frame → `{ "echo": ... }`.
+- **Auto-start:** `createServer()` runs only when `require.main === module`.
+- Server handler dispatch precedence: `/health` → `/api/*` → static dashboard → proxy routes → 404; errors → 500.
+
+## Key decisions (with rationale)
+1. **Zero runtime dependencies** (Node stdlib only: `node:http`, `node:sqlite`, hand-written WebSocket). Rationale: portable single-host tool with a minimal supply chain. Cost: hand-rolled RFC6455 + reliance on Node's built-in SQLite.
+2. **Hexagonal + `createXxx` composition factories; single composition root (server).** Rationale: decoupling + testability; every subsystem is built from ports and injected.
+3. **Non-throwing domain/proxy ops** (return `null`/`undefined` for not-found/no-match); only `readJSONBody` throws. Rationale: keeps the request hot path simple and total.
+4. **Telemetry never breaks a request** — all emission via `safeEmit` (try/catch + swallow) and isolated bus handlers. A telemetry failure must not fail an LLM call.
+5. **Centralized protocol translation** in `translate.ts` (request + response rehydration). Don't scatter conversion logic.
+6. **Heavy tool-result values stored out-of-band** (in-memory keyed by id + optional async batched SQLite) rather than inline in events/WS frames. Rationale: bounded memory, uncluttered broadcasts, OCP/DIP behind a port gated by config (default off).
+7. **Rules read live via a getter** so REST-posted rules take effect without restart; the built-in `flagship-loop-rule` is **never persisted**; write-through persistence is best-effort with an in-memory fallback.
+8. **Two separate DB files:** `data/rules.db` (rules, events, tool_calls, interventions) vs `data/tool-results.db` (heavy tool_results, gated off-by-default).
+
+## External systems
 | System | Purpose |
 |---|---|
-| Upstream model API (OpenAI/Anthropic) | Single LLM target all traffic forwards to |
-| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics; optional tool-result values when `toolResults.enabled` |
-| Dashboard browser client | Real-time viewing of sessions, tool calls, interventions |
+| Upstream model API (OpenAI/Anthropic) | Single target all traffic forwards to (`config.upstream`). |
+| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics; optional tool-result values. |
+| Dashboard browser client | Real-time viewing of sessions, tool calls, interventions. |

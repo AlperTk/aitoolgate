@@ -40,7 +40,7 @@ export function renderRuleRow(spec) {
   var sevType = spec.action && spec.action.type ? String(spec.action.type) : '\u2014';
   top.appendChild(toggle);
   top.appendChild(el('span', 'badge rc-sev ' + severityClass(sevType), sevType));
-  top.appendChild(el('div', 'rc-name', spec.description || ('Rule ' + spec.id)));
+  top.appendChild(el('div', 'rc-name', spec.description || 'Untitled rule'));
   card.appendChild(top);
 
   // Body: matcher / action summaries (+ priority when set).
@@ -50,9 +50,9 @@ export function renderRuleRow(spec) {
   if (typeof spec.priority === 'number') body.appendChild(summaryCell('Priority', String(spec.priority)));
   card.appendChild(body);
 
-  // Footer: rule id on the left, edit + delete actions on the right.
+  // Footer: bare rule id (secondary, muted) leading + edit/delete actions trailing.
   var foot = el('div', 'rc-foot');
-  foot.appendChild(el('span', 'rc-id muted', spec.id || ''));
+  if (spec.id) foot.appendChild(el('span', 'rc-id', spec.id));
   var actions = el('div', 'rc-actions');
   var editBtn = el('a', 'btn', 'Edit');
   editBtn.href = '#/rules/' + encodeURIComponent(spec.id || '');

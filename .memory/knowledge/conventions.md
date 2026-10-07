@@ -1,39 +1,55 @@
-# Development Conventions
+---
+name: conventions
+description: Coding patterns, naming, where new code goes, error-handling and testing conventions, and config/observability guidelines for mcp-manager. Read before adding or modifying code.
+---
 
-> Mostly observed from source; "Observed convention:" marks evidence that is strong but not explicitly documented.
+# Conventions
 
-## Dependency injection
-Composition over constructor DI: build objects via `createXxx(...)` factory functions that receive injected deps/options (e.g., `createServer()`, `createProxyHandler(deps)`, `createRuleEngine()`, `createPolicyStage()`, `createCollector()`). The server entry point is the single composition root. Observed convention (strongly evidenced across proxy/policy/telemetry/api).
+> Mostly observed from source; where a pattern is strongly evidenced but not explicitly documented, treat it as the norm to follow.
 
-## Ports & adapters (hexagonal)
-Framework-agnostic contracts live in `src/ports/` (`domain`, `pipeline`, `strategy`, `storage`). Implementation modules depend on ports, not directly on each other. Keep new abstractions/contracts in `ports/`; impls consume them.
+## Dependency injection & structure
+- Composition over constructor DI: build objects via **`createXxx(...)` factory functions** that receive injected deps/options (`createServer`, `createProxyHandler(deps)`, `createRuleEngine`, `createPolicyStage`, `createCollector`, …). The server entry point is the **single composition root**.
+- **Ports & adapters (hexagonal):** contracts live in `src/ports/`; impl modules depend on ports, not on each other. Keep new abstractions in `ports/`.
 
-## Non-throwing domain operations
-Domain and proxy operations return `null`/`undefined` rather than throwing on "not found"/"no match". Only `readJSONBody` (API layer) throws for invalid input. Follow this when adding handlers.
+## Error handling
+- Domain/proxy ops are **non-throwing** (return `null`/`undefined` for not-found/no-match). Only `readJSONBody` throws on invalid API input. REST errors are JSON `{ error: string }` with the right HTTP status.
 
-## Telemetry must never break the request flow
-All telemetry emission goes through `safeEmit()` (try/catch guarded). New instrumentation must be wrapped the same way — a telemetry failure must not fail an LLM request.
+## Observability
+- All telemetry goes through **`safeEmit`** (try/catch guarded) — a telemetry failure must never fail an LLM request. Bus handlers are isolated. No logging framework; rely on the dashboard as the primary observability surface.
 
-## Centralized protocol translation
-Do not scatter OpenAI↔Anthropic conversion. Add conversions in `src/proxy/translate.ts` (request + response rehydration).
+## Config
+- `loadConfig()` reads env vars + defaults. Shape: top-level `port`, nested `upstream.*`, nested `toolResults.*` (gates optional tool-result-value persistence, default off). Base storage path is opt-in via server options, not a config field.
 
-## Config shape
-`loadConfig()` reads env vars + defaults. Structure: top-level `port`, nested `upstream.*`, and nested `toolResults.*` (gates optional tool-result-value persistence, default off). Base storage path is opt-in via server options (`options.telemetry.storage`), not a config field — only the tool-result persistence toggle lives in config.
-
-## Heavy payload values are stored out-of-band and fetched on demand
-Do NOT put large tool-result/output values into telemetry events or WS frames (they bloat every broadcast and unbound memory). Capture them out-of-band at the emission site into an in-memory store keyed by a stable id, expose a REST getter, and load lazily in the UI (fetch once, cache). Any durability layer plugs in behind a port (OCP/DIP) and is gated behind a config flag defaulting off. Evidence: `toolResultStore.ts` / `ToolResultPersister` / `GET /api/tool-results/:id`.
-
-## API / error shape
-REST endpoints return JSON; errors are `{ error: string }` with appropriate HTTP status codes.
+## Heavy payloads
+- Store large tool-result/output values **out-of-band** (in-memory keyed by stable id + optional async SQLite behind a port), exposed via a REST getter and loaded lazily in the UI (fetch once, cache). Never inline them in events/WS frames.
 
 ## Testing
-Use Node's built-in `node:test` runner (`describe`/`it`). Tests run against **compiled JS in `dist/`** — you must `npm run build` before `npm test`. Prefer focused unit tests per module; integration/e2e tests use `*-integration.test.ts` / `e2e-*.test.ts` naming.
+- Node built-in **`node:test`** + `node:assert/strict`; tests run against **compiled `dist/`** — you MUST `npm run build` before `npm test`.
+- Naming: unit/integration = `*.test.ts` (integration often `*-integration.test.ts`); end-to-end = `e2e-*.test.ts`. Use `describe`/`it`.
+- E2E drives **real client→server round-trips** but the upstream is **canned** (mock `fetch` / inline mock upstream, incl. canned SSE strings) — never a real provider. Servers start on **ephemeral port 0** (read back via `address().port`).
+- **Only one shared test module:** `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) to load dashboard `.mjs` under Node. All other helpers (`startServer`/`closeServer`, `OAI_CANNED`, `postRule`, `makeMockFetch`, local `FakeWebSocket`) are **local per-file** boilerplate.
 
 ## Naming
-camelCase for functions/factories, PascalCase for types/classes, `createXxx()` prefix for constructors. Two tsconfigs: `tsconfig.json` (dev, noEmit) and `tsconfig.build.json` (build → `dist/`).
+- camelCase for functions/factories, PascalCase for types/classes, `createXxx()` prefix for constructors. Two tsconfigs (dev `noEmit` vs build → `dist/`).
 
 ## Dashboard CSS
-Token-first: sizes/colors/weights live in `css/tokens.css`; component files consume them (avoid hardcoded values). Aggregation order in `styles.css`: tokens→base→layout→components→rules→controls→table→responsive. Cascade order matters at equal specificity — a modifier declared BEFORE its base rule loses (this bit `.badge-pending` vs the base `.badge` transparent-border rule). Scrollbar styling is scoped to named scroll surfaces (not document-wide) using `scrollbar-width:thin` + `::-webkit-scrollbar` with the `--scroll-thumb*` tokens.
+- **Token-first:** sizes/colors/weights live in `css/tokens.css`; component files consume tokens (avoid hardcoded values). Aggregation order in `styles.css`: tokens→base→layout→components→rules→controls→table→responsive. Import order matters at equal specificity — a modifier declared **before** its base rule loses. Scrollbar styling is scoped to named scroll surfaces (`scrollbar-width:thin` + `::-webkit-scrollbar` with `--scroll-thumb*`).
+
+## Where new code goes
+| Add | Put it in | Also touch |
+|---|---|---|
+| New matcher | `src/policy/matchers/<name>.ts` + `matchers/index.ts` | `ruleSpec.ts` (`buildMatcher`+`validateSpec`), `dashboard/js/rule-schema.mjs` |
+| New action | `src/policy/actions/<name>.ts` + `actions/index.ts` | `ruleSpec.ts` (`buildAction`+`validateSpec`), `dashboard/js/rule-schema.mjs` |
+| New pipeline stage | `src/policy/` or `src/proxy/` | mount via `.use()` in the composition root |
+| New port/contract | `src/ports/<name>.ts` | impl consumes it; no cross-impl imports |
+| New REST route | `src/api/http.ts` (+ wiring via API options) | dashboard consumer if UI-visible |
+| New DB table | `src/storage/schema.ts` (append a migration) | bump `SCHEMA_VERSION` |
+
+## Checklist — add a rule type end-to-end
+1. Implement the matcher/action factory in `src/policy/{matchers,actions}/`.
+2. Register it in `ruleSpec.ts` (`buildMatcher`/`buildAction` + `validateSpec` known-type + required fields).
+3. Sync the dashboard form schema in `dashboard/js/rule-schema.mjs`.
+4. Add a unit test + an `e2e-*` test; run `npm run build && npm test`.
 
 ## Repo hygiene
-Browser verification screenshots are taken at repo root during UI checks and deleted before committing. `.playwright-mcp/` (browser session artifacts) is gitignored; `.chromium-test/` remains untracked on disk.
+- Browser verification screenshots are taken at repo root during UI checks and deleted before committing; `.playwright-mcp/` is gitignored.

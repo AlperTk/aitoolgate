@@ -146,6 +146,10 @@
 .rc-name { order: 1; flex: 1 1 auto; min-width: 0; font-weight: var(--fw-semibold); word-break: break-word; }
 .rc-sev { order: 2; flex: none; }
 .rule-card .rule-toggle { order: 3; flex: none; margin-left: auto; }
+/* The enabled-state checkbox is the single source of truth for a rule's on/off
+   state; drop the redundant visible "Enabled"/"Disabled" text beside it (the
+   checkbox's aria-label preserves accessibility). */
+.rule-card .rule-toggle > span { display: none; }
 
 /* Body: two-up summary cells (matcher / action), priority wraps to its own row. */
 .rc-body { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 0.75rem; }
@@ -159,7 +163,7 @@
 }
 .rc-value { font-size: var(--fs-sm); line-height: var(--lh-snug); word-break: break-word; }
 
-/* Footer: rule id on the left, edit/delete actions on the right. */
+/* Footer: edit/delete actions right-aligned. */
 .rc-foot {
   display: flex;
   align-items: center;
@@ -168,10 +172,25 @@
   padding-top: 0.6rem;
   border-top: 1px solid var(--border);
 }
-.rc-id { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Secondary metadata: the bare rule id, muted + small, sits at the leading edge
+   of the footer row, vertically centered with the action buttons. It grows to fill
+   the available width so id / actions read space-between; on narrow screens it
+   truncates with an ellipsis instead of overflowing or breaking the actions. */
+.rc-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .rc-actions { display: flex; gap: 0.4rem; flex: none; }
 .rc-actions .btn { padding: 0.3rem 0.6rem; }
 .rc-actions a.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Footer: when an id is present its flex-grow fills the leading space pushing the
+   actions trailing; with no id the actions stay right-aligned. */
+.rule-card .rc-foot { justify-content: flex-end; }
 
 /* --------------------------- editor form sections --------------------- */
 /* Grouped, sectioned authoring form: Matcher / Action / Details+status. */

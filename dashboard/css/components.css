@@ -16,7 +16,7 @@
 .stream-head,
 .row-main {
   display: grid;
-  grid-template-columns: minmax(max-content, 6rem) minmax(9rem, 1fr) 6.3rem 4.5rem repeat(5,3.4rem) 1.2rem;
+  grid-template-columns: minmax(max-content, 6rem) minmax(9rem, 1fr) 6.3rem 4.5rem repeat(5, minmax(3.4rem, 5rem)) 1.2rem;
   align-items: center;
   gap:.5rem;
 }
@@ -34,6 +34,13 @@
   align-self: stretch;
 }
 .stream-head th { padding: 0; font-weight: var(--fw-semibold); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Make the terse token/size column headers self-explanatory. The JS-rebuilt header
+   uses short labels (In / Out / Total / Size); append a short unit hint so each reads
+   clearly. The numeric tracks were widened above so these hints don't clip. */
+.stream-head th:nth-child(6)::after { content: ' tok'; }   /* In    -> input tokens   */
+.stream-head th:nth-child(7)::after { content: ' tok'; }   /* Out   -> output tokens  */
+.stream-head th:nth-child(8)::after { content: ' tok'; }   /* Total -> turn total toks */
+.stream-head th:nth-child(9)::after { content: ' (ch)'; }  /* Size  -> payload chars  */
 .row-main {
   padding: 0.45rem 0.25rem;
   cursor: pointer;
@@ -52,6 +59,12 @@
   font-size: var(--fs-sm);
 }
 .stream-head .num-col { text-align: right; }
+/* Lighten the frequently-empty token / size columns so a "—" reads as "no data yet"
+   rather than an incomplete value; they stay readable when populated. */
+.s-tokens-in, .s-tokens-out, .s-tokens-total, .s-size { color: var(--text-faint); }
+/* Zebra striping for the dense live-call stream (rows are direct <li> children of
+   #stream-list); pairs with the existing per-row border for easy row scanning. */
+#stream-list .stream-row:nth-child(even) { background: rgba(255, 255, 255, 0.045); }
 .s-expand {
   font-size: var(--fs-2xs);
   color: var(--muted);
@@ -241,7 +254,7 @@
 .stat-row.live { margin-top: 0.25rem; }
 .stat { flex: 1; }
 .stat .num { font-size: var(--fs-stat); font-weight: var(--fw-bold); line-height: var(--lh-tight); font-variant-numeric: tabular-nums; display: block; }
-.stat .num.small { font-size: var(--fs-lg); }
+.stat .num.small { font-size: var(--fs-lg); color: var(--text-faint); }
 .stat label { color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.4px; }
 
 .top-tools { width: 100%; border-collapse: collapse; margin-top: 0.25rem; }

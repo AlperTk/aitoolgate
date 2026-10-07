@@ -6,10 +6,46 @@
   /* Relax the big live-view height on small screens; let it size to content. */
   #stream-panel { min-height: auto; }
   #view-rules { padding: 1rem; }
+
+  /* Mobile reflow: keep the page at viewport width (no horizontal scroll) at any
+     sub-960px width. Compact the live-call stream by hiding the five low-priority
+     numeric columns (Duration / In / Out / Total / Size) and collapsing the shared
+     grid template so it fits any narrow screen; full values stay available by
+     expanding a row (Arguments / Response / Details). */
+  #stream-head .num-col,
+  .row-main .col-num { display: none; }
+  .stream-head,
+  .row-main {
+    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) 1.2rem;
+  }
+  /* Safety net so the wide top-tools table can't push the page wider either. */
+  .tools-scroll { overflow-x: auto; }
 }
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
   .app-header { flex-direction: column; align-items: flex-start; }
+}
+
+/* Below ~480px: stack the global-controls toolbar and let each control group
+   wrap its own controls. Without this the wide Export button group — the single
+   widest element in the toolbar — refuses to shrink below its content
+   (flex items default to min-width:auto) and forces the page past the viewport
+   width (measured docScrollWidth ~463 > clientWidth 375 at 390px). Stacking the
+   groups and wrapping each group's controls keeps every control within the
+   viewport at any sub-480px width, so there is no horizontal page scrollbar. */
+@media (max-width: 480px) {
+  .dash-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.7rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  .ctl-group {
+    min-width: 0;      /* allow a group to shrink below its widest child */
+    flex-wrap: wrap;   /* let a group's own controls (e.g. the 4 Export buttons) wrap onto new lines */
+    gap: 0.5rem;
+  }
 }
 
 /* Viewport-fit cap: at >=961px the whole dashboard grid fits one screen —

@@ -14,8 +14,8 @@
 .btn:hover { background: #243040; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
 .btn-primary:hover { background: #3a7bf0; }
-.btn-danger { color: #ff9b94; border-color: rgba(248, 81, 73, 0.35); }
-.btn-danger:hover { background: rgba(248, 81, 73, 0.15); }
+.btn-danger { color: #ff9b94; border-color: rgba(248, 81, 73, 0.4); background: rgba(248, 81, 73, 0.08); }
+.btn-danger:hover { background: rgba(248, 81, 73, 0.16); border-color: rgba(248, 81, 73, 0.55); }
 .btn[hidden] { display: none; }
 
 /* Global controls toolbar: time range + clear on-screen history + export. */

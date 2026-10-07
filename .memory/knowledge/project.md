@@ -1,31 +1,48 @@
+---
+name: project
+description: What mcp-manager is, who it serves, its scope, core use cases, and technology stack. Read first to orient on the project before diving into architecture or domain.
+---
+
 # Project
 
 ## Purpose
-Local, LiteLLM-style model proxy that sits in the agentic loop as a man-in-the-middle over the LLM request/response stream. Its core is a programmable tool-monitoring/interception layer: declarative **policy pipelines** inspect and (optionally) rewrite the message stream while transparently forwarding traffic to one configured upstream model. It exposes OpenAI- and Anthropic-compatible HTTP endpoints and drives a local real-time web dashboard.
+`mcp-manager` is a **local, zero-runtime-dependency TypeScript model proxy** on Node that sits in the agentic loop as a **man-in-the-middle over the LLM request/response stream** (LiteLLM-style). Its core value is a **programmable tool-monitoring / interception layer**: declarative *policy pipelines* inspect and optionally rewrite the message stream while transparently forwarding traffic to one configured upstream model.
 
-## Primary Responsibilities
-- Forward LLM chat traffic to a single configured upstream model (OpenAI- or Anthropic-compatible).
-- Apply declarative policy rules to the stream: block tool calls, detect tool-call loops, hide tools from the model, inject corrective feedback messages, rewrite tool arguments.
-- Bidirectional protocol translation between OpenAI and Anthropic wire formats (request and response, including SSE streams).
-- REST API for rule CRUD plus a live WebSocket feed for the dashboard, plus an on-demand endpoint (`GET /api/tool-results/:id`) exposing a tool call's actual returned value.
-- Persist rules, telemetry events, and per-tool metrics to SQLite (opt-in), with optional persistence of tool-result values gated by `toolResults.enabled` (default off).
-- Serve the static local dashboard (real-time view of sessions, tool calls, and interventions).
+## Scope
+- **In:** proxying LLM chat traffic; policy-based inspection & rewriting of tool calls; OpenAI↔Anthropic protocol translation (request, response, and SSE streams); rule CRUD REST API; real-time WebSocket telemetry feed; opt-in SQLite persistence; local dashboard.
+- **Out:** it proxies to exactly ONE configured upstream (no multi-model routing/load-balancing), is not an auth gateway, and makes no cloud/distributed-system assumptions. Single-host only.
 
-## Domain Concepts
-- **Rule** (`Rule`, `PolicyRule`): a declarative policy — matcher + action(s) + scope/severity — evaluated against a `PolicyContext` into a `RuleEvaluationResult`.
-- **Matcher**: predicate deciding whether a rule fires on a context (e.g., `loopDetector`, `argPattern`, `toolName`).
-- **Action**: what happens when a rule fires — `block`, `hideTool`, `injectMessage`, `rewriteArgs`; produces an `ActionEffect`.
-- **Pipeline / Stage**: ordered chain of request/response handlers through which each proxied call passes; the policy engine is mounted as one stage.
-- **RequestContext / ResponseContext**: normalized inbound-request / outbound-response views flowing through stages.
-- **SessionKey**: identity derived from headers/messages used to scope per-session state (feedback store, session token).
-- **TelemetryEvent / ToolCallEvent / InterventionEvent**: events emitted for requests, tool calls, and policy interventions; consumed by the collector, tool-metrics tracker, and dashboard.
-- **FeedbackMessage**: injected corrective message stored per session for dashboard drill-down.
-- **ToolResult value (on-demand)**: a tool call's actual returned output, captured out-of-band into an in-memory store (key = tool-call id) and fetched lazily by the dashboard; optionally persisted to SQLite when `toolResults.enabled`.
+## Core use cases
+1. Point an AI client at the proxy's OpenAI (`/v1/chat/completions`, `/v1/models`) or Anthropic (`/v1/messages`) endpoint instead of the provider directly.
+2. Author **policy rules** (matcher + action) to block tool calls, detect tool-call loops, hide tools, inject corrective feedback, or rewrite tool arguments — live, without restarting.
+3. Watch sessions in real time via the dashboard: live tool-call stream, per-tool metrics/tokens, intervention log.
+4. Drill into any tool call's actual returned value (`GET /api/tool-results/:id`).
+5. Optionally persist rules, telemetry events, and tool-result values to local SQLite.
 
-## External Systems
-- **Upstream model API** — the single configured target (OpenAI/Anthropic endpoint) that all LLM traffic forwards to.
-- **SQLite** — local persistence for rules/events/tool metrics (opt-in via config).
-- **Dashboard browser client** — consumes REST + WebSocket to render real-time session/tool/intervention views.
+## Main consumers
+- AI clients/agents configured with the proxy as their model base URL (OpenAI- or Anthropic-wire format).
+- A local browser dashboard (real-time ops view).
+- Operators adding/removing rules via the REST API or the dashboard UI.
 
-## Notes
-- Current knowledge for this project lives under `.memory/knowledge/`. A legacy memory set exists at `.memory2/` (root-level files + `modules/`) — treat it as candidate notes; prefer current source plus this knowledge when they conflict.
+## Technology stack (version-pinned)
+| Layer | Choice | Notes |
+|---|---|---|
+| Language/runtime | TypeScript on Node | dev-only deps: `typescript@^7.0.2`, `@types/node@^26.6.4`. **Zero runtime dependencies.** |
+| HTTP | `node:http` | no framework. |
+| WebSocket | hand-written RFC6455 server (`src/api/ws.ts`) | no `ws` package. |
+| Streaming | native SSE parsing (`src/telemetry/stream-extract.ts`) | protocol-aware. |
+| Persistence | `node:sqlite` (`DatabaseSync`) | Node built-in; two DB files. |
+| Dashboard | vanilla JS ES modules (`.mjs`) | no framework/bundler/fonts/CDNs. |
+| Tests | Node `node:test` + `node:assert/strict` | run against compiled `dist/`. |
+| Build | `tsc` → `dist/` (node16 CJS) | source authored as ESNext modules. |
+
+## High-level overview
+```
+AI client ──▶ mcp-manager (proxy + policy engine + telemetry) ──▶ single upstream LLM API
+   │               node:http  (OpenAI + Anthropic endpoints)
+   │               REST  /api/{rules,stats,events,tool-results}
+   │               WS    /ws  (live TelemetryEvent feed)
+   │               static  dashboard/ (vanilla JS)
+   ▼
+   SQLite: data/rules.db (+ optional data/tool-results.db)
+```
