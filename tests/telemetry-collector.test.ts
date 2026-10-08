@@ -233,6 +233,12 @@ test('a repeated identical call within the same turn is not double-counted', asy
   assert.equal(s.totalInputTokens, 300);
   assert.equal(s.totalOutputTokens, 70);
   assert.equal(s.totalTokens, 370);
+  // Per-tool aggregation mirrors the global turn-dedup: the two same-turn calls attribute the turn's
+  // tokens to `bash` ONCE (370), not twice (740).
+  const topBash = s.topTools.find((t) => t.toolName === 'bash');
+  assert.ok(topBash);
+  assert.equal(topBash.count, 2);
+  assert.equal(topBash.totalTokens, 370);
 });
 
 test('maxTokenTurns bounds the token-turn dedup set, evicting oldest keys', async () => {
@@ -373,8 +379,8 @@ test('excluded `task` wrapper is filtered from aggregates but kept in the raw ev
   // No `task` row in the top tools; other tools present with correct metrics.
   assert.ok(!s.topTools.some((t) => t.toolName.toLowerCase() === 'task'));
   assert.deepEqual(s.topTools, [
-    { toolName: 'bash', count: 2, avgDurationMs: 150, maxDurationMs: 200, totalDurationMs: 300 },
-    { toolName: 'read', count: 1, avgDurationMs: 150, maxDurationMs: 150, totalDurationMs: 150 },
+    { toolName: 'bash', count: 2, avgDurationMs: 150, maxDurationMs: 200, totalDurationMs: 300, totalTokens: 430 },
+    { toolName: 'read', count: 1, avgDurationMs: 150, maxDurationMs: 150, totalDurationMs: 150, totalTokens: 360 },
   ]);
 
   // The RAW emitted stream still carries every individual task event (aggregation-only filter).

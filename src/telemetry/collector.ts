@@ -3,7 +3,7 @@
  *
  * Subscribes to a {@link TelemetryEventBus} and maintains live aggregates over
  * the event stream: total tool-call count, per-tool counts, a top-tools
- * ranking (with per-tool duration metrics), a bounded newest-first intervention
+ * ranking (with per-tool duration and token metrics), a bounded newest-first intervention
  * log, plus result/session counters and global duration/token usage totals.
  * Query methods expose these for the live dashboard. Purely in-memory: no
  * timers, no I/O, no persistence; {@link Collector.dispose} is what detaches
@@ -26,6 +26,8 @@ export interface TopTool {
   maxDurationMs?: number;
   /** Cumulative duration in ms across results reporting `durationMs`; omitted when the tool has none. */
   totalDurationMs?: number;
+  /** Sum of `tokens.total` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no total tokens. */
+  totalTokens?: number;
 }
 
 /** Options for {@link createCollector}. */
@@ -128,6 +130,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   let tokenSumsSeen = false;
   // Bounded, insertion-ordered set of seen token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const tokenTurnKeys = new Set<string>();
+  // Per-tool token totals across distinct turns, deduped per (turn, tool): batched calls sharing one
+  // turn attribute the turn's tokens once per tool rather than once per call.
+  const toolTokens = new Map<string, number>();
+  // Bounded, insertion-ordered set of seen per-tool token-turn dedup keys; the oldest key is evicted first beyond the cap.
+  const toolTokenTurnKeys = new Set<string>();
 
   const handler: (event: TelemetryEvent) => void = (event) => {
     // Retain EVERY incoming raw event in arrival order, evicting the oldest past the cap. The
@@ -162,6 +169,18 @@ export function createCollector(options: CollectorOptions = {}): Collector {
             totalOutputTokens += event.tokens.output ?? 0;
             totalTokens += event.tokens.total ?? 0;
             tokenSumsSeen = true;
+          }
+          // Per-tool token total: attribute this turn's tokens to this tool once per distinct (turn, tool), so
+          // batched same-turn calls don't double-count it. Mirrors the global turn-dedup above.
+          const toolTurnKey = turnKey + '\u0000' + event.toolName;
+          if (!toolTokenTurnKeys.has(toolTurnKey)) {
+            toolTokenTurnKeys.add(toolTurnKey);
+            while (toolTokenTurnKeys.size > maxTokenTurns) {
+              const oldest = toolTokenTurnKeys.values().next().value;
+              if (oldest === undefined) break;
+              toolTokenTurnKeys.delete(oldest);
+            }
+            toolTokens.set(event.toolName, (toolTokens.get(event.toolName) ?? 0) + (event.tokens.total ?? 0));
           }
         }
         break;
@@ -207,6 +226,10 @@ export function createCollector(options: CollectorOptions = {}): Collector {
           entry.avgDurationMs = stats.sum / stats.count;
           entry.maxDurationMs = stats.max;
           entry.totalDurationMs = stats.sum;
+        }
+        const toolTotalTokens = toolTokens.get(toolName);
+        if (toolTotalTokens !== undefined) {
+          entry.totalTokens = toolTotalTokens;
         }
         return entry;
       })
@@ -266,6 +289,8 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     totalTokens = 0;
     tokenSumsSeen = false;
     tokenTurnKeys.clear();
+    toolTokens.clear();
+    toolTokenTurnKeys.clear();
   };
 
   const dispose = (): void => {

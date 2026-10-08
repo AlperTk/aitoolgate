@@ -31,8 +31,7 @@ export function initTopTools() {
     columns: [
       { key: 'toolName', label: 'Tool' },
       { key: 'count', label: 'Calls', align: 'right' },
-      { key: 'avgDurationMs', label: 'Avg (ms)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) },
-      { key: 'maxDurationMs', label: 'Max (ms)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP }
+      { key: 'avgTokensPerCall', label: 'Avg (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) }
     ],
     rows: _lastTop,
     filterable: true,
@@ -59,7 +58,12 @@ export async function refreshStats() {
     // them into the table. Only when it exists — app.js may call this before
     // initTopTools(), which then seeds real data via rows:_lastTop.
     _lastTop = (s.topTools || []).map(function (t) {
-      return { toolName: t.toolName, count: t.count, avgDurationMs: t.avgDurationMs, maxDurationMs: t.maxDurationMs };
+      // Per-tool average token consumption: the tool's total upstream tokens ÷ its call count.
+      return {
+        toolName: t.toolName,
+        count: t.count,
+        avgTokensPerCall: typeof t.totalTokens === 'number' && t.count > 0 ? t.totalTokens / t.count : undefined
+      };
     });
     if (topToolsTable) topToolsTable.setData(_lastTop);
     clearNotice();
