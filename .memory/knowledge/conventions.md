@@ -44,6 +44,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 | New port/contract | `src/ports/<name>.ts` | impl consumes it; no cross-impl imports |
 | New REST route | `src/api/http.ts` (+ wiring via API options) | dashboard consumer if UI-visible |
 | New DB table | `src/storage/schema.ts` (append a migration) | bump `SCHEMA_VERSION` |
+| Token estimation / payload→token sizing | `src/telemetry/tokenEstimate.ts` (dependency-free, ~4 chars/token) | reuse its helpers rather than ad-hoc `÷4`; accounting/dedup rules in domain.md |
 
 ## Checklist — add a rule type end-to-end
 1. Implement the matcher/action factory in `src/policy/{matchers,actions}/`.

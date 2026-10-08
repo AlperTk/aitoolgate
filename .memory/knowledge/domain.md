@@ -14,7 +14,8 @@ description: Domain vocabulary, core entities and their relationships, business 
 - **PolicyContext** — the union of `RequestContext | ResponseContext | ResultContext` that matchers/actions operate on.
 - **SessionKey** — per-session identity `{fingerprint, token?}` used to scope state (the feedback store).
 - **FeedbackMessage** — a corrective message queued per session and spliced into the next request.
-- **TelemetryEvent** — `ToolCallEvent | ToolResultEvent | InterventionEvent` broadcast on the bus.
+- **TelemetryEvent** — `ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent` broadcast on the bus.
+- **`turn.usage` / `TurnUsageEvent`** — whole-turn token-mass event covering ALL message content of a turn (not only tool calls/results): upstream-reported usage when present, else a char-based estimate (~4 chars/token). Carries `{input, output, total}` under one shared turn-level `at`.
 - **tool-result value** — a tool call's raw returned output, captured out-of-band and fetched lazily by id.
 - **flagship-loop-rule** — the built-in always-on loop-detection rule (see below).
 
@@ -26,7 +27,7 @@ Rule{enabled, priority, matcher, action}
 
 RuleStore (live getter) ─▶ Rule[] ─▶ createRuleEngine ─▶ PolicyStage ─.use()─▶ Pipeline
 SessionKey{fingerprint[,token]} ─scopes─▶ SessionFeedbackStore ─▶ FeedbackMessage queue
-TelemetryEvent = ToolCall | ToolResult | Intervention ─▶ bus ─▶ {Collector, ToolMetricsTracker, WS}
+TelemetryEvent = ToolCall | ToolResult | Intervention | TurnUsage ─▶ bus ─▶ {Collector, ToolMetricsTracker, WS}
 ```
 Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `ResponseContext{client, model, sessionKey, toolCalls, content, raw}`, `ResultContext{sessionKey, results, raw}`. Other domain types: `ToolCall{id,name,arguments}`, `ToolResult{toolCallId,name,isError,content}`, `ClientConfig{apiKey,name,model}`, `ModelConfig{id,baseUrl,model,apiKey?}`, `PolicyEvent{id,at,type,sessionKey?,ruleId?,payload}`.
 
@@ -37,7 +38,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 - `hideTool` strips tools from `raw.tools` **and** removes references from messages. `block` on a response drops the tool calls **and** queues user feedback for the next request — it is never silent.
 - `injectMessage` on a response is **queued for the next request**, not spliced into the current response.
 - `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
-- **Tool-call emission is centralized** in `context.ts` (`emitResponseTelemetry`), NOT in the policy stage — the stage emits only interventions. Avoid double-counting.
+- **Tool-call emission is centralized** in `context.ts` (`emitResponseTelemetry`), NOT in the policy stage — the stage emits only interventions. Avoid double-counting. It also emits ONE whole-turn `turn.usage` per turn that HAS a token source (upstream-reported usage OR issued tool calls): reported usage when present, else an ESTIMATE over all request messages + response content/tool calls; a usage-less, call-free final-answer turn emits NOTHING (omit, don't fabricate). The SSE path mirrors this at stream end (`stream-extract.ts`).
 - **SessionKey derivation:** an explicit token (header, default `x-session-id`) wins → `sha256(token-domain)+token`; otherwise `sha256` of the canonical stable prefix (system messages + first user message).
 
 ## Matchers (return `Match | null`)
@@ -59,7 +60,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 ## Invariants & state
 - **Session feedback queue:** FIFO, keyed by `fingerprint`; drained and spliced at the injection index (after the system prefix, before the trailing user turn).
 - **Tool-metrics pairing:** issued→result matched by stable id (same-session bucket first, then any-session fallback); `durationMs = max(0, result.at - issued.at)`; pending entries swept by lazy TTL (default 300 000 ms) and `maxPending` (1 000).
-- **Collector caps:** `maxInterventions=500`, `maxRecent=200`, `maxTokenTurns=10000`; token dedup per `(sessionKey␟at)`; aggregates skip excluded tools (default `['task']`, case-insensitive).
+- **Collector caps:** `maxInterventions=500`, `maxRecent=200`, `maxTokenTurns=10000`; token dedup per `(sessionKey␟at)`; aggregates skip excluded tools (default `['task']`, case-insensitive). Whole-turn token totals are summed from BOTH `tool.call.tokens` AND `turn.usage`, deduped per `(sessionKey␟at)` with first-seen winning (a turn carrying both sources counts once). Per-tool adds `totalTokens` (sum of distinct turns' `tokens.total` invoking that tool, deduped per `(turn␟tool)`) and `totalResponseTokens` + `resolvedCount` (estimated response-payload tokens `round(chars/4)` across resolved results reporting `chars`).
 - **In-memory tool-result store** bounded at 1 000 entries; optional SQLite persister drains in batches (WAL mode).
 
 ## End-to-end workflows
