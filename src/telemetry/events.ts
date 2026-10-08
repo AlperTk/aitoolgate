@@ -106,5 +106,30 @@ export type InterventionEvent = {
   at: number;
 };
 
+/**
+ * Per-turn token usage covering ALL message content of the turn — not only tool
+ * calls/results.
+ *
+ * Carries the turn's upstream-reported usage when the provider reported it, else an
+ * ESTIMATE over the full request message text (`input`) and the response content plus
+ * tool calls (`output`) — so usage-less turns, and tool-call-less final-answer turns,
+ * still contribute honest token mass instead of none. Every event of one turn shares ONE
+ * turn-level `at`, which is the dedup key (`${sessionKey}\u0000${at}`) under which the
+ * collector sums each distinct turn exactly once: a turn that carries both a real-usage
+ * {@link ToolCallEvent.tokens} and this event contributes exactly once (first-seen wins).
+ */
+export type TurnUsageEvent = {
+  /** Discriminator. */
+  type: 'turn.usage';
+  /** Session the turn belongs to. */
+  sessionKey: string;
+  /** Client identity, if known. */
+  clientId?: string;
+  /** The turn's token mass (upstream-reported or estimated); all fields present as numbers. */
+  tokens: { input: number; output: number; total: number };
+  /** When the turn was observed (epoch milliseconds); shared by every event of the same turn. */
+  at: number;
+};
+
 /** Any event published through the telemetry {@link EventBus}. */
-export type TelemetryEvent = ToolCallEvent | ToolResultEvent | InterventionEvent;
+export type TelemetryEvent = ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent;

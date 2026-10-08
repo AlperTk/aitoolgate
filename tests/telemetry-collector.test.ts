@@ -467,5 +467,10 @@ test('a token-less tool.call counts as a call but adds no token mass; its chars-
   assert.equal(s.totalInputTokens, undefined, 'no input-token mass is recorded for a usage-less turn');
   assert.equal(s.totalOutputTokens, undefined, 'no output-token mass is recorded for a usage-less turn');
   assert.equal(s.totalTokens, undefined, 'no total-token mass is recorded for a usage-less turn');
-  assert.deepEqual(collector.getTopTools(), [{ toolName: 'bash', count: 1 }]);
+  // The chars-carrying result also feeds into the per-tool response-token fields.
+  const topBash = collector.getTopTools().find((t) => t.toolName === 'bash');
+  assert.ok(topBash);
+  assert.equal(topBash.count, 1, 'the token-less tool.call still counts as one call');
+  assert.equal(topBash.resolvedCount, 1, 'the chars-carrying result contributes one resolved result');
+  assert.equal(topBash.totalResponseTokens, 32, 'totalResponseTokens = round(128/4) = 32');
 });

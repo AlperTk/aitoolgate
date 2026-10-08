@@ -23,6 +23,16 @@
  *   `tokens` (normalized from the stream's usage — an OpenAI trailing `usage` chunk OR an
  *   Anthropic `message_start` / `message_delta` `usage` frame) when the provider reports
  *   usage on the stream — omitted rather than fabricated when no usage is present.
+ * - A single `turn.usage` event per stream when the stream ends, carrying the WHOLE-TURN token
+ *   mass over ALL message content (not only tool calls/results): the stream's reported usage
+ *   when present, else an ESTIMATE — `input` from this request's full message content (the
+ *   optional `inputTokens` parameter, precomputed by the caller via `estimateInputTokens`) and
+ *   `output` from the streamed response text + finalized tool-call arguments — so a usage-less
+ *   of zero when the turn has NO stream usage but DID issue tool calls. It shares the turn-level
+ *   `at` with any emitted tool.call events, so the collector's per-(sessionKey, at) dedup counts
+ *   each distinct turn exactly once. Omitted entirely when the stream reports no usage AND
+ *   observes no tool calls (a usage-less, call-free final-answer stream stays silent — omit,
+ *   don't fabricate — preserving pure-passthrough silence for such streams).
  *
  * Per-call DURATION attribution, however, rides on the TRACKER, not the events: each
  * call's own FIRST-OBSERVATION time (when it first appeared on the stream) is recorded
@@ -35,8 +45,9 @@
  * yields a pure passthrough, and no internal error can propagate into the stream.
  */
 import { Transform } from 'node:stream';
-import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from './events';
+import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from './events';
 import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
+import { estimateTokensFromChars } from './tokenEstimate';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -62,7 +73,10 @@ interface StreamToolCall {
  * `bus` (pure passthrough); `clientId` is attached to emitted events only when provided.
  * An optional injectable timing source (`now`, epoch milliseconds — defaulting to the
  * shared monotonic wall-clock) controls BOTH the shared turn-level event `at` and each
- * call's per-first-observation issue time recorded into the shared tracker.
+ * call's per-first-observation issue time recorded into the shared tracker. An OPTIONAL
+ * precomputed estimated INPUT-token mass of this stream's REQUEST (`inputTokens`; see
+ * `estimateInputTokens` in `tokenEstimate.ts`) lets the final `turn.usage` event carry honest
+ * input tokens even when the provider reports no stream usage.
  */
 export function createSseToolCallExtractor(
   bus: TelemetryEmitter | undefined,
@@ -70,12 +84,13 @@ export function createSseToolCallExtractor(
   clientId?: string,
   tracker?: ToolMetricsTracker,
   now?: () => number,
+  inputTokens?: number,
 ): Transform {
   // Injectable timing source (epoch milliseconds); defaults to the shared monotonic wall-clock.
   const clockNow = now ?? monotonicEpochMs;
 
   /** Emit through the optional bus, swallowing any synchronous or async failure. */
-  const emitEvent = (event: ToolCallEvent | ToolResultEvent): void => {
+  const emitEvent = (event: ToolCallEvent | ToolResultEvent | TurnUsageEvent): void => {
     if (bus === undefined) return;
     try {
       const maybe = bus.emit(event);
@@ -104,6 +119,13 @@ export function createSseToolCallExtractor(
   // A set of ids already assigned this stream so the stable-id fallback never hands two sibling
   // calls in one batch turn the same id (mirrors stableToolCallId in proxy/context.ts).
   const seenIds = new Set<string>();
+  // Character mass of streamed RESPONSE TEXT (both protocols) plus FINALIZED tool-call arguments —
+  // together the full observed model-side output, used to ESTIMATE the turn's output tokens when
+  // the provider reports no stream usage (see the `turn.usage` emission at stream end).
+  let streamedTextChars = 0;
+  let emittedArgsChars = 0;
+  // Count of tool.call events actually emitted this stream (gates the final `turn.usage`).
+  let callsEmitted = 0;
 
   /** Parse an accumulated `arguments` string into an object; `undefined` when absent/non-object. */
   const parseArgs = (raw: string): Record<string, unknown> | undefined => {
@@ -141,6 +163,11 @@ export function createSseToolCallExtractor(
     // identical id — the field the dashboard dedups on. The same id feeds both the emitted event
     // and the tracker so a later result stays linked to its originating call.
     const id = stableStreamCallId(sessionKey, at, index, acc.id, seenIds);
+    // Fold THIS call's raw argument character mass into the whole-turn OUTPUT estimate and count
+    // the emitted call (so even a usage-less stream that observed tool calls still emits its
+    // final `turn.usage`).
+    callsEmitted += 1;
+    emittedArgsChars += acc.args.length;
     emitEvent({
       type: 'tool.call',
       sessionKey,
@@ -178,6 +205,28 @@ export function createSseToolCallExtractor(
     if (finished) return;
     finished = true;
     flushAllCalls();
+    // One WHOLE-TURN token account per stream that HAS A TOKEN SOURCE (reported stream usage, or
+    // observed tool calls) when a bus is wired: the provider-reported usage when available, else
+    // an ESTIMATE — `input` from this request's full message content (`inputTokens`, precomputed
+    // by the caller), `output` from the streamed response text plus finalized tool-call arguments
+    // — so the turn's input/output token calculation includes non-tool message text, not only
+    // tool-related content. Shares the turn-level `at` with any emitted tool.call events, so the
+    // collector's per-(sessionKey, at) dedup counts the turn exactly once. A usage-less, call-free
+    // (final-answer) stream has no token source and emits nothing (omit, don't fabricate).
+    const inputMass = typeof inputTokens === 'number' ? inputTokens : 0;
+    if (streamUsage !== undefined || callsEmitted > 0) {
+      const input = streamUsage?.input ?? inputMass;
+      const output = streamUsage?.output ?? estimateTokensFromChars(streamedTextChars + emittedArgsChars);
+      if (input > 0 || output > 0) {
+        emitEvent({
+          type: 'turn.usage',
+          sessionKey,
+          tokens: { input, output, total: streamUsage?.total ?? input + output },
+          ...(clientId !== undefined ? { clientId } : {}),
+          at: turnTimestamp(),
+        });
+      }
+    }
   };
 
   /** Accumulate one `choices[].delta.tool_calls[]` fragment, keyed by its `index`. */
@@ -210,7 +259,8 @@ export function createSseToolCallExtractor(
    * Handle one NATIVE Anthropic streaming event frame. Only `tool_use` content blocks produce
    * pending tool-call state: `content_block_start` opens a call (capturing its stable `id` +
    * `name`) and `content_block_delta` (`input_json_delta.partial_json`) appends raw arguments.
-   * Text blocks and `content_block_stop` are not tracked; every accumulated `tool_use` call is
+   * TEXT deltas are counted only for the whole-turn OUTPUT token estimate (no block state);
+   * every accumulated `tool_use` call is
    * finalised (emit + record) when the stream ends ({@link finish} → {@link flushAllCalls}),
    * exactly mirroring the OpenAI-shaped path so each call carries the FULL turn-level `tokens`
    * (read from `message_start` / `message_delta`) under ONE shared turn-level `at`. `message_*`
@@ -236,13 +286,17 @@ export function createSseToolCallExtractor(
       case 'content_block_delta': {
         const delta = parsed.delta;
         if (!isRecord(delta)) return;
+        // Response-TEXT fragments count toward the whole-turn OUTPUT token estimate.
+        const textDelta = delta.text_delta;
+        if (isRecord(textDelta) && typeof textDelta.text === 'string') streamedTextChars += textDelta.text.length;
         const jsonDelta = delta.input_json_delta;
-        if (!isRecord(jsonDelta) || typeof jsonDelta.partial_json !== 'string') return;
-        const index = typeof parsed.index === 'number' ? parsed.index : -1;
-        const acc = byIndex.get(index);
-        if (acc !== undefined) {
-          if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
-          acc.args += jsonDelta.partial_json;
+        if (isRecord(jsonDelta) && typeof jsonDelta.partial_json === 'string') {
+          const index = typeof parsed.index === 'number' ? parsed.index : -1;
+          const acc = byIndex.get(index);
+          if (acc !== undefined) {
+            if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
+            acc.args += jsonDelta.partial_json;
+          }
         }
         break;
       }
@@ -280,6 +334,8 @@ export function createSseToolCallExtractor(
         if (!isRecord(choice)) continue;
         const delta = choice.delta;
         if (!isRecord(delta)) continue;
+        // Response-TEXT fragments count toward the whole-turn OUTPUT token estimate.
+        if (typeof delta.content === 'string') streamedTextChars += delta.content.length;
         const toolCalls = delta.tool_calls;
         if (Array.isArray(toolCalls)) for (const tc of toolCalls) accumulate(tc);
       }

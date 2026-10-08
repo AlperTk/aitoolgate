@@ -1,9 +1,10 @@
 import type http from 'node:http';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
 import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
-import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent } from '../telemetry/events';
+import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
 import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
 import { monotonicEpochMs } from '../telemetry/toolMetrics';
+import { estimateTurnUsage } from '../telemetry/tokenEstimate';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
 import type { UpstreamClient, UpstreamResult } from './upstream';
 
@@ -174,7 +175,7 @@ export function sendJSON(res: http.ServerResponse, status: number, body: unknown
 /** Options for {@link runThroughPipeline}. */
 export interface RunPipelineOptions {
   /**
-   * Optional telemetry event bus to emit `tool.call` / `tool.result` events onto
+   * Optional telemetry event bus to emit `tool.call` / `tool.result` / `turn.usage` events onto
    * after the response phase. Accepts EITHER the port-level `EventBus` or the
    * telemetry `TelemetryEventBus` (both expose `emit`, so either is structurally
    * compatible). When omitted, no events are emitted (behavior unchanged). `tool.call`
@@ -252,12 +253,15 @@ export async function runThroughPipeline(
   // Rehydrate any stage edits to the tool calls onto the raw wire response before
   // returning it to the client. No-op (byte-identical) when the view is unchanged.
   syncResponseBody(processedResponse, summary);
-  // Response-phase tool-CALL emission + issue recording, ALWAYS (default AND policy paths):
-  // emit one tool.call (stable id + turn tokens) per issued call and record it into the
-  // shared tracker. No synthetic per-response tool.result is emitted here; real results
-  // are emitted in the request phase above once the client feeds them back. A no-op when
+  // Response-phase tool-CALL emission + issue recording + WHOLE-TURN usage, ALWAYS (default AND
+  // policy paths): emit one tool.call (stable id + turn tokens) per issued call, record each into
+  // the shared tracker, and emit ONE turn.usage per turn carrying the turn's upstream usage when
+  // reported, else an ESTIMATE over ALL request messages + the response content/tool calls — so
+  // usage-less turns and tool-call-less (final-answer) turns still contribute honest token mass
+  // (not only tool-related content). No synthetic per-response tool.result is emitted here; real
+  // results are emitted in the request phase above once the client feeds them back. A no-op when
   // neither a bus nor a tracker is wired (pure passthrough — behavior unchanged).
-  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, opts?.now);
+  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, summary.content, opts?.now);
   return { status: result.status, body: processedResponse.raw };
 }
 
@@ -289,6 +293,17 @@ export type NormalizedUsage = { input?: number; output?: number; total?: number 
  * the respective bus/tracker is undefined. Each dispatch is guarded so a throwing/
  * rejecting emitter can never break the request flow. The timestamp comes from the
  * caller's injectable timing source (default: shared monotonic wall-clock).
+ *
+ * ALWAYS also emits one whole-turn `turn.usage` event per turn that HAS A TOKEN SOURCE
+ * (the upstream reported usage, or the response issued tool calls) when a bus is wired,
+ * carrying the turn's upstream `tokens` when reported, else an ESTIMATE over ALL request
+ * messages + the response content/tool calls (see `telemetry/tokenEstimate.ts`) — so the
+ * turn's input/output token calculation includes non-tool message text (system/user/
+ * assistant content), not only tool-related content. It shares the same turn-level `at`
+ * (and session key) as the emitted tool.call events, so the collector's per-(sessionKey␟at)
+ * dedup counts each distinct turn exactly once regardless of which source arrives first.
+ * A usage-less, call-free final-answer turn has no token source and emits nothing
+ * (omit, don't fabricate).
  */
 function emitResponseTelemetry(
   bus: TelemetryEmitter | undefined,
@@ -296,6 +311,7 @@ function emitResponseTelemetry(
   requestCtx: RequestContext,
   toolCalls: ToolCall[],
   usage: NormalizedUsage | undefined,
+  content: string,
   now?: () => number,
 ): void {
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
@@ -323,6 +339,22 @@ function emitResponseTelemetry(
     sessionKey,
     issued.map(({ call, id }) => ({ id, at, ...(call.name !== '' ? { name: call.name } : {}) })),
   );
+  // Whole-turn token accounting: one turn.usage per turn THAT HAS A TOKEN SOURCE (the upstream
+  // reported usage, or this response issued tool calls) — carrying the reported usage when
+  // present, else an ESTIMATE over ALL request messages + the response content/tool calls, so
+  // the turn's input/output token calculation includes non-tool message text (system/user/
+  // assistant), not only tool-related content. Shares this same turn-level `at` (and session
+  // key) with the emitted tool.call events, so the collector's per-(sessionKey␟at) dedup counts
+  // each distinct turn exactly once. A usage-less, call-free final-answer turn carries no token
+  // source and emits nothing (omit, don't fabricate — pure-passthrough behavior unchanged).
+  if (bus !== undefined && (usage !== undefined || toolCalls.length > 0)) {
+    const turnTokens = usage ?? estimateTurnUsage(requestCtx.messages, content, toolCalls);
+    const input = turnTokens.input ?? 0;
+    const output = turnTokens.output ?? 0;
+    if (input > 0 || output > 0) {
+      safeEmit(bus, makeTurnUsageEvent(sessionKey, clientId, { input, output, total: turnTokens.total ?? (input + output) }, at));
+    }
+  }
 }
 
 /**
@@ -348,6 +380,26 @@ function makeToolCallEvent(
     ...(id !== '' ? { id } : {}),
     ...(usage !== undefined ? { tokens: usage } : {}),
     ...(clientId !== undefined ? { clientId } : {}),
+  };
+}
+
+/**
+ * Build a {@link TurnUsageEvent}: the whole-turn token account (upstream-reported or estimated
+ * over all message content) under the shared turn-level timestamp. `total` is always a number
+ * (`input + output` when the reported usage omitted it), so consumers never fabricate fields.
+ */
+function makeTurnUsageEvent(
+  sessionKey: string,
+  clientId: string | undefined,
+  tokens: { input: number; output: number; total: number },
+  at: number,
+): TurnUsageEvent {
+  return {
+    type: 'turn.usage',
+    sessionKey,
+    tokens,
+    ...(clientId !== undefined ? { clientId } : {}),
+    at,
   };
 }
 
@@ -592,7 +644,7 @@ function extractUsage(body: unknown): NormalizedUsage | undefined {
 }
 
 /** Emit an event through an optional bus without ever letting a failure surface. */
-function safeEmit(bus: TelemetryEmitter, event: ToolCallEvent | ToolResultEvent): void {
+function safeEmit(bus: TelemetryEmitter, event: ToolCallEvent | ToolResultEvent | TurnUsageEvent): void {
   try {
     const maybe = bus.emit(event);
     if (maybe !== null && typeof maybe === 'object' && typeof (maybe as { catch?: unknown }).catch === 'function') {

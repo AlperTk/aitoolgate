@@ -28,6 +28,10 @@ export interface TopTool {
   totalDurationMs?: number;
   /** Sum of `tokens.total` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no total tokens. */
   totalTokens?: number;
+  /** Sum of estimated response-payload tokens (`round(chars / EST_CHARS_PER_TOKEN)`) across resolved results reporting `chars`; omitted when the tool has no resolved results. */
+  totalResponseTokens?: number;
+  /** Count of resolved results that reported `chars` for this tool; omitted when the tool has none. */
+  resolvedCount?: number;
 }
 
 /** Options for {@link createCollector}. */
@@ -58,11 +62,11 @@ export interface CollectorSummary {
   totalDurationMs?: number;
   /** Mean duration in ms across results reporting `durationMs`; omitted when none. */
   avgDurationMs?: number;
-  /** Sum of `tokens.input` across distinct turns; omitted when no token usage observed. */
+  /** Sum of `tokens.input` across distinct turns (from `tool.call` `tokens` and whole-turn `turn.usage` events); omitted when no token usage observed. */
   totalInputTokens?: number;
-  /** Sum of `tokens.output` across distinct turns; omitted when no token usage observed. */
+  /** Sum of `tokens.output` across distinct turns (from `tool.call` `tokens` and whole-turn `turn.usage` events); omitted when no token usage observed. */
   totalOutputTokens?: number;
-  /** Sum of `tokens.total` across distinct turns; omitted when no token usage observed. */
+  /** Sum of `tokens.total` across distinct turns (from `tool.call` `tokens` and whole-turn `turn.usage` events); omitted when no token usage observed. */
   totalTokens?: number;
 }
 
@@ -101,6 +105,9 @@ const DEFAULT_MAX_RECENT = 200;
 /** Default bound on distinct token-turn dedup keys retained (oldest evicted beyond this). */
 const DEFAULT_MAX_TOKEN_TURNS = 10000;
 
+/** Assumed average characters per token for estimating tool-response payload size in tokens. */
+const EST_CHARS_PER_TOKEN = 4;
+
 /** Create an in-memory {@link Collector} subscribed to a telemetry event bus. */
 export function createCollector(options: CollectorOptions = {}): Collector {
   const bus = options.bus ?? createEventBus();
@@ -135,6 +142,29 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const toolTokens = new Map<string, number>();
   // Bounded, insertion-ordered set of seen per-tool token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const toolTokenTurnKeys = new Set<string>();
+  // Per-tool resolved-result response-token stats (accumulated estimated tokens + resolved result count).
+  const toolResolvedResults = new Map<string, { totalResponseTokens: number; resolvedCount: number }>();
+
+  /**
+   * Sum a distinct turn's token mass EXACTLY ONCE, deduped by `${sessionKey}\u0000${at}`
+   * (bounded at `maxTokenTurns`), whether it arrives on a `tool.call`'s `tokens` or on a
+   * whole-turn `turn.usage` event — the shared dedup key is what keeps the two sources from
+   * double-counting one turn (the first-seen source's tokens win).
+   */
+  const recordTurnTokensOnce = (turnKey: string, tokens: { input?: number; output?: number; total?: number }): void => {
+    if (tokenTurnKeys.has(turnKey)) return;
+    tokenTurnKeys.add(turnKey);
+    // Keep the dedup set bounded: evict the oldest key(s) beyond the configured cap.
+    while (tokenTurnKeys.size > maxTokenTurns) {
+      const oldest = tokenTurnKeys.values().next().value;
+      if (oldest === undefined) break;
+      tokenTurnKeys.delete(oldest);
+    }
+    totalInputTokens += tokens.input ?? 0;
+    totalOutputTokens += tokens.output ?? 0;
+    totalTokens += tokens.total ?? 0;
+    tokenSumsSeen = true;
+  };
 
   const handler: (event: TelemetryEvent) => void = (event) => {
     // Retain EVERY incoming raw event in arrival order, evicting the oldest past the cap. The
@@ -157,19 +187,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         // response turn repeat identical `tokens`, so only the first-seen turn contributes.
         if (event.tokens) {
           const turnKey = `${event.sessionKey}\u0000${event.at}`;
-          if (!tokenTurnKeys.has(turnKey)) {
-            tokenTurnKeys.add(turnKey);
-            // Keep the dedup set bounded: evict the oldest key(s) beyond the configured cap.
-            while (tokenTurnKeys.size > maxTokenTurns) {
-              const oldest = tokenTurnKeys.values().next().value;
-              if (oldest === undefined) break;
-              tokenTurnKeys.delete(oldest);
-            }
-            totalInputTokens += event.tokens.input ?? 0;
-            totalOutputTokens += event.tokens.output ?? 0;
-            totalTokens += event.tokens.total ?? 0;
-            tokenSumsSeen = true;
-          }
+          recordTurnTokensOnce(turnKey, event.tokens);
           // Per-tool token total: attribute this turn's tokens to this tool once per distinct (turn, tool), so
           // batched same-turn calls don't double-count it. Mirrors the global turn-dedup above.
           const toolTurnKey = turnKey + '\u0000' + event.toolName;
@@ -200,6 +218,21 @@ export function createCollector(options: CollectorOptions = {}): Collector {
           stats.count += 1;
           toolDuration.set(event.toolName, stats);
         }
+        // Accumulate estimated response-payload tokens per tool from each resolved result carrying a measurable char count.
+        if (typeof event.chars === 'number' && Number.isFinite(event.chars) && event.chars > 0) {
+          const estTokens = Math.max(0, Math.round(event.chars / EST_CHARS_PER_TOKEN));
+          const resolved = toolResolvedResults.get(event.toolName) ?? { totalResponseTokens: 0, resolvedCount: 0 };
+          resolved.totalResponseTokens += estTokens;
+          resolved.resolvedCount += 1;
+          toolResolvedResults.set(event.toolName, resolved);
+        }
+        break;
+      }
+      case 'turn.usage': {
+        // Whole-turn token mass over ALL message content (not only tool calls/results): summed
+        // exactly once per distinct (sessionKey, at) turn via the SAME dedup key as tool.call
+        // `tokens`, so a turn carrying both sources contributes exactly once (first-seen wins).
+        recordTurnTokensOnce(`${event.sessionKey}\u0000${event.at}`, event.tokens);
         break;
       }
       case 'policy.intervention':
@@ -230,6 +263,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         const toolTotalTokens = toolTokens.get(toolName);
         if (toolTotalTokens !== undefined) {
           entry.totalTokens = toolTotalTokens;
+        }
+        const toolResolved = toolResolvedResults.get(toolName);
+        if (toolResolved) {
+          entry.totalResponseTokens = toolResolved.totalResponseTokens;
+          entry.resolvedCount = toolResolved.resolvedCount;
         }
         return entry;
       })
@@ -291,6 +329,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     tokenTurnKeys.clear();
     toolTokens.clear();
     toolTokenTurnKeys.clear();
+    toolResolvedResults.clear();
   };
 
   const dispose = (): void => {

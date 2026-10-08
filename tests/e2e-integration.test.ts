@@ -449,6 +449,11 @@ test('two successive same-session requests produce a real tool.result paired fro
     const summary = mcm.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector summary reports non-zero totalDurationMs');
     assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'collector summary reports non-zero token totals');
+    // Per-tool response-token fields reflect the resolved result's payload size (est = round(chars/4)).
+    const topSW = summary.topTools.find((t) => t.toolName === 'search_web');
+    assert.ok(topSW, 'topTools includes search_web');
+    assert.equal(topSW.resolvedCount, 1, 'resolvedCount reflects one resolved result');
+    assert.equal(topSW.totalResponseTokens, Math.round(TOOL_RESULT_CONTENT.length / 4), 'totalResponseTokens = round(chars/4) for the resolved result');
   } finally {
     unsub();
     await closeServer(srv);
@@ -527,6 +532,9 @@ test('two successive same-session STREAMING requests produce a real tool.result 
     assert.ok(top, 'topTools includes search_web');
     assert.ok(top.avgDurationMs !== undefined && top.avgDurationMs > 0, 'per-tool avgDurationMs > 0');
     assert.ok(top.maxDurationMs !== undefined && top.maxDurationMs > 0, 'per-tool maxDurationMs > 0');
+    // Per-tool response-token fields reflect the streaming result's payload size (est = round(chars/4)).
+    assert.equal(top.resolvedCount, 1, 'resolvedCount reflects one resolved streaming result');
+    assert.equal(top.totalResponseTokens, Math.round(STREAM_TOOL_RESULT.length / 4), 'totalResponseTokens = round(chars/4) for the streaming result');
   } finally {
     unsub();
     await closeServer(srv);
@@ -594,6 +602,9 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
     assert.equal(top.count, 2, 'search_web count reflects both streamed calls');
     assert.ok(top.avgDurationMs !== undefined && top.avgDurationMs > 0, 'per-tool avgDurationMs > 0');
     assert.ok(top.maxDurationMs !== undefined && top.maxDurationMs > 0, 'per-tool maxDurationMs > 0');
+    // Per-tool response-token fields reflect both resolved results (each '<result-x>' = 10 chars → 3 est tokens).
+    assert.equal(top.resolvedCount, 2, 'resolvedCount reflects two resolved results');
+    assert.equal(top.totalResponseTokens, Math.round('<result-a>'.length / 4) + Math.round('<result-b>'.length / 4), 'totalResponseTokens = sum of estimated tokens for both results');
   } finally {
     unsub();
     await closeServer(srv);
@@ -695,6 +706,92 @@ test('a streamed OpenAI turn requests upstream token usage (stream_options.inclu
       call.tokens !== undefined && call.tokens.input === 12 && call.tokens.output === 7 && call.tokens.total === 19,
       'the streamed tool.call carries the merged turn tokens (normalized input/output/total) from the upstream usage chunk',
     );
+  } finally {
+    unsub();
+    await closeServer(srv);
+  }
+});
+
+// --- Test 10: response-based token estimates for two distinct tools -----------
+test('two distinct tools with different payload sizes yield correct per-tool response-token fields', async () => {
+  // A non-streaming upstream returns a completion carrying TWO tool calls (different names);
+  // the next same-session request feeds back both results so both resolve into real tool.results.
+  const CALL_BODY_10 = {
+    id: 'chatcmpl-two-tools', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{
+      index: 0, message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'tt_call_a', type: 'function', function: { name: 'search_web', arguments: '{"query":"x"}' } },
+        { id: 'tt_call_b', type: 'function', function: { name: 'read_file', arguments: '{"path":"/a.txt"}' } },
+      ]},
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  };
+  const FINAL_BODY_10 = {
+    id: 'chatcmpl-two-tools-final', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+  };
+  const SESS_10 = 'sess-two-tools';
+  // Short result (7 chars → round(7/4)=2) for search_web; long result (21 chars → round(21/4)=5) for read_file.
+  const SHORT_RESULT = '<short>';
+  const LONG_RESULT = '<much-longer-payload>';
+  const expectedShortTokens = Math.round(SHORT_RESULT.length / 4);   // 2
+  const expectedLongTokens = Math.round(LONG_RESULT.length / 4);     // 5
+
+  const { port, srv, mcm } = await startServer(
+    { upstream: upstream(turnFetch([CALL_BODY_10, FINAL_BODY_10])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    const resN = await post(port, { ...chatBody(), stream: false }, { 'x-session-id': SESS_10 });
+    assert.equal(resN.status, 200, 'request N must be HTTP 200');
+    await resN.arrayBuffer();
+
+    // Both tool calls were emitted (distinct names).
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two distinct tool.call events were emitted');
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Request N+1 feeds back both results in the same session.
+    const bodyN1: Record<string, unknown> = {
+      ...chatBody(),
+      stream: false,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Look it up.' },
+        { role: 'assistant', content: null, tool_calls: [
+          { id: 'tt_call_a', type: 'function', function: { name: 'search_web', arguments: '{"query":"x"}' } },
+          { id: 'tt_call_b', type: 'function', function: { name: 'read_file', arguments: '{"path":"/a.txt"}' } },
+        ]},
+        { role: 'tool', tool_call_id: 'tt_call_a', name: 'search_web', content: SHORT_RESULT },
+        { role: 'tool', tool_call_id: 'tt_call_b', name: 'read_file', content: LONG_RESULT },
+      ],
+    };
+    const resN1 = await post(port, bodyN1, { 'x-session-id': SESS_10 });
+    assert.equal(resN1.status, 200, 'request N+1 must be HTTP 200');
+    await resN1.arrayBuffer();
+
+    // Both tools resolved into real tool.results with their respective payload sizes.
+    const results = events.filter(isToolResult);
+    assert.equal(results.length, 2, 'both tool calls resolved into real tool.results');
+
+    const summary = mcm.collector.summary();
+    const topSW = summary.topTools.find((t) => t.toolName === 'search_web');
+    assert.ok(topSW, 'topTools includes search_web');
+    assert.equal(topSW.resolvedCount, 1, 'search_web resolvedCount is 1');
+    assert.equal(topSW.totalResponseTokens, expectedShortTokens, `search_web totalResponseTokens = ${expectedShortTokens} (short payload)`);
+
+    const topRF = summary.topTools.find((t) => t.toolName === 'read_file');
+    assert.ok(topRF, 'topTools includes read_file');
+    assert.equal(topRF.resolvedCount, 1, 'read_file resolvedCount is 1');
+    assert.equal(topRF.totalResponseTokens, expectedLongTokens, `read_file totalResponseTokens = ${expectedLongTokens} (long payload)`);
+
+    // The call-turn totalTokens is still present in the global summary.
+    assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'totalTokens from call-turn is still present in the summary');
   } finally {
     unsub();
     await closeServer(srv);

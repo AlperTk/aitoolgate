@@ -17,6 +17,7 @@ import {
   toSessionKeyString,
 } from './context';
 import { createSseToolCallExtractor } from '../telemetry/stream-extract';
+import { estimateInputTokens } from '../telemetry/tokenEstimate';
 import type { TelemetryEmitter } from '../telemetry/events';
 import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
@@ -116,6 +117,11 @@ async function streamSameProtocol(
     toSessionKeyString(requestCtx.sessionKey),
     toClientId(requestCtx.client),
     deps.tracker,
+    // Default timing source; precomputed estimated input-token mass of THIS request's full message
+    // content, so a usage-less streamed turn WITH issued tool calls still gets its final
+    // `turn.usage` event carrying honest input tokens over all message text.
+    undefined,
+    estimateInputTokens(requestCtx.messages),
   );
   pipeUpstreamStream(res, upstreamResponse, extractor);
 }
