@@ -28,6 +28,8 @@ export interface TopTool {
   totalDurationMs?: number;
   /** Sum of `tokens.total` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no total tokens. */
   totalTokens?: number;
+  /** Sum of `tokens.cacheHitInput` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no cache-hit input tokens. */
+  totalCacheHitInputTokens?: number;
   /** Sum of estimated response-payload tokens (`round(chars / EST_CHARS_PER_TOKEN)`) across resolved results reporting `chars`; omitted when the tool has no resolved results. */
   totalResponseTokens?: number;
   /** Count of resolved results that reported `chars` for this tool; omitted when the tool has none. */
@@ -68,6 +70,8 @@ export interface CollectorSummary {
   totalOutputTokens?: number;
   /** Sum of `tokens.total` across distinct turns (from `tool.call` `tokens` and whole-turn `turn.usage` events); omitted when no token usage observed. */
   totalTokens?: number;
+  /** Sum of `tokens.cacheHitInput` across distinct turns (from `tool.call` `tokens` and whole-turn `turn.usage` events); omitted when no token usage observed. */
+  totalCacheHitInputTokens?: number;
 }
 
 /** A live in-memory aggregation view over a telemetry event bus. */
@@ -134,12 +138,15 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalTokens = 0;
+  let totalCacheHitInputTokens = 0;
   let tokenSumsSeen = false;
   // Bounded, insertion-ordered set of seen token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const tokenTurnKeys = new Set<string>();
   // Per-tool token totals across distinct turns, deduped per (turn, tool): batched calls sharing one
   // turn attribute the turn's tokens once per tool rather than once per call.
   const toolTokens = new Map<string, number>();
+  // Per-tool cache-hit input totals across distinct turns, deduped per (turn, tool), mirroring toolTokens.
+  const toolCacheHitInput = new Map<string, number>();
   // Bounded, insertion-ordered set of seen per-tool token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const toolTokenTurnKeys = new Set<string>();
   // Per-tool resolved-result response-token stats (accumulated estimated tokens + resolved result count).
@@ -151,7 +158,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
    * whole-turn `turn.usage` event — the shared dedup key is what keeps the two sources from
    * double-counting one turn (the first-seen source's tokens win).
    */
-  const recordTurnTokensOnce = (turnKey: string, tokens: { input?: number; output?: number; total?: number }): void => {
+  const recordTurnTokensOnce = (turnKey: string, tokens: { input?: number; output?: number; total?: number; cacheHitInput?: number }): void => {
     if (tokenTurnKeys.has(turnKey)) return;
     tokenTurnKeys.add(turnKey);
     // Keep the dedup set bounded: evict the oldest key(s) beyond the configured cap.
@@ -163,6 +170,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     totalInputTokens += tokens.input ?? 0;
     totalOutputTokens += tokens.output ?? 0;
     totalTokens += tokens.total ?? 0;
+    totalCacheHitInputTokens += tokens.cacheHitInput ?? 0;
     tokenSumsSeen = true;
   };
 
@@ -199,6 +207,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
               toolTokenTurnKeys.delete(oldest);
             }
             toolTokens.set(event.toolName, (toolTokens.get(event.toolName) ?? 0) + (event.tokens.total ?? 0));
+            // Only attribute cache-hit mass when the turn actually reported it (so a tool whose
+            // turns carried no cache-hit tokens leaves `totalCacheHitInputTokens` omitted, not 0).
+            if (event.tokens.cacheHitInput !== undefined) {
+              toolCacheHitInput.set(event.toolName, (toolCacheHitInput.get(event.toolName) ?? 0) + event.tokens.cacheHitInput);
+            }
           }
         }
         break;
@@ -264,6 +277,10 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         if (toolTotalTokens !== undefined) {
           entry.totalTokens = toolTotalTokens;
         }
+        const toolCacheHit = toolCacheHitInput.get(toolName);
+        if (toolCacheHit !== undefined) {
+          entry.totalCacheHitInputTokens = toolCacheHit;
+        }
         const toolResolved = toolResolvedResults.get(toolName);
         if (toolResolved) {
           entry.totalResponseTokens = toolResolved.totalResponseTokens;
@@ -308,6 +325,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
       out.totalInputTokens = totalInputTokens;
       out.totalOutputTokens = totalOutputTokens;
       out.totalTokens = totalTokens;
+      out.totalCacheHitInputTokens = totalCacheHitInputTokens;
     }
     return out;
   };
@@ -325,9 +343,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     totalInputTokens = 0;
     totalOutputTokens = 0;
     totalTokens = 0;
+    totalCacheHitInputTokens = 0;
     tokenSumsSeen = false;
     tokenTurnKeys.clear();
     toolTokens.clear();
+    toolCacheHitInput.clear();
     toolTokenTurnKeys.clear();
     toolResolvedResults.clear();
   };

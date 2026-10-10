@@ -10,3 +10,5 @@ coverage/
 
 .playwright-mcp/
 .chromium-test/
+
+.memory/tmp/

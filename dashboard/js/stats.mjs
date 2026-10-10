@@ -31,6 +31,7 @@ export function initTopTools() {
     columns: [
       { key: 'toolName', label: 'Tool' },
       { key: 'count', label: 'Calls', align: 'right' },
+      { key: 'totalCacheHitInputTokens', label: 'Cache hit (tok)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) },
       { key: 'avgRespTokPerCall', label: 'Avg resp (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) }
     ],
     rows: _lastTop,
@@ -52,6 +53,7 @@ export async function refreshStats() {
     setStatValue('total-tokens', s.totalTokens);
     setStatValue('input-tokens', s.totalInputTokens);
     setStatValue('output-tokens', s.totalOutputTokens);
+    setStatValue('cache-hit-input-tokens', s.totalCacheHitInputTokens);
     setStatValue('avg-duration', s.avgDurationMs);
     $('interventions-retained').textContent = String(Array.isArray(s.interventions) ? s.interventions.length : 0);
     // Map the server aggregate fields onto the table's column keys, then push
@@ -62,7 +64,8 @@ export async function refreshStats() {
       return {
         toolName: t.toolName,
         count: t.count,
-        avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null
+        avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null,
+        totalCacheHitInputTokens: t.totalCacheHitInputTokens
       };
     });
     if (topToolsTable) topToolsTable.setData(_lastTop);

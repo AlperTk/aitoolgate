@@ -278,8 +278,8 @@ export function toClientId(client: ClientConfig): string | undefined {
   return undefined;
 }
 
-/** Normalized upstream token usage (provider-agnostic). */
-export type NormalizedUsage = { input?: number; output?: number; total?: number };
+/** Normalized upstream token usage (provider-agnostic). `cacheHitInput` is the portion of input tokens served from the provider cache (0 when there is none); `total` = input + cacheHitInput + output. */
+export type NormalizedUsage = { input?: number; output?: number; total?: number; cacheHitInput?: number };
 
 /**
  * Emit one `tool.call` event per observed tool call (carrying its stable `id` and the
@@ -350,9 +350,13 @@ function emitResponseTelemetry(
   if (bus !== undefined && (usage !== undefined || toolCalls.length > 0)) {
     const turnTokens = usage ?? estimateTurnUsage(requestCtx.messages, content, toolCalls);
     const input = turnTokens.input ?? 0;
+    const cacheHitInput = turnTokens.cacheHitInput ?? 0;
     const output = turnTokens.output ?? 0;
     if (input > 0 || output > 0) {
-      safeEmit(bus, makeTurnUsageEvent(sessionKey, clientId, { input, output, total: turnTokens.total ?? (input + output) }, at));
+      // total is always the TRUE turn total (base input + cache-hit input + output); under the
+      // per-provider mapping above this equals the upstream-reported total (and input+output for
+      // the estimate path, where cacheHitInput is 0), so it is recomputed rather than read raw.
+      safeEmit(bus, makeTurnUsageEvent(sessionKey, clientId, { input, output, total: input + cacheHitInput + output, cacheHitInput }, at));
     }
   }
 }
@@ -391,7 +395,7 @@ function makeToolCallEvent(
 function makeTurnUsageEvent(
   sessionKey: string,
   clientId: string | undefined,
-  tokens: { input: number; output: number; total: number },
+  tokens: { input: number; output: number; total: number; cacheHitInput: number },
   at: number,
 ): TurnUsageEvent {
   return {
@@ -611,33 +615,56 @@ function isNumber(value: unknown): value is number {
 
 /** True when a normalized usage carries at least one numeric field. */
 function hasAnyValue(usage: NormalizedUsage): boolean {
-  return usage.input !== undefined || usage.output !== undefined || usage.total !== undefined;
+  return usage.input !== undefined || usage.output !== undefined || usage.total !== undefined || usage.cacheHitInput !== undefined;
 }
 
 /**
  * Normalize upstream token usage from the (native or cross-protocol translated) response
- * body into `{ input?, output?, total? }`. The protocol is detected from which usage
- * fields are present — OpenAI `usage.{prompt_tokens,completion_tokens,total_tokens}` vs
- * Anthropic `usage.{input_tokens,output_tokens}` (total = input+output when absent) — so
- * the real upstream numbers are read regardless of translation.
+ * body into `{ input?, output?, total?, cacheHitInput? }`. The protocol is detected from
+ * which usage fields are present — OpenAI `usage.{prompt_tokens,completion_tokens,total_tokens}`
+ * vs Anthropic `usage.{input_tokens,output_tokens}` (total = input+cacheHitInput+output
+ * when absent) — so the real upstream numbers are read regardless of translation. The
+ * whole input is split into BASE input (`input`, not served from cache) and cache-hit
+ * input (`cacheHitInput`): OpenAI `prompt_tokens` INCLUDES `prompt_tokens_details.cached_tokens`
+ * (so base = prompt − cached, cache-hit = cached), whereas Anthropic `input_tokens`
+ * EXCLUDES cache tokens (so base = input_tokens + cache_creation, cache-hit = cache_read).
  */
 function extractUsage(body: unknown): NormalizedUsage | undefined {
   if (!isRecord(body)) return undefined;
   const usage = body.usage;
   if (!isRecord(usage)) return undefined;
+  // OpenAI shape: usage.{prompt_tokens, completion_tokens, total_tokens}. `prompt_tokens`
+  // includes cached tokens (a subset), so split it into base input + cache-hit input.
   if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
     const out: NormalizedUsage = {};
-    if (isNumber(usage.prompt_tokens)) out.input = usage.prompt_tokens;
+    const prompt = isNumber(usage.prompt_tokens) ? usage.prompt_tokens : undefined;
+    const details = isRecord(usage.prompt_tokens_details) ? usage.prompt_tokens_details : undefined;
+    const cached = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : 0;
+    out.cacheHitInput = cached;
+    if (prompt !== undefined) out.input = Math.max(0, prompt - cached);
+    else if (cached > 0) out.input = 0;
     if (isNumber(usage.completion_tokens)) out.output = usage.completion_tokens;
     if (isNumber(usage.total_tokens)) out.total = usage.total_tokens;
-    else if (out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+    else if (out.input !== undefined || out.output !== undefined) {
+      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
+    }
     return hasAnyValue(out) ? out : undefined;
   }
+  // Anthropic shape: usage.{input_tokens, output_tokens}. `input_tokens` excludes cache
+  // tokens, so fold cache-creation into base input and carry cache-read as the cache hit.
   if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
     const out: NormalizedUsage = {};
-    if (isNumber(usage.input_tokens)) out.input = usage.input_tokens;
+    const input = isNumber(usage.input_tokens) ? usage.input_tokens : undefined;
+    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : 0;
+    const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
+    // base input and cacheHitInput are clamped >= 0 (mirrors the OpenAI clamp above) so a
+    // corrupt negative cache field can never leak a negative input/cacheHitInput/total.
+    out.cacheHitInput = Math.max(0, cacheRead);
+    if (input !== undefined) out.input = Math.max(0, input + cacheCreation);
     if (isNumber(usage.output_tokens)) out.output = usage.output_tokens;
-    if (out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+    if (out.input !== undefined || out.output !== undefined) {
+      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
+    }
     return hasAnyValue(out) ? out : undefined;
   }
   return undefined;

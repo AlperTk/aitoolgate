@@ -49,7 +49,7 @@ export type ToolCallEvent = {
   /** Stable tool-call id (`ToolCall.id`; OpenAI `tool_calls[].id` / Anthropic `tool_use.id`), present when available. */
   id?: string;
   /** Upstream token usage of the turn that produced this call (OpenAI prompt/completion/total or Anthropic input/output, normalized); omitted when the upstream didn't report usage. */
-  tokens?: { input?: number; output?: number; total?: number };
+  tokens?: { input?: number; output?: number; total?: number; cacheHitInput?: number };
   /**
    * When the TURN containing this call was observed (epoch milliseconds). All calls in one
    * streamed/buffered turn share ONE turn-level `at` (token-turn dedup collapses the turn);
@@ -126,7 +126,7 @@ export type TurnUsageEvent = {
   /** Client identity, if known. */
   clientId?: string;
   /** The turn's token mass (upstream-reported or estimated); all fields present as numbers. */
-  tokens: { input: number; output: number; total: number };
+  tokens: { input: number; output: number; total: number; cacheHitInput: number };
   /** When the turn was observed (epoch milliseconds); shared by every event of the same turn. */
   at: number;
 };

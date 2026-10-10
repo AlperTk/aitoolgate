@@ -184,6 +184,31 @@ export function openaiResponseToAnthropic(response: OpenAIChatResponse): Anthrop
   }
   if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
 
+  // Anthropic `input_tokens` EXCLUDES cache tokens, so the base input is prompt minus the
+  // cached subset, and the cache hit rides on `cache_read_input_tokens`. Cache fields are
+  // omitted when zero so the shape stays clean. NOTE: OpenAI `cache_write_tokens` is a
+  // SEPARATE cache-WRITE metric (not part of prompt_tokens and not the cache-hit field); it is
+  // intentionally NOT folded into `cache_creation_input_tokens`, which would inflate base input
+  // (and thus the translated total) when present. Carrying only the cache hit keeps the
+  // translated total (input_tokens + cache_read_input_tokens + output_tokens) reconciling with
+  // the source's true total (prompt_tokens + completion_tokens).
+  const usageRecord = (response.usage ?? {}) as Record<string, unknown>;
+  const prompt = typeof usageRecord.prompt_tokens === 'number' ? usageRecord.prompt_tokens : 0;
+  const completion = typeof usageRecord.completion_tokens === 'number' ? usageRecord.completion_tokens : 0;
+  const details =
+    typeof usageRecord.prompt_tokens_details === 'object' && usageRecord.prompt_tokens_details !== null
+      ? (usageRecord.prompt_tokens_details as Record<string, unknown>)
+      : undefined;
+  const cached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
+  const usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+  } = {
+    input_tokens: Math.max(0, prompt - cached),
+    output_tokens: completion,
+    ...(cached > 0 ? { cache_read_input_tokens: cached } : {}),
+  };
   return {
     id: response.id,
     type: 'message',
@@ -191,10 +216,7 @@ export function openaiResponseToAnthropic(response: OpenAIChatResponse): Anthrop
     model: response.model,
     content: blocks,
     stop_reason: mapFinishReasonToStopReason(choice?.finish_reason ?? null),
-    usage: {
-      input_tokens: response.usage?.prompt_tokens ?? 0,
-      output_tokens: response.usage?.completion_tokens ?? 0,
-    },
+    usage,
   };
 }
 
@@ -220,18 +242,33 @@ export function anthropicResponseToOpenAI(response: AnthropicResponse): OpenAICh
   };
   if (toolCalls.length) message.tool_calls = toolCalls;
 
-  const usage = {
-    prompt_tokens: response.usage?.input_tokens ?? 0,
-    completion_tokens: response.usage?.output_tokens ?? 0,
+  // OpenAI `prompt_tokens` is the TOTAL input (includes cached), with the cache hit on
+  // `prompt_tokens_details.cached_tokens`. Anthropic's base `input_tokens` excludes cache tokens,
+  // so total input = input_tokens + cache_creation + cache_read; the cache read is the hit.
+  const usageRecord = (response.usage ?? {}) as Record<string, unknown>;
+  const input = typeof usageRecord.input_tokens === 'number' ? usageRecord.input_tokens : 0;
+  const output = typeof usageRecord.output_tokens === 'number' ? usageRecord.output_tokens : 0;
+  const cacheRead = typeof usageRecord.cache_read_input_tokens === 'number' ? usageRecord.cache_read_input_tokens : 0;
+  const cacheCreation = typeof usageRecord.cache_creation_input_tokens === 'number' ? usageRecord.cache_creation_input_tokens : 0;
+  const promptTokens = input + cacheCreation + cacheRead;
+  const usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  } = {
+    prompt_tokens: promptTokens,
+    completion_tokens: output,
+    total_tokens: promptTokens + output,
+    ...(cacheRead > 0 ? { prompt_tokens_details: { cached_tokens: cacheRead } } : {}),
   };
-
   return {
     id: response.id,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: response.model,
     choices: [{ index: 0, message, finish_reason: mapStopReasonToFinishReason(response.stop_reason) }],
-    usage: { ...usage, total_tokens: usage.prompt_tokens + usage.completion_tokens },
+    usage,
   };
 }
 

@@ -108,7 +108,7 @@ export function createSseToolCallExtractor(
   let finished = false;
   // The turn's upstream usage, parsed once from a trailing `usage` chunk, shared by every tool
   // call emitted this stream so they all carry the same turn-level tokens (or none).
-  let streamUsage: { input?: number; output?: number; total?: number } | undefined;
+  let streamUsage: { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined;
   // A single turn-level timestamp shared by EVERY tool call emitted this stream, so the
   // collector's per-(sessionKey, at) token dedup collapses a multi-call turn into one.
   let turnAt: number | undefined;
@@ -216,12 +216,15 @@ export function createSseToolCallExtractor(
     const inputMass = typeof inputTokens === 'number' ? inputTokens : 0;
     if (streamUsage !== undefined || callsEmitted > 0) {
       const input = streamUsage?.input ?? inputMass;
+      const cacheHitInput = streamUsage?.cacheHitInput ?? 0;
       const output = streamUsage?.output ?? estimateTokensFromChars(streamedTextChars + emittedArgsChars);
       if (input > 0 || output > 0) {
+        // total is always the TRUE turn total (base input + cache-hit input + output); cacheHitInput
+        // is 0 when the stream reported no cache fields (and on the estimate path).
         emitEvent({
           type: 'turn.usage',
           sessionKey,
-          tokens: { input, output, total: streamUsage?.total ?? input + output },
+          tokens: { input, output, total: input + cacheHitInput + output, cacheHitInput },
           ...(clientId !== undefined ? { clientId } : {}),
           at: turnTimestamp(),
         });
@@ -381,60 +384,97 @@ export function createSseToolCallExtractor(
 }
 
 /**
- * Normalize a streamed `usage` object into the provider-agnostic `{ input?, output?, total? }`
- * shape (matching {@link ToolCallEvent.tokens}). Understands both the OpenAI
- * `prompt_tokens/completion_tokens/total_tokens` and Anthropic `input_tokens/output_tokens`
- * shapes (`total` computed as input+output when the provider omits it). Best-effort: returns
- * `undefined` when no numeric usage field is present, so callers omit tokens rather than fabricate.
+ * Normalize a streamed `usage` object into the provider-agnostic
+ * `{ input?, output?, total?, cacheHitInput? }` shape (matching {@link ToolCallEvent.tokens}).
+ * Understands both the OpenAI `prompt_tokens/completion_tokens/total_tokens` (cached tokens on
+ * `prompt_tokens_details.cached_tokens`) and Anthropic `input_tokens/output_tokens` (cache fields
+ * on `cache_read_input_tokens` / `cache_creation_input_tokens`) shapes; the input is split into
+ * base (`input`) and cache-hit (`cacheHitInput`) with `total` = input+cacheHitInput+output when
+ * the provider omits it. Best-effort: returns `undefined` when no numeric usage field is present,
+ * so callers omit tokens rather than fabricate. `cacheHitInput` is left absent (not fabricated)
+ * when the frame carries no cache field, so {@link mergeUsage} can let a later frame's value win.
  */
-function normalizeStreamUsage(usage: unknown): { input?: number; output?: number; total?: number } | undefined {
+function normalizeStreamUsage(usage: unknown): { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined {
   if (!isRecord(usage)) return undefined;
-  const out: { input?: number; output?: number; total?: number } = {};
+  const out: { input?: number; output?: number; total?: number; cacheHitInput?: number } = {};
   const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
   let hasAny = false;
-  if (isNumber(usage.prompt_tokens)) {
-    out.input = usage.prompt_tokens;
-    hasAny = true;
+  // OpenAI: prompt_tokens (includes cached) / completion_tokens / total_tokens. Cached tokens
+  // arrive on the final `usage` chunk as prompt_tokens_details.cached_tokens.
+  if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
+    const cached = isRecord(usage.prompt_tokens_details) && isNumber(usage.prompt_tokens_details.cached_tokens)
+      ? (usage.prompt_tokens_details.cached_tokens as number)
+      : undefined;
+    if (cached !== undefined) out.cacheHitInput = cached;
+    if (isNumber(usage.prompt_tokens)) {
+      out.input = Math.max(0, usage.prompt_tokens - (cached ?? 0));
+      hasAny = true;
+    }
+    if (isNumber(usage.completion_tokens)) {
+      out.output = usage.completion_tokens;
+      hasAny = true;
+    }
+    if (isNumber(usage.total_tokens)) {
+      out.total = usage.total_tokens;
+      hasAny = true;
+    } else if (out.input !== undefined && out.output !== undefined) {
+      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
+      hasAny = true;
+    }
+    return hasAny ? out : undefined;
   }
-  if (isNumber(usage.completion_tokens)) {
-    out.output = usage.completion_tokens;
-    hasAny = true;
-  }
-  if (isNumber(usage.total_tokens)) {
-    out.total = usage.total_tokens;
-    hasAny = true;
-  } else if (out.input !== undefined && out.output !== undefined) {
-    out.total = out.input + out.output;
-  }
-  if (!hasAny) {
+  // Anthropic: input_tokens (excludes cache tokens) / output_tokens. Cache fields arrive
+  // (cumulative) on message_delta: cache_read_input_tokens (the cache hit) and
+  // cache_creation_input_tokens (folded into base input — writing the cache is NOT a hit).
+  if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
+    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : undefined;
+    const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
+    // base input and cacheHitInput are clamped >= 0 so a corrupt negative cache field can never
+    // leak a negative input/cacheHitInput/total (mirrors the OpenAI clamp above).
+    if (cacheRead !== undefined) out.cacheHitInput = Math.max(0, cacheRead);
     if (isNumber(usage.input_tokens)) {
-      out.input = usage.input_tokens;
+      out.input = Math.max(0, usage.input_tokens + cacheCreation);
       hasAny = true;
     }
     if (isNumber(usage.output_tokens)) {
       out.output = usage.output_tokens;
       hasAny = true;
     }
-    if (out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+    if (out.input !== undefined && out.output !== undefined) {
+      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
+      hasAny = true;
+    }
+    return hasAny ? out : undefined;
   }
-  return hasAny ? out : undefined;
+  return undefined;
 }
 
 /**
- * Merge two normalized usages into one, keeping the first value seen for each field (union of
- * fields) and deriving `total = input + output` once both are known — so an Anthropic stream
- * reporting `input_tokens` on `message_start` and `output_tokens` on `message_delta` collapses
- * into ONE complete turn usage rather than the last frame overwriting the prior one.
+ * Merge two normalized usages into one, FIELD-AWARE: each numeric field independently takes
+ * the value from the MOST RECENT frame that reports it (last-reported-value-wins per field).
+ * This makes a later frame's FINAL value win over an earlier preliminary one — e.g. an
+ * Anthropic `message_delta` carries the FINAL `output_tokens` (and the cumulative
+ * `cache_read_input_tokens`) that override the preliminary `output_tokens`/cache value on
+ * `message_start`, while `input_tokens` (only on `message_start`) keeps its value. The OpenAI
+ * path benefits the same way: a later `usage` chunk's values override an earlier one's. Once
+ * both input and output are known, `total` is recomputed as input+cacheHitInput+output so the
+ * merged (and `finish()`-emitted) total always reconciles with the final field values.
  */
 function mergeUsage(
-  prev: { input?: number; output?: number; total?: number } | undefined,
-  next: { input?: number; output?: number; total?: number },
-): { input?: number; output?: number; total?: number } {
-  const out: { input?: number; output?: number; total?: number } = { ...(prev ?? {}) };
-  for (const key of ['input', 'output', 'total'] as const) {
-    if (next[key] !== undefined && out[key] === undefined) out[key] = next[key];
+  prev: { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined,
+  next: { input?: number; output?: number; total?: number; cacheHitInput?: number },
+): { input?: number; output?: number; total?: number; cacheHitInput?: number } {
+  const out: { input?: number; output?: number; total?: number; cacheHitInput?: number } = { ...(prev ?? {}) };
+  // Each numeric field is independently last-reported-value-wins: the most recent frame that
+  // reports a given field overrides the accumulated value for that field.
+  for (const key of ['input', 'output', 'total', 'cacheHitInput'] as const) {
+    if (next[key] !== undefined) out[key] = next[key];
   }
-  if (out.total === undefined && out.input !== undefined && out.output !== undefined) out.total = out.input + out.output;
+  // Recompute total from the merged (final) input + cacheHitInput + output so it reconciles
+  // with the final field values (finish() does the same when emitting the turn.usage event).
+  if (out.input !== undefined && out.output !== undefined) {
+    out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
+  }
   return out;
 }
 

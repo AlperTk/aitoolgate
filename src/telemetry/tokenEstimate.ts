@@ -100,15 +100,17 @@ export function estimateOutputTokens(content: unknown, toolCalls?: readonly { ar
 
 /**
  * Estimate a WHOLE turn's normalized usage: `input` over ALL request messages, `output` over
- * the response content + tool calls, and `total = input + output`. All fields are present
- * numbers (zero when there is nothing to measure), so callers never fabricate absent fields.
+ * the response content + tool calls, and `total = input + output`. `cacheHitInput` is always
+ * `0` on the estimate path (there is no upstream usage to read cache fields from). All fields
+ * are present numbers (zero when there is nothing to measure), so callers never fabricate
+ * absent fields.
  */
 export function estimateTurnUsage(
   messages: unknown,
   content?: unknown,
   toolCalls?: readonly { arguments?: unknown }[],
-): { input: number; output: number; total: number } {
+): { input: number; output: number; total: number; cacheHitInput: number } {
   const input = estimateInputTokens(messages);
   const output = estimateOutputTokens(content, toolCalls);
-  return { input, output, total: input + output };
+  return { input, output, total: input + output, cacheHitInput: 0 };
 }
