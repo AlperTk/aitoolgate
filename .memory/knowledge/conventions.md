@@ -25,15 +25,19 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 
 ## Testing
 - Node built-in **`node:test`** + `node:assert/strict`; tests run against **compiled `dist/`** — you MUST `npm run build` before `npm test`.
-- Naming: unit/integration = `*.test.ts` (integration often `*-integration.test.ts`); end-to-end = `e2e-*.test.ts`. Use `describe`/`it`.
+- Naming: unit/integration = `*.test.ts` (integration often `*-integration.test.ts`); end-to-end = `e2e-*.test.ts`; a backend/API e2e suite may use the `.e2e.test.ts` suffix (e.g. `api-providers-live-apply.e2e.test.ts`). Use `describe`/`it`.
 - E2E drives **real client→server round-trips** but the upstream is **canned** (mock `fetch` / inline mock upstream, incl. canned SSE strings) — never a real provider. Servers start on **ephemeral port 0** (read back via `address().port`).
-- **Only one shared test module:** `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) to load dashboard `.mjs` under Node. All other helpers (`startServer`/`closeServer`, `OAI_CANNED`, `postRule`, `makeMockFetch`, local `FakeWebSocket`) are **local per-file** boilerplate.
+- **Only one shared test module:** `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) to load dashboard `.mjs` under Node. Dashboard unit/DOM tests use an injected `fetchImpl` + microtask-flush (no timers/sleeps), one process per file, and a non-literal dynamic import to cache the module graph. All other helpers (`startServer`/`closeServer`, `OAI_CANNED`, `postRule`, `makeMockFetch`, local `FakeWebSocket`) are **local per-file** boilerplate.
 
 ## Naming
 - camelCase for functions/factories, PascalCase for types/classes, `createXxx()` prefix for constructors. Two tsconfigs (dev `noEmit` vs build → `dist/`).
 
 ## Dashboard CSS
 - **Token-first:** sizes/colors/weights live in `css/tokens.css`; component files consume tokens (avoid hardcoded values). Aggregation order in `styles.css`: tokens→base→layout→components→rules→controls→table→responsive. Import order matters at equal specificity — a modifier declared **before** its base rule loses. Scrollbar styling is scoped to named scroll surfaces (`scrollbar-width:thin` + `::-webkit-scrollbar` with `--scroll-thumb*`).
+- Component sheets load in a fixed order; `css/settings.css` is linked **last** in `index.html` so its equal-specificity rules win over the aggregated `styles.css` (same aggregation-order rule as above).
+
+## Dashboard modules
+- `dashboard/js/*.mjs` are framework-free ES modules using **relative base paths** (no leading slash, e.g. `api/api-providers`). The Settings overlay is built from a single-run `initSettings` + a `SETTINGS_SECTIONS` registry; add a new settings section by appending to that registry.
 
 ## Where new code goes
 | Add | Put it in | Also touch |
@@ -43,6 +47,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 | New pipeline stage | `src/policy/` or `src/proxy/` | mount via `.use()` in the composition root |
 | New port/contract | `src/ports/<name>.ts` | impl consumes it; no cross-impl imports |
 | New REST route | `src/api/http.ts` (+ wiring via API options) | dashboard consumer if UI-visible |
+| New provider concept (mirrors rules) | `src/api/providerSpec.ts` (pure shape+validation) + `providerStore.ts` (in-memory) + `persistentProviderStore.ts` (SQLite write-through) | mirror the rule files (`ruleSpec`/`ruleStore`/`persistentRuleStore`); keep the pure validator separate from the store (store never parses input); register a dashboard section under `dashboard/js/settings.mjs` |
 | New DB table | `src/storage/schema.ts` (append a migration) | bump `SCHEMA_VERSION` |
 | Token estimation / payload→token sizing | `src/telemetry/tokenEstimate.ts` (dependency-free, ~4 chars/token) | reuse its helpers rather than ad-hoc `÷4`; accounting/dedup rules in domain.md |
 

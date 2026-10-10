@@ -18,6 +18,7 @@ description: Domain vocabulary, core entities and their relationships, business 
 - **`turn.usage` / `TurnUsageEvent`** — whole-turn token-mass event covering ALL message content of a turn (not only tool calls/results): upstream-reported usage when present, else a char-based estimate (~4 chars/token). Carries `{input, output, total}` under one shared turn-level `at`.
 - **tool-result value** — a tool call's raw returned output, captured out-of-band and fetched lazily by id.
 - **flagship-loop-rule** — the built-in always-on loop-detection rule (see below).
+- **Provider / ApiProvider** — an LLM upstream config: `{id, name, baseUrl, model, apiKey (string|null), protocol ('openai'|'anthropic'), isActive, createdAt}`. The proxy forwards to the single **active** provider (at most one at a time; env `config.upstream` seeds a "default" one). A **provider spec** is the validatable client-sent subset (`KNOWN_FIELDS`: `name, baseUrl, model, apiKey, protocol, isActive`).
 
 ## Core entities & relationships
 ```
@@ -26,10 +27,11 @@ Rule{enabled, priority, matcher, action}
    └──action───▶ Action  ──apply───▶ ActionEffect   (mutates ctx and/or emits InterventionEvent)
 
 RuleStore (live getter) ─▶ Rule[] ─▶ createRuleEngine ─▶ PolicyStage ─.use()─▶ Pipeline
+Provider{baseUrl, model, protocol, apiKey, isActive}   (≤1 active)  ─▶ ApiProviderStore ─▶ proxy upstreamRef (hot-applied, no restart)
 SessionKey{fingerprint[,token]} ─scopes─▶ SessionFeedbackStore ─▶ FeedbackMessage queue
 TelemetryEvent = ToolCall | ToolResult | Intervention | TurnUsage ─▶ bus ─▶ {Collector, ToolMetricsTracker, WS}
 ```
-Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `ResponseContext{client, model, sessionKey, toolCalls, content, raw}`, `ResultContext{sessionKey, results, raw}`. Other domain types: `ToolCall{id,name,arguments}`, `ToolResult{toolCallId,name,isError,content}`, `ClientConfig{apiKey,name,model}`, `ModelConfig{id,baseUrl,model,apiKey?}`, `PolicyEvent{id,at,type,sessionKey?,ruleId?,payload}`.
+Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `ResponseContext{client, model, sessionKey, toolCalls, content, raw}`, `ResultContext{sessionKey, results, raw}`. Other domain types: `ToolCall{id,name,arguments}`, `ToolResult{toolCallId,name,isError,content}`, `ClientConfig{apiKey,name,model}`, `ModelConfig{id,baseUrl,model,apiKey?}`, `PolicyEvent{id,at,type,sessionKey?,ruleId?,payload}`. `ApiProvider` (see **Provider** above) is the runtime-switchable generalization of the single upstream `ModelConfig`.
 
 ## Business rules (easy to violate)
 - **Rule selection is ALL-match, not first-match.** Only `enabled` rules fire, evaluated in ascending `priority` (missing = last; ties by array index). Multiple rules can apply in one pass.
@@ -40,6 +42,9 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 - `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
 - **Tool-call emission is centralized** in `context.ts` (`emitResponseTelemetry`), NOT in the policy stage — the stage emits only interventions. Avoid double-counting. It also emits ONE whole-turn `turn.usage` per turn that HAS a token source (upstream-reported usage OR issued tool calls): reported usage when present, else an ESTIMATE over all request messages + response content/tool calls; a usage-less, call-free final-answer turn emits NOTHING (omit, don't fabricate). The SSE path mirrors this at stream end (`stream-extract.ts`).
 - **SessionKey derivation:** an explicit token (header, default `x-session-id`) wins → `sha256(token-domain)+token`; otherwise `sha256` of the canonical stable prefix (system messages + first user message).
+- **Single-active provider:** at most ONE `isActive` provider at a time (zero allowed). The store re-enforces on add/update/setActive; deleting the active row promotes the **lexicographically-lowest-id** remaining row (or none if the store is empty). The dashboard mirrors this client-side with a single native radio group.
+- **Provider key-masking:** list responses (`GET /api/api-providers`) expose only `apiKeySet: true|false`; only the detail `GET /api/api-providers/:id` returns the raw `apiKey` verbatim. Never leak the raw key in a list.
+- **Auto-first activation:** adding a provider to an **empty** store (or sending explicit `isActive:true`) makes it active; seeding the env-derived "default" provider marks it active so env-based deployments keep working unchanged.
 
 ## Matchers (return `Match | null`)
 | Type | Fields | Behavior |
@@ -62,6 +67,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 - **Tool-metrics pairing:** issued→result matched by stable id (same-session bucket first, then any-session fallback); `durationMs = max(0, result.at - issued.at)`; pending entries swept by lazy TTL (default 300 000 ms) and `maxPending` (1 000).
 - **Collector caps:** `maxInterventions=500`, `maxRecent=200`, `maxTokenTurns=10000`; token dedup per `(sessionKey␟at)`; aggregates skip excluded tools (default `['task']`, case-insensitive). Whole-turn token totals are summed from BOTH `tool.call.tokens` AND `turn.usage`, deduped per `(sessionKey␟at)` with first-seen winning (a turn carrying both sources counts once). Per-tool adds `totalTokens` (sum of distinct turns' `tokens.total` invoking that tool, deduped per `(turn␟tool)`) and `totalResponseTokens` + `resolvedCount` (estimated response-payload tokens `round(chars/4)` across resolved results reporting `chars`).
 - **In-memory tool-result store** bounded at 1 000 entries; optional SQLite persister drains in batches (WAL mode).
+- **Provider persistence:** providers persist in the shared `data/rules.db` `api_providers` table (schema v3) via a write-through store; persistence is **best-effort** (a failing open/read/write logs a warning and leaves the in-memory store intact) and applies only to real env-based deployments — caller/mock upstreams stay in-memory so pre-existing test behavior is unchanged.
 
 ## End-to-end workflows
 - **Request:** client → route → `buildRequestContext` (derive SessionKey) → pipeline [session-token stage drains+splices feedback; policy stage evaluates+applies effects+emits Intervention] → translate → forward upstream → response stages → rehydrate → emit tool-call/result telemetry (centralized) → send.

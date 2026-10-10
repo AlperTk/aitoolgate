@@ -10,7 +10,7 @@ description: What mcp-manager is, who it serves, its scope, core use cases, and 
 
 ## Scope
 - **In:** proxying LLM chat traffic; policy-based inspection & rewriting of tool calls; OpenAI↔Anthropic protocol translation (request, response, and SSE streams); rule CRUD REST API; real-time WebSocket telemetry feed; opt-in SQLite persistence; local dashboard.
-- **Out:** it proxies to exactly ONE configured upstream (no multi-model routing/load-balancing), is not an auth gateway, and makes no cloud/distributed-system assumptions. Single-host only.
+- **Out:** it proxies to exactly ONE *active* upstream at a time (no concurrent multi-model routing/load-balancing) — though that active upstream is **runtime-switchable** among multiple persisted provider configs (see `domain.md`/`architecture.md`); it is not an auth gateway, and makes no cloud/distributed-system assumptions. Single-host only.
 
 ## Core use cases
 1. Point an AI client at the proxy's OpenAI (`/v1/chat/completions`, `/v1/models`) or Anthropic (`/v1/messages`) endpoint instead of the provider directly.
@@ -18,11 +18,12 @@ description: What mcp-manager is, who it serves, its scope, core use cases, and 
 3. Watch sessions in real time via the dashboard: live tool-call stream, per-tool metrics/tokens, intervention log.
 4. Drill into any tool call's actual returned value (`GET /api/tool-results/:id`).
 5. Optionally persist rules, telemetry events, and tool-result values to local SQLite.
+6. Add/edit and **switch the active LLM upstream** among multiple persisted provider configs (name, base URL, model, protocol, key) via the dashboard **Settings** UI or the `api-providers` REST API — hot-applied to the proxy **without a restart** (at most one provider is active at a time).
 
 ## Main consumers
 - AI clients/agents configured with the proxy as their model base URL (OpenAI- or Anthropic-wire format).
 - A local browser dashboard (real-time ops view).
-- Operators adding/removing rules via the REST API or the dashboard UI.
+- Operators adding/removing rules or providers via the REST API or the dashboard UI.
 
 ## Technology stack (version-pinned)
 | Layer | Choice | Notes |
@@ -38,11 +39,11 @@ description: What mcp-manager is, who it serves, its scope, core use cases, and 
 
 ## High-level overview
 ```
-AI client ──▶ mcp-manager (proxy + policy engine + telemetry) ──▶ single upstream LLM API
+AI client ──▶ mcp-manager (proxy + policy engine + telemetry) ──▶ one *active* upstream LLM (provider-switchable)
    │               node:http  (OpenAI + Anthropic endpoints)
-   │               REST  /api/{rules,stats,events,tool-results}
+   │               REST  /api/{rules,stats,events,tool-results,api-providers}
    │               WS    /ws  (live TelemetryEvent feed)
-   │               static  dashboard/ (vanilla JS)
+   │               static  dashboard/ (vanilla JS + Settings gear)
    ▼
    SQLite: data/rules.db (+ optional data/tool-results.db)
 ```

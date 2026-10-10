@@ -13,12 +13,12 @@ Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contract
 - `src/proxy/` — forwarding + protocol translation. `index.ts` = `createProxyHandler()` (protocol router + `SessionTokenPipeline`, exposes `.use()`); `openai.ts`/`anthropic.ts` = per-protocol route handlers; `context.ts` = `buildRequestContext()`, `runThroughPipeline()`, rehydration, `emitResponseTelemetry()` (per-call `tool.call` + whole-turn `turn.usage`), tool-result pairing (largest file); `translate.ts` = centralized OpenAI↔Anthropic conversion; `upstream.ts` = forwards to the single upstream (JSON/SSE).
 - `src/policy/` — rule engine + matchers + actions + feedback. `ruleEngine.ts` (`createRuleEngine`, `PolicyRule`/`PolicyAction`, built-in `flagshipLoopRule`); `policyStage.ts` (`createPolicyStage` mounts the engine as a pipeline stage); `matchers/` (toolName, argPattern, loopDetector, always + `normalize.ts`); `actions/` (block, hideTool, injectMessage, rewriteArgs); `feedbackStore.ts` (`SessionFeedbackStore`).
 - `src/telemetry/` — event emission + metrics. `event-bus.ts` (`TelemetryEventBus`), `collector.ts` (`createCollector`: total + per-tool duration/token/response-token aggregates + whole-turn token totals), `toolMetrics.ts` (`createToolMetricsTracker`), `events.ts` (event types, incl. whole-turn `turn.usage`), `stream-extract.ts` (SSE tool-call extraction + final `turn.usage` at stream end), `tokenEstimate.ts` (dependency-free char-based token estimation; fallback when upstream reports no usage), `toolResultStore.ts` (in-memory raw values + `ToolResultPersister` port), `sqliteToolResultPersister.ts` (optional SQLite drain), `aggregate-exclusions.ts`.
-- `src/api/` — control-plane HTTP + WS. `http.ts` (`createApiHandler`: REST rule CRUD/stats/events/tool-result fetch; `readJSONBody` is the only throwing handler); `ruleStore.ts` (in-memory `RuleStore`); `persistentRuleStore.ts` (write-through SQLite wrapper); `ruleSpec.ts` (RuleSpec shape/validation); `ws.ts` (`createWsServer`, RFC6455).
+- `src/api/` — control-plane HTTP + WS. `http.ts` (`createApiHandler`: REST rule CRUD/stats/events/tool-result fetch + `api-providers` CRUD; `readJSONBody` is the only throwing handler); `ruleStore.ts` (in-memory `RuleStore`); `persistentRuleStore.ts` (write-through SQLite wrapper); `ruleSpec.ts` (RuleSpec shape/validation); `providerSpec.ts` (dependency-free `ApiProvider` wire shape + `validateProviderSpec`, mirrors `ruleSpec`); `providerStore.ts` (in-memory `ApiProviderStore`, enforces ≤1 active); `persistentProviderStore.ts` (write-through SQLite-backed provider store over the base store, `node:sqlite`); `ws.ts` (`createWsServer`, RFC6455).
 - `src/session/` — `deriveSessionKey()` + per-session state/token.
 - `src/pipeline/index.ts` — `DefaultPipeline`/`createPipeline()` base over the ports contract.
-- `src/storage/` — `sqlite.ts` (`SqliteStorage`/`createSqliteStorage`) + `schema.ts` (migrations).
+- `src/storage/` — `sqlite.ts` (`SqliteStorage`/`createSqliteStorage`) + `schema.ts` (migrations; **v3** adds the `api_providers` table, `SCHEMA_VERSION=3`).
 - `config/config.ts` — `loadConfig()` reads env vars + defaults.
-- `dashboard/` — static vanilla-JS real-time UI served on the app port.
+- `dashboard/` — static vanilla-JS real-time UI served on the app port. Includes a **Settings** gear overlay (`dashboard/js/settings.mjs`, single-run `initSettings` + a `SETTINGS_SECTIONS` registry whose only entry today is `apiProviders`; helpers `validateClientSide`/`formatProviderRow`) wired once from `app.js`; `css/settings.css` (linked **last** in `index.html`).
 
 ## Request flow
 ```
@@ -56,8 +56,11 @@ TelemetryEventBus (createEventBus)  [sync dispatch, each handler isolated]
 ## Tool-result value (on-demand drill-down)
 The WS `ToolResultEvent` stays **metadata-only** (`ok`/`durationMs`/`chars`/tokens). Raw result **values** are captured out-of-band at `resolveAndEmitToolResults` into an in-memory `toolResultStore` (bounded, key = tool-call id), served by `GET /api/tool-results/:id` (memory-first, then optional DB fallback). When `config.toolResults.enabled` is on, an async batched SQLite drain persists them (default off) so the hot path never does synchronous disk I/O.
 
+## Provider hot-apply (no restart)
+Dashboard/REST → `fetch` `POST/PATCH/DELETE /api/api-providers*` → provider store mutation → `applyActiveProvider` overwrites the proxy's **stable mutable `upstreamRef`** (`baseUrl/model/protocol/apiKey`) → the next request reads the new upstream. Provider rows persist to `api_providers` (shared `rules.db`). The single-active invariant is enforced by the store, not the proxy. See domain.md / constraints.md.
+
 ## Entry points
-- **HTTP:** `GET /health`; OpenAI `GET /v1/models`, `POST /v1/chat/completions`; Anthropic `POST /v1/messages`; REST `GET /api/stats|events|rules`, `POST /api/rules`, `PATCH/DELETE /api/rules/:id`, `GET /api/tool-results/:id`; static `dashboard/`.
+- **HTTP:** `GET /health`; OpenAI `GET /v1/models`, `POST /v1/chat/completions`; Anthropic `POST /v1/messages`; REST `GET /api/stats|events|rules`, `POST /api/rules`, `PATCH/DELETE /api/rules/:id`, `GET /api/tool-results/:id`; **provider** `GET/POST /api/api-providers`, `GET/PATCH/DELETE /api/api-providers/:id` (wired only when a provider store is attached); static `dashboard/`.
 - **WebSocket:** HTTP `upgrade` (conventionally `/ws`) → broadcasts each `TelemetryEvent` as a JSON frame; client text frame → `{ "echo": ... }`.
 - **Auto-start:** `createServer()` runs only when `require.main === module`.
 - Server handler dispatch precedence: `/health` → `/api/*` → static dashboard → proxy routes → 404; errors → 500.
@@ -72,10 +75,11 @@ The WS `ToolResultEvent` stays **metadata-only** (`ok`/`durationMs`/`chars`/toke
 7. **Rules read live via a getter** so REST-posted rules take effect without restart; the built-in `flagship-loop-rule` is **never persisted**; write-through persistence is best-effort with an in-memory fallback.
 8. **Two separate DB files:** `data/rules.db` (rules, events, tool_calls, interventions) vs `data/tool-results.db` (heavy tool_results, gated off-by-default).
 9. **Whole-turn token accounting** — per-turn token mass = upstream-reported usage when present, else an ESTIMATE over all message content via dependency-free `telemetry/tokenEstimate.ts` (~4 chars/token), emitted as ONE whole-turn `turn.usage` event shared by every event of the turn. Rationale: usage-less turns still account for honest token mass instead of none. See domain.md for the per-turn dedup key and the omit-don't-fabricate rule.
+10. **Runtime-switchable active upstream (provider store).** The proxy forwards to a **single *active* provider** (not concurrent routing/load-balancing). Providers persist in the shared `data/rules.db` (`api_providers`, schema v3); the active one is hot-applied via a **stable mutable `upstreamRef`** passed into the proxy (per-request reads observe live changes), so switching needs **no restart**. A `createServer` seed auto-creates one active **"default"** provider (from env) when the store is empty, so env-based deployments keep working unchanged. The ≤1-active invariant, key-masking, and auto-first activation live in domain.md; persistence rules in constraints.md.
 
 ## External systems
 | System | Purpose |
 |---|---|
-| Upstream model API (OpenAI/Anthropic) | Single target all traffic forwards to (`config.upstream`). |
-| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics; optional tool-result values. |
+| Upstream model API (OpenAI/Anthropic) | One *active* target all traffic forwards to (`config.upstream`); multiple persisted provider configs may exist but only the active one is used (see domain.md). |
+| SQLite (`node:sqlite`) | Opt-in persistence of rules/events/tool metrics + **provider configs** (`api_providers`, shared `rules.db`); optional tool-result values. |
 | Dashboard browser client | Real-time viewing of sessions, tool calls, interventions. |

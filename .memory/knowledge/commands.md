@@ -25,9 +25,9 @@ npm install          # installs dev deps only (typescript, @types/node)
 There is **no lint or format script** in `package.json` (none observed). No `main`/`bin`/`type` field; entry is `dist/src/server/index.js`.
 
 ## Database & migrations
-- No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=2`, idempotent, tracked in a `migrations` table).
+- No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=3`, idempotent, tracked in a `migrations` table).
 - Two DB files:
-  - `data/rules.db` — `rules`, `events`, `tool_calls`, `interventions` (enabled by default via `RULES_ENABLED=true`).
+  - `data/rules.db` — `rules`, `events`, `tool_calls`, `interventions`, `api_providers` (provider configs; enabled by default via `RULES_ENABLED=true`).
   - `data/tool-results.db` — heavy `tool_results` payloads (only when `TOOL_RESULTS_ENABLED=true`, default off).
 - Delete a DB file to reset; it is regenerated at startup.
 

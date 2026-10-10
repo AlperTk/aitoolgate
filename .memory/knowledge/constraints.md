@@ -16,11 +16,14 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - **Centralize tool-CALL emission** in `context.ts` (`emitResponseTelemetry`) — not in the policy stage.
 - **Keep `RuleSpec` ↔ engine factories consistent with `dashboard/js/rule-schema.mjs`** (form schemas are synced to `src/api/ruleSpec.ts`).
 - **Gate opt-in features via config/options:** storage via server options (`options.telemetry.storage`); tool-result persistence via `config.toolResults.enabled` (default off).
+- **Keep provider persistence best-effort** — a failing open/read/write logs a warning and leaves the in-memory provider store untouched; the server still boots (in-memory fallback if the DB can't open).
+- **Validate provider input strictly:** `POST /api/api-providers` requires non-empty `name` and `baseUrl`; `protocol` must be exactly `openai` or `anthropic`; `apiKey` must be string-or-null; unknown extra fields are ignored.
 
 ## MUST NOT
 - **Persist the built-in `flagship-loop-rule`** to the database.
 - **Inline heavy payloads into every WS broadcast** (unbounded memory).
-- **Assume multiple upstreams** — there is always exactly one configured upstream (`config.upstream`).
+- **Assume multiple *concurrently-active* upstreams** — at most ONE provider is active at a time (single-active invariant); the active upstream is runtime-switchable but never load-balanced.
+- **Leak a provider's raw `apiKey`** in list responses — expose only `apiKeySet`; only the detail `GET /api/api-providers/:id` may return the raw key.
 
 ## Architectural restrictions
 - Framework-agnostic contracts live in `src/ports/`; impls depend on ports, not each other. Put new abstractions in `ports/`; impls consume them.
@@ -36,11 +39,12 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 
 ## External-system restrictions
 - `UPSTREAM_PROTOCOL` switches only on the value `anthropic` (anything else = `openai`) — it's effectively binary.
-- Single upstream target via `UPSTREAM_BASE_URL` / `UPSTREAM_MODEL` / `UPSTREAM_API_KEY`; no multi-provider routing.
-- Persistence is Node built-in `node:sqlite` — no external DB server, no migration CLI (migrations auto-apply on open, `SCHEMA_VERSION=2`).
+- Single *active* upstream target via `UPSTREAM_BASE_URL` / `UPSTREAM_MODEL` / `UPSTREAM_API_KEY`; multiple persisted provider configs are allowed but only one is active at a time (no concurrent routing).
+- Persistence is Node built-in `node:sqlite` — no external DB server, no migration CLI (migrations auto-apply on open, `SCHEMA_VERSION=3`).
 
 ## Rules whose violation causes a production incident
 - Unwrapped telemetry emission → a request can 500 / traffic lost.
 - Skipping `npm run build` before tests → stale `dist/` makes tests fail or misrun.
 - Inlining heavy payloads into events/broadcasts → unbounded memory + slow WS.
 - Path-traversal gap in static serving → arbitrary local file read.
+- Exposing a raw provider `apiKey` in a list response → credential leak.
