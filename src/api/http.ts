@@ -28,6 +28,9 @@ import {
   describeRule,
   validateSpec,
 } from './ruleSpec';
+import type { ApiProvider } from './providerSpec';
+import { validateProviderSpec, isNonEmptyString, normalizeApiKey } from './providerSpec';
+import type { ApiProviderStore, ProviderPatch } from './providerStore';
 
 /** The request-handler convention: `true` = handled this route, `false` = fall through. */
 export type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
@@ -49,6 +52,18 @@ export interface ApiOptions {
    * that route responds `404 { error:'not_found' }` (no results available).
    */
   toolResultStore?: ToolResultStore;
+  /**
+   * Optional live API-provider registry backing the `/api/api-providers/*` routes. When
+   * omitted, those paths are not handled (fall through to the proxy), so existing callers
+   * are unaffected. Never returns a raw API key in list form (only an `apiKeySet` flag).
+   */
+  apiProviderStore?: ApiProviderStore;
+  /**
+   * Invoked exactly once after every successful provider mutation AND at boot, passing the
+   * currently-active provider (or `undefined`) so the live upstream reference can be hot-
+   * applied without a server restart. Omitted → no-op (callers not wiring providers).
+   */
+  applyActiveProvider?: (active: ApiProvider | undefined) => void;
 }
 
 /** Result of a PATCH attempt, so callers can map each case to an HTTP status. */
@@ -99,7 +114,11 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
  */
 export function createApiHandler(options: ApiOptions): RequestHandler {
   const specs = (options.specs ??= new Map<string, RuleSpec>());
-  const { ruleStore, collector, toolResultStore } = options;
+  const { ruleStore, collector, toolResultStore, apiProviderStore } = options;
+  // Hot-apply hook (optional): invoked once after each successful provider mutation and at
+  // boot so the shared mutable upstream reference tracks the active provider with no restart.
+  // Defaults to a no-op for legacy callers that don't wire an API-provider feature.
+  const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});
 
   /** Serialize a rule: prefer its stored spec for fidelity, else a best-effort descriptor. */
   const serialize = (rule: PolicyRule): RuleSpec => specs.get(rule.id) ?? describeRule(rule);
@@ -152,6 +171,18 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
 
     try {
       const method = req.method ?? 'GET';
+
+      // Serialize a provider WITHOUT its raw API key, exposing only an `apiKeySet` flag —
+      // the list route never leaks secrets even though get() returns them by design.
+      const serializePublic = (provider: ApiProvider): Record<string, unknown> => {
+        const { apiKey, ...rest } = provider;
+        return { ...rest, apiKeySet: apiKey !== null };
+      };
+      // Fire the hot-apply hook exactly once against the current active provider (a no-op when
+      // the caller didn't wire one, or when no store / no active row exists).
+      const fireLiveApply = (): void => {
+        liveApply(apiProviderStore?.getActive());
+      };
 
       if (path === '/api/stats' && method === 'GET') {
         sendJson(res, 200, collector.summary());
@@ -223,6 +254,122 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
             return true;
           }
           sendJson(res, 200, serialize(result.rule));
+          return true;
+        }
+      }
+
+      // --- API-provider registry (/api/api-providers/*) — optional feature. ----
+      // Only reached when the caller wired a live store; absent callers keep prior behavior.
+      if (apiProviderStore !== undefined) {
+        const providerPath = /^\/api\/api-providers(?:\/([^/]+))?$/.exec(path);
+        if (providerPath) {
+          const segment = providerPath[1] === undefined ? undefined : decodeURIComponent(providerPath[1]);
+
+          // GET list (masked, +activeId) OR single record (full incl apiKey), by presence of id.
+          if (method === 'GET') {
+            if (segment === undefined) {
+              sendJson(res, 200, {
+                providers: apiProviderStore.list().map(serializePublic),
+                activeId: apiProviderStore.getActive()?.id ?? null,
+              });
+              return true;
+            }
+            const found = apiProviderStore.get(segment);
+            if (found === undefined) {
+              sendJson(res, 404, { error: 'not_found' });
+              return true;
+            }
+            sendJson(res, 200, found);
+            return true;
+          }
+
+          // POST create (no id present). Auto-activates the first-ever row via the store.
+          if (method === 'POST' && segment === undefined) {
+            const parsed = await readJsonBody(req);
+            if (parsed instanceof Error) {
+              sendJson(res, 400, { error: parsed.message });
+              return true;
+            }
+            if (!isRecord(parsed)) {
+              sendJson(res, 400, { error: 'body must be a JSON object' });
+              return true;
+            }
+            const specError = validateProviderSpec(parsed);
+            if (specError !== null) {
+              sendJson(res, 400, { error: specError });
+              return true;
+            }
+            const body = parsed as Record<string, unknown>;
+            for (const field of ['name', 'baseUrl'] as const) {
+              if (!isNonEmptyString(body[field])) {
+                sendJson(res, 400, { error: `"${field}" is required and must be a non-empty string` });
+                return true;
+              }
+            }
+            const created = apiProviderStore.add({
+              name: String(body.name),
+              baseUrl: String(body.baseUrl),
+              model: typeof body.model === 'string' ? body.model : '',
+              protocol: typeof body.protocol === 'string' ? (body.protocol as ApiProvider['protocol']) : 'openai',
+              apiKey: normalizeApiKey(body.apiKey),
+            });
+            fireLiveApply();
+            sendJson(res, 201, created);
+            return true;
+          }
+
+          // PATCH update known fields only (requires an id). Enforces single-active.
+          if (method === 'PATCH' && segment !== undefined) {
+            if (apiProviderStore.get(segment) === undefined) {
+              sendJson(res, 404, { error: 'not_found' });
+              return true;
+            }
+            const parsed = await readJsonBody(req);
+            if (parsed instanceof Error) {
+              sendJson(res, 400, { error: parsed.message });
+              return true;
+            }
+            if (!isRecord(parsed)) {
+              sendJson(res, 400, { error: 'body must be a JSON object' });
+              return true;
+            }
+            const specError = validateProviderSpec(parsed);
+            if (specError !== null) {
+              sendJson(res, 400, { error: specError });
+              return true;
+            }
+            const patchBody = parsed as Record<string, unknown>;
+            const patch: ProviderPatch = {};
+            if ('name' in patchBody) patch.name = String(patchBody.name);
+            if ('baseUrl' in patchBody) patch.baseUrl = String(patchBody.baseUrl);
+            if ('model' in patchBody) patch.model = String(patchBody.model);
+            if ('apiKey' in patchBody) patch.apiKey = normalizeApiKey(patchBody.apiKey);
+            if ('protocol' in patchBody) patch.protocol = patchBody.protocol as ApiProvider['protocol'];
+            if ('isActive' in patchBody) patch.isActive = Boolean(patchBody.isActive);
+            const updated = apiProviderStore.update(segment, patch);
+            if (updated === undefined) {
+              sendJson(res, 404, { error: 'not_found' });
+              return true;
+            }
+            fireLiveApply();
+            sendJson(res, 200, updated);
+            return true;
+          }
+
+          // DELETE remove the row (promotes lowest-id remaining / none via the store).
+          if (method === 'DELETE' && segment !== undefined) {
+            const removed = apiProviderStore.remove(segment);
+            if (!removed) {
+              sendJson(res, 404, { error: 'not_found' });
+              return true;
+            }
+            fireLiveApply();
+            sendJson(res, 200, { deleted: true });
+            return true;
+          }
+
+          // A provider path with no matching handler (e.g. POST carrying an id segment).
+          sendJson(res, 404, { error: 'not_found' });
           return true;
         }
       }

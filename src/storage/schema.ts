@@ -12,7 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** The highest migration version applied by {@link applyMigrations}. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export interface Migration {
   /** Monotonically increasing, unique, ascending version number. */
@@ -63,6 +63,24 @@ export const MIGRATIONS: readonly Migration[] = [
         at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_tool_results_at ON tool_results (at);
+    `,
+  },
+  {
+    // Version 3 adds the typed API-provider registry backing runtime-switchable
+    // upstream configuration (`/api/api-providers/*`). All DDL stays idempotent so
+    // re-running migrations on an existing database remains a safe no-op.
+    version: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS api_providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        model TEXT NOT NULL,
+        api_key TEXT,
+        protocol TEXT NOT NULL DEFAULT 'openai',
+        is_active INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
     `,
   },
 ];

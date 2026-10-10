@@ -8,6 +8,7 @@ import { bindFilterEvents, normalizeStreamHead } from './js/live-view.mjs';
 import { connectWS, syncConnectivity, startEventsPolling } from './js/transport.mjs';
 import { bindControlEvents } from './js/controls.mjs';
 import { initViews } from './js/views.mjs';
+import { initSettings } from './js/settings.mjs';
 import { mountLayout } from './js/layout.mjs';
 
 function init() {
@@ -16,6 +17,7 @@ function init() {
   normalizeStreamHead();   // self-heal the stream header structure at init
   bindControlEvents();
   initViews();              // client-side page routing (hashchange between views)
+  initSettings();           // settings popup modal: header gear icon -> API-providers manager (see js/settings.mjs)
   renderMatcherFields(state.curMatcherType);
   renderActionFields(state.curActionType);
   updateFormMode();

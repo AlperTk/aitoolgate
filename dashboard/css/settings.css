@@ -1,0 +1,205 @@
+/* mcp-manager dashboard css — settings: the Settings popup/modal (js/settings.mjs).
+   Loaded LAST among the dashboard stylesheets (see index.html): new rules here win
+   ties against earlier aggregated files at equal specificity. Reuses existing base
+   classes (.btn/.btn-primary/.badge/.field*/.form-error/.empty/.muted/.small); this
+   file adds only the genuinely-new pieces: overlay/backdrop + dim, two-column
+   master–detail grid, left rail states, provider list rows/hover/selected
+   emphasis, protocol chip variants, masked-key dot, delete affordance, editor
+   form extras, modal focus-visible rings, empty-state padding, responsive
+   stacking. (The header gear trigger #open-settings base styles live in
+   styles.css so they load reliably; see that file.) */
+
+/* Note: the header gear trigger (#open-settings) icon-button styles now live in
+   styles.css (loaded after all @imports) so they apply reliably. Only the
+   modal-internal focus ring for #open-settings remains here (see below). */
+/* ---------------------- header gear trigger (icon button) ----------- */
+#open-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.5rem;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+#open-settings:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+#open-settings svg { width: 1.05rem; height: 1.05rem; display: block; }
+/* --------------------- modal overlay / backdrop (dim) --------------- */
+.settings-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(13, 17, 23, 0.8); }
+.settings-backdrop[hidden] { display: none; }
+.settings-backdrop.is-open { display: flex; align-items: center; justify-content: center; padding: 1.25rem; }
+.settings-card {
+  /* .card supplies surface/border/radius/shadow/padding; override padding + size to a
+     FIXED height so the dialog's size is stable regardless of its content (no
+     content-driven growth). The card is a flex column: the head stays pinned at the
+     top and .settings-body (flex: 1 / min-height: 0) fills the remainder so the
+     master-detail columns can scroll independently within the fixed height. */
+  width: min(1060px, 100%);
+  height: min(720px, calc(100vh - 3rem));
+  padding: 1rem 1.25rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+}
+.settings-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.9rem; }
+.icon-btn { padding: 0.32rem 0.6rem; line-height: 1; font-size: var(--fs-md); }
+
+/* master–detail two-column body: left rail | right panel */
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr);
+  gap: 1.1rem;
+}
+.settings-panel { min-width: 0; overflow-y: auto; }
+
+/* scrollbars for the in-modal scroll containers (same theme as components.css). */
+.settings-panel, .provider-list {
+  scrollbar-width: thin;                            /* Firefox */
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.settings-panel::-webkit-scrollbar, .provider-list::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+.settings-panel::-webkit-scrollbar-track, .provider-list::-webkit-scrollbar-track { background: transparent; }
+.settings-panel::-webkit-scrollbar-thumb, .provider-list::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); border-radius: 999px; }
+.settings-panel::-webkit-scrollbar-thumb:hover, .provider-list::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+
+/* ------------------------------ left rail --------------------------- */
+/* Left-column grid item (.settings-rail-nav wraps the .settings-rail list): stretch
+   to the body's fixed height and scroll internally if many categories are added
+   later. overflow-y: auto zeroes the grid item's auto min-height so it can't grow
+   the grid row and push the fixed-height dialog taller. */
+.settings-rail-nav { min-width: 0; overflow-y: auto; }
+.settings-rail { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.rail-item {
+  appearance: none;
+  text-align: left;
+  width: 100%;
+  padding: 0.45rem 0.7rem;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.rail-item:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.rail-item.is-active { color: var(--accent); background: rgba(76, 141, 255, 0.1); font-weight: var(--fw-semibold); }
+
+.settings-subpane[hidden] { display: none; }
+.settings-placeholder h3 { margin-bottom: 0.4rem; }
+
+/* ======================= API Providers pane ========================= */
+.prov-bar { display: flex; align-items: center; gap: 0.6rem 1rem; flex-wrap: wrap; margin-bottom: 0.7rem; }
+.prov-hint { color: var(--muted); font-size: var(--fs-xs); }
+
+/* Sub-view show/hide: the providers pane toggles between a LIST view and an
+   add/edit FORM view via internal state (not a route). `.is-hidden` hides a
+   view; the list view is shown by default and the form view starts hidden. */
+.prov-view.is-hidden { display: none; }
+
+.provider-list { margin: 0 0 0.5rem; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+#prov-empty { padding: 1.1rem 0.25rem; }
+
+/* Row: radio | info (name + base URL · model) | aux (protocol chip · key dot · delete). */
+.provider-row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr) auto;
+  grid-template-areas: "act info aux";
+  gap: 0.4rem 0.7rem;
+  align-items: center;
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.provider-row:last-child { border-bottom: none; }
+.provider-row:hover { background: rgba(255, 255, 255, 0.035); }   /* hover emphasis */
+.provider-row.is-active { background: rgba(63, 185, 80, 0.07); }  /* the active provider row */
+.provider-row.is-loaded { box-shadow: inset 2px 0 0 var(--accent); } /* row currently in the editor form below */
+
+.prov-radio {
+  grid-area: act;
+  justify-self: start;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+.provider-info { grid-area: info; min-width: 0; display: flex; flex-direction: column; gap: 0.12rem; }
+.provider-name { font-weight: var(--fw-semibold); font-size: var(--fs-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.provider-meta { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prov-aux { grid-area: aux; display: flex; align-items: center; gap: 0.55rem; }
+
+/* Protocol chip: geometry/text from the shared .badge base; tonal variants are new. */
+.proto-openai    { background: rgba(139, 188, 255, 0.14); color: var(--c-st-pending); border-color: rgba(139, 188, 255, 0.3); }
+.proto-anthropic { background: rgba(243, 208, 138, 0.13); color: var(--c-st-amber);    border-color: rgba(243, 208, 138, 0.3); }
+
+/* Masked-key indicator dot (driven by apiKeySet only — raw keys never render here). */
+.key-dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; border: 1.5px solid var(--text-faint); background: transparent; flex: none; }
+.key-dot.is-set { background: var(--green); border-color: var(--green); }
+
+/* Subtle per-row delete affordance (red on hover, matching .btn-danger tone). */
+.prov-del {
+  background: none;
+  border: none;
+  padding: 0.15rem 0.35rem;
+  font-size: var(--fs-md);
+  line-height: 1;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.prov-del:hover { color: #ff9b94; background: rgba(248, 81, 73, 0.1); }
+
+/* ------------------------------ editor form ------------------------ */
+/* Reuses .field / .field-row / .hint / .section-title / .form-error from rules.css. */
+.prov-editor { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+.field-key .key-line { display: flex; align-items: center; gap: 0.5rem; }
+.pf-password {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #0f141b;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+.pf-password:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18); }
+.key-toggle { padding: 0.35rem 0.6rem; font-size: var(--fs-xs); }   /* tighter than default .btn, loaded last so it wins */
+.prov-foot { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 1rem; }
+
+/* Keyboard focus ring across the modal (the header trigger's own focus ring
+   lives in styles.css alongside its base styles). */
+.settings-card button:focus-visible,
+.settings-card .rail-item:focus-visible,
+.settings-card .prov-radio:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+/* ------------------------- responsive (below ~720px) --------------- */
+@media (max-width: 720px) {
+  .settings-backdrop.is-open { padding: 0.75rem; }
+  .settings-card { height: calc(100vh - 1.5rem); }   /* fixed: fill the viewport minus the 0.75rem backdrop padding */
+  /* Columns stack vertically on narrow screens: rail becomes a horizontal chip row. */
+  .settings-body { grid-template-columns: 1fr; gap: 0.9rem; }
+  .settings-rail { flex-direction: row; flex-wrap: wrap; }
+  .rail-item { width: auto; }
+  /* Rows drop their aux column to a second line under the info cell. */
+  .provider-row {
+    grid-template-columns: 1.4rem minmax(0, 1fr);
+    grid-template-areas: "act info" ". aux";
+  }
+  .prov-aux { justify-content: flex-start; }
+  .settings-card .field-row { grid-template-columns: 1fr; }   /* editor fields single-column too */
+}

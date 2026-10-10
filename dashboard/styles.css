@@ -6,3 +6,35 @@
 @import url("./css/controls.css");
 @import url("./css/table.css");
 @import url("./css/responsive.css");
+
+/* ==========================================================================
+ * Header gear trigger — dark-theme icon button (matches nav-link aesthetics).
+ * Placed here (not in css/settings.css) so the button is styled reliably
+ * even if settings.css fails to load. Loaded after all @imports above.
+ * ========================================================================== */
+#open-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.5rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+#open-settings:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+#open-settings:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+#open-settings svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
+}

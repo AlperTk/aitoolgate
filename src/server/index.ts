@@ -7,7 +7,11 @@ import { createApiHandler, type RequestHandler } from '../api/http';
 import { createWsServer, type WsServer } from '../api/ws';
 import { createRuleStore, type RuleStore } from '../api/ruleStore';
 import { createPersistentRuleStore } from '../api/persistentRuleStore';
+import { createApiProviderStore, type ApiProviderStore } from '../api/providerStore';
+import { createPersistentProviderStore } from '../api/persistentProviderStore';
+import type { ApiProvider } from '../api/providerSpec';
 import type { RuleSpec } from '../api/ruleSpec';
+import type { UpstreamClient } from '../proxy/upstream';
 import { createToolResultStore, type ToolResultStore } from '../telemetry/toolResultStore';
 import { createSqliteToolResultPersister, type SqliteToolResultPersister } from '../telemetry/sqliteToolResultPersister';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
@@ -202,6 +206,24 @@ function openPersistentRuleStore(
 }
 
 /**
+ * Build a write-through persistent {@link ApiProviderStore} backed by SQLite when rule
+ * persistence is enabled, else an in-memory store as a fallback. Reuses the shared rules DB
+ * file path + parent-directory helper; if opening fails we fall back to a non-persistent
+ * in-memory store so the server still boots. Seeding of the env-derived default row is
+ * applied BY THE CALLER (see {@link createServer}) so it happens identically whether or not
+ * persistence is available.
+ */
+function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
+  try {
+    ensureRulesDbParentDir(dbFile);
+    return createPersistentProviderStore({ dbFile: dbFile ?? ':memory:' });
+  } catch (err) {
+    console.warn('mcp-manager: API-provider persistence disabled (could not open the provider database):', err);
+    return createApiProviderStore();
+  }
+}
+
+/**
  * Create the mcp-manager HTTP server, mounting the model-proxy routes alongside
  * a REST API (`/api/*`), a built-in WebSocket server (the `/ws` upgrade), and
  * the dashboard static files. A single shared telemetry bus + collector feeds
@@ -277,15 +299,72 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
           ...(Array.isArray(callerRules) ? callerRules : []),
           ...ruleStore.list(),
         ];
+  // Single STABLE mutable upstream reference consumed per-request by the proxy (context.ts reads
+  // its fields off this object each request). Mutating its fields hot-applies the active
+  // API-provider WITHOUT rebuilding any handler/closure. Initialized from the effective upstream
+  // snapshot — a caller-supplied `options.upstream` when given, else the env/config-derived
+  // default (exactly what used to be constructed inline here).
+  const resolvedUpstream: UpstreamClient =
+    options?.upstream ?? {
+      baseUrl: config.upstream.baseUrl,
+      model: config.upstream.model,
+      protocol: config.upstream.protocol,
+      ...(config.upstream.apiKey ? { apiKey: config.upstream.apiKey } : {}),
+    };
+  // Immutable baseline (seed source AND reset-to-defaults target) captured before any live-apply,
+  // flattened into concrete consts so the closure never touches optional properties at runtime.
+  const initialUpstream: UpstreamClient = { ...resolvedUpstream };
+  const upstreamRef: UpstreamClient = { ...resolvedUpstream };
+  const baselineBaseUrl = initialUpstream.baseUrl;
+  const baselineModel = initialUpstream.model;
+  const baselineProtocol = initialUpstream.protocol;
+  const baselineApiKey: string | undefined =
+    typeof initialUpstream.apiKey === 'string' && initialUpstream.apiKey.length > 0
+      ? initialUpstream.apiKey
+      : undefined;
+
+  // Live API-provider registry backing `/api/api-providers/*`. Persisted + seeded against the
+  // shared rules DB ONLY for real env-based deployments (no caller-injected upstream) when rule
+  // persistence is enabled. Caller-injected/mock upstreams (the common test case) stay strictly
+  // in-memory so they neither pollute the shared DB across runs nor have their routing flipped by
+  // another process's seeded row — keeping pre-existing test behavior bit-for-bit unchanged.
+  const providersPersistent = config.rules.enabled && options?.upstream === undefined;
+  let apiProviderStore: ApiProviderStore;
+  if (providersPersistent) {
+    apiProviderStore = openApiProviderStore(config.rules.dbPath);
+  } else {
+    apiProviderStore = createApiProviderStore();
+  }
+
+  // Startup SEEDING: if no provider rows exist yet, auto-create exactly one from the current
+  // effective upstream snapshot, marked active — so pre-existing env-based deployments keep
+  // working unchanged without user action. add() into an empty store activates the first row.
+  if (apiProviderStore.size() === 0) {
+    apiProviderStore.add({
+      name: 'default',
+      baseUrl: baselineBaseUrl,
+      model: baselineModel,
+      apiKey: baselineApiKey !== undefined ? baselineApiKey.trim() : null,
+      protocol: baselineProtocol,
+      isActive: true,
+      createdAt: Date.now(),
+    });
+  }
+
+  // LIVE APPLY: overwrite the shared stable ref's fields with the active provider's values so the
+  // proxy forwards there immediately. With no active provider, reset back to the baseline default.
+  function applyActiveProvider(active?: ApiProvider): void {
+    upstreamRef.baseUrl = active ? active.baseUrl : baselineBaseUrl;
+    upstreamRef.model = active ? active.model : baselineModel;
+    upstreamRef.protocol = active ? active.protocol : baselineProtocol;
+    upstreamRef.apiKey = active && active.apiKey !== null ? active.apiKey : (active ? undefined : baselineApiKey);
+  }
+  applyActiveProvider(apiProviderStore.getActive()); // initialize consistent state once after seeding
+
   const proxyOptions: ProxyOptions = {
     ...(options ?? {}),
-    upstream:
-      options?.upstream ?? {
-        baseUrl: config.upstream.baseUrl,
-        model: config.upstream.model,
-        protocol: config.upstream.protocol,
-        ...(config.upstream.apiKey ? { apiKey: config.upstream.apiKey } : {}),
-      },
+    // Pass the SAME mutable reference captured above so per-request field reads observe live changes.
+    upstream: upstreamRef,
     // Reuse any caller-provided bus/collector; otherwise default to fresh instances
     // that share the configured bus so the live view always sees the stage's events.
     telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
@@ -297,8 +376,16 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   };
   const handleProxyRequest: ProxyHandler = createProxyHandler(proxyOptions);
 
-  // Shared REST API, backed by the same rule store + collector/bus above.
-  const api: RequestHandler = createApiHandler({ ruleStore, collector, toolResultStore, specs: ruleSpecs });
+  // Shared REST API, backed by the same rule store + collector/bus above AND wired to hot-apply
+  // the active provider on every successful `/api/api-providers/*` mutation (and at boot).
+  const api: RequestHandler = createApiHandler({
+    ruleStore,
+    collector,
+    toolResultStore,
+    specs: ruleSpecs,
+    apiProviderStore,
+    applyActiveProvider,
+  });
   const dashboardDir = resolveDashboardDir(mount?.dashboardDir);
 
   const server = http.createServer((req, res) => {

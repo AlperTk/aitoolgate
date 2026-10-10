@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mcp-manager · tool-monitoring dashboard</title>
     <link rel="stylesheet" href="styles.css" />
+    <!-- Settings modal styles: loaded LAST so equal-specificity ties resolve in its favor,
+         matching the aggregation order convention in styles.css (tokens→…→responsive). -->
+    <link rel="stylesheet" href="css/settings.css" />
   </head>
   <body>
     <!-- app-header-slot is replaced at runtime by js/layout.mjs with the markup from
