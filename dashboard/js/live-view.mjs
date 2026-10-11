@@ -9,10 +9,11 @@
  * so no data is lost. Client-side filters compose tool / status / session /
  * time-window constraints over the visible rows.
  * ========================================================================== */
-import { $, el, esc, fmtOpt, fmtTime, shortSession } from './dom.mjs';
+import { $, el, esc, fmtOpt, fmtTime, shortSession, showNotice } from './dom.mjs';
 import { state } from './state.mjs';
 import { MAX_LIST_ITEMS } from './constants.mjs';
 import { inTimeRange } from './time.mjs';
+import { createRule, prefillNewRule, refreshRules, findDuplicatePolicyRule } from './rules.mjs';
 
 // Prepend a row to a <ul>, keeping at most `max` children (newest-first).
 export function prependTrim(listEl, node, max) {
@@ -287,6 +288,33 @@ export function renderRowDetail(rs) {
   });
   // If the Response tab was already active when we rebuilt, ensure it is fetched/rendered.
   if (rs.activeTab === 'response') maybeFetchResponse(rs, detailEl);
+  bindPolicySection(rs, detailEl);
+}
+
+// Wire the policy quick-action buttons built by buildPolicySection. Called by
+// renderRowDetail after the detail innerHTML is (re)built, so each fresh DOM has
+// fresh listeners. Re-enables a clicked button once the action settles so rapid
+// double-clicks do not stack requests.
+function bindPolicySection(rs, detailEl) {
+  var ev = rs.callEv || rs.resultEv;
+  var name = ev && typeof ev.toolName === 'string' ? ev.toolName : '';
+  if (!name) return;
+  var section = detailEl.querySelector('.policy-section');
+  if (!section) return;
+  section.querySelectorAll('button[data-policy]').forEach(function (btn) {
+    var action = btn.getAttribute('data-policy');
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      var p = handlePolicyAction(action, name);
+      if (p && typeof p.then === 'function') {
+        p.then(function () { btn.disabled = false; }, function () { btn.disabled = false; });
+      } else {
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 // Build the Arguments tab panel content from callEv.args.
@@ -295,6 +323,74 @@ function buildArgsPanel(rs) {
     return '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre>';
   }
   return '<div class="muted small">No arguments.</div>';
+}
+
+// Build the compact "Policy" quick-actions section for a row. Returns an HTML
+// string when the row has a non-empty tool name, otherwise '' (name-less orphan
+// rows show no policy controls). The three controls map to data-policy:
+// block | hide | new. All text is escaped; the arrow is U+2192.
+export function buildPolicySection(rs) {
+  var ev = rs.callEv || rs.resultEv;
+  var name = ev && typeof ev.toolName === 'string' ? ev.toolName : '';
+  if (!name) return '';
+  var label = 'Policy actions for ' + name;
+  return '<div class="rd-section policy-section" role="group" aria-label="' + esc(label) + '">'
+    + '<div class="rd-label">Policy</div>'
+    + '<div class="policy-actions">'
+    + '<button type="button" class="btn btn-primary policy-btn" data-policy="block" aria-label="Block tool ' + esc(name) + '">Block</button>'
+    + '<button type="button" class="btn btn-primary policy-btn" data-policy="hide" aria-label="Hide tool ' + esc(name) + '">Hide</button>'
+    + '<button type="button" class="btn policy-btn policy-new" data-policy="new" aria-label="Create new policy rule for tool ' + esc(name) + '">New policy \u2192</button>'
+    + '</div>'
+    + '</div>';
+}
+// Dispatch a policy quick-action by `action` ('block' | 'hide' | 'new') for the
+// given tool `name`. Block/Hide POST an enabled rule immediately; 'new' navigates
+// to the pre-filled editor (synchronous) and returns a resolved promise.
+export function handlePolicyAction(action, name) {
+  if (action === 'block') {
+    return createPolicyRule(name, {
+      enabled: true,
+      matcher: { type: 'toolName', toolName: name },
+      action: { type: 'block', message: 'Blocked: ' + name }
+    });
+  }
+  if (action === 'hide') {
+    return createPolicyRule(name, {
+      enabled: true,
+      matcher: { type: 'toolName', toolName: name },
+      action: { type: 'hideTool', toolNames: [name] }
+    });
+  }
+  if (action === 'new') {
+    prefillNewRule({
+      enabled: true,
+      matcher: { type: 'toolName', toolName: name },
+      action: { type: 'block' } // default action; the user changes it in the editor
+    });
+    return Promise.resolve();
+  }
+  return Promise.resolve();
+}
+// Quick-create an enabled rule for `name` (spec already carries matcher + action).
+// Minimal dedupe: if an ENABLED identical rule already exists in the cached
+// state.rules, skip the POST and notify instead of stacking duplicates. On success
+// re-sync the rules list (and state.rules) then confirm via the global notice.
+// createRule has already surfaced a failure notice by the time it throws, so the
+// catch only suppresses the success path.
+export async function createPolicyRule(name, spec) {
+  var actionType = spec.action && spec.action.type;
+  var dup = findDuplicatePolicyRule(state.rules, name, actionType);
+  if (dup && dup.enabled === true) {
+    showNotice(name + ' is already ' + (actionType === 'block' ? 'blocked' : 'hidden') + ' by an existing policy rule');
+    return;
+  }
+  try {
+    await createRule(spec);
+    await refreshRules(); // re-sync the rendered list + state.rules
+    showNotice(name + ' \u2192 policy rule created');
+  } catch (_e) {
+    // createRule already called showNotice('Rule not created: ...')
+  }
 }
 
 // Build the Details tab panel content: result metadata + session + interventions.
@@ -326,6 +422,7 @@ function buildDetailsPanel(rs) {
       html += '</div>';
     }
   }
+  html += buildPolicySection(rs);
   return html || '<div class="muted small">No additional details.</div>';
 }
 

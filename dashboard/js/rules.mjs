@@ -120,6 +120,38 @@ export async function deleteRule(spec) {
   }
 }
 
+// POST a RuleSpec to create a new rule; returns the created spec (with its
+// server-assigned id) on success. On a non-ok response it surfaces a global
+// notice (the live-view quick-create channel, not the authoring form's inline
+// error) and throws so callers can distinguish failure from success.
+export async function createRule(spec) {
+  var res = await fetch('api/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec)
+  });
+  var data = null;
+  try { data = await res.json(); } catch (_e) { /* non-JSON (204 / error text) */ }
+  if (!res.ok) {
+    showNotice('Rule not created: ' + (data && data.error ? data.error : 'HTTP ' + res.status));
+    throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+  }
+  return data;
+}
+// Minimal client-side dedupe: return the first cached rule whose matcher is a
+// toolName matcher matching `name` (exact or listed in toolNames) AND whose
+// action type equals `actionType`. Returns undefined when no match. Best-effort
+// over the cached state.rules (single source of truth re-synced by refreshRules).
+export function findDuplicatePolicyRule(rules, name, actionType) {
+  return (Array.isArray(rules) ? rules : []).find(function (r) {
+    if (!r || !r.matcher || !r.action) return false;
+    var m = r.matcher, a = r.action;
+    var nameMatch = m.type === 'toolName' &&
+      (m.toolName === name || (Array.isArray(m.toolNames) && m.toolNames.indexOf(name) !== -1));
+    return nameMatch && a.type === actionType;
+  });
+}
+
 /* ============ list summaries + severity tones (pure helpers) =========== */
 // Action type -> tokenized status tone used as a "severity" pill in the list.
 // Derived from how intrusive each action is (no field in the spec declares it).
@@ -434,8 +466,32 @@ function flashSavedNote(msg) {
   savedTimer = setTimeout(function () { n.hidden = true; }, 2600);
 }
 // Open the editor in ADD mode: a clean, default form.
+// A pending pre-fill spec for the ADD-mode editor, set by prefillNewRule() and
+// consumed exactly once by openNewRuleForm(). Null when no pre-fill is pending.
+var pendingNewRuleSpec = null;
+
 export function openNewRuleForm() {
-  resetForm();
+  if (pendingNewRuleSpec) {
+    var spec = pendingNewRuleSpec;
+    pendingNewRuleSpec = null; // consume exactly once
+    loadSpecIntoForm(spec);
+    var focusEl = $('rule-description') || $('rule-form');
+    if (focusEl && typeof focusEl.focus === 'function') focusEl.focus();
+  } else {
+    resetForm();
+  }
+}
+
+// Navigate to the ADD-mode editor with the form pre-filled from `spec`. Sets a
+// pending pre-fill then drives the router; if the current hash is already the
+// add editor (no hashchange will fire) it opens the form directly.
+export function prefillNewRule(spec) {
+  pendingNewRuleSpec = spec;
+  if (String(location.hash || '').replace(/^#\/?/, '') !== 'rules/new') {
+    location.hash = '#/rules/new'; // hashchange -> applyRoute -> openNewRuleForm()
+  } else {
+    openNewRuleForm();
+  }
 }
 // Open the editor in EDIT mode for `id`. Uses the cached list when available so a
 // deep-link opens instantly; otherwise fetches once. Falls back to the list (with a

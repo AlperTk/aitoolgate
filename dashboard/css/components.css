@@ -166,6 +166,16 @@
 .rd-trunc { margin-top: 0.25rem; }
 .rd-err { color: var(--red); font-size: var(--fs-sm); }
 
+/* ---- policy quick-actions (row-detail "Details" tab) ------------------- */
+/* Compact, visually subordinate to the main detail content. Block/Hide reuse the
+   primary accent button but tightened; "New policy →" is a transparent ghost
+   pushed to the trailing edge, signalling it navigates to the policy editor.
+   Token-first: geometry from .btn, tone from var(--accent)/var(--border). */
+.policy-section { margin-top: 0.2rem; }
+.policy-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.policy-actions .btn { padding: 0.3rem 0.6rem; }            /* tighter than default .btn */
+.policy-section .policy-new { background: transparent; margin-left: auto; } /* ghost + trailing edge */
+
 /* Filter bar above the stream list */
 .stream-filters {
   display: flex;
