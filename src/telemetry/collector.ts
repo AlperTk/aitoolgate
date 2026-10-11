@@ -13,6 +13,7 @@ import { createEventBus } from './event-bus';
 import type { TelemetryEventBus } from './event-bus';
 import type { InterventionEvent, TelemetryEvent } from './events';
 import { DEFAULT_AGGREGATE_EXCLUDED_TOOLS, isAggregateExcluded } from './aggregate-exclusions';
+import { estimateTokensFromChars } from './tokenEstimate';
 
 /** A ranked entry in the top-tools list. */
 export interface TopTool {
@@ -30,7 +31,7 @@ export interface TopTool {
   totalTokens?: number;
   /** Sum of `tokens.cacheHitInput` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no cache-hit input tokens. */
   totalCacheHitInputTokens?: number;
-  /** Sum of estimated response-payload tokens (`round(chars / EST_CHARS_PER_TOKEN)`) across resolved results reporting `chars`; omitted when the tool has no resolved results. */
+  /** Sum of estimated response-payload tokens (`estimateTokensFromChars(chars)`) across resolved results reporting `chars`; omitted when the tool has no resolved results. */
   totalResponseTokens?: number;
   /** Count of resolved results that reported `chars` for this tool; omitted when the tool has none. */
   resolvedCount?: number;
@@ -108,9 +109,6 @@ const DEFAULT_MAX_RECENT = 200;
 
 /** Default bound on distinct token-turn dedup keys retained (oldest evicted beyond this). */
 const DEFAULT_MAX_TOKEN_TURNS = 10000;
-
-/** Assumed average characters per token for estimating tool-response payload size in tokens. */
-const EST_CHARS_PER_TOKEN = 4;
 
 /** Create an in-memory {@link Collector} subscribed to a telemetry event bus. */
 export function createCollector(options: CollectorOptions = {}): Collector {
@@ -233,7 +231,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         }
         // Accumulate estimated response-payload tokens per tool from each resolved result carrying a measurable char count.
         if (typeof event.chars === 'number' && Number.isFinite(event.chars) && event.chars > 0) {
-          const estTokens = Math.max(0, Math.round(event.chars / EST_CHARS_PER_TOKEN));
+          const estTokens = estimateTokensFromChars(event.chars);
           const resolved = toolResolvedResults.get(event.toolName) ?? { totalResponseTokens: 0, resolvedCount: 0 };
           resolved.totalResponseTokens += estTokens;
           resolved.resolvedCount += 1;

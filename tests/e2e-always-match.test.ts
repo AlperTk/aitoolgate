@@ -6,6 +6,7 @@ import { buildRuleFromSpec, buildMatcher, validateSpec, describeRule } from '../
 import { createAlwaysMatcher, ALWAYS_MATCHER_BRAND } from '../src/policy/matchers';
 import type { AlwaysMatcher } from '../src/policy/matchers';
 import type { RuleSpec } from '../src/api/ruleSpec';
+import { oaiCanned } from './helpers';
 
 /**
  * End-to-end regression tests for the unconditional "always" matcher:
@@ -126,14 +127,7 @@ async function startProxy(options: ProxyOptions): Promise<{ server: http.Server;
   return { server, port: portOf(server) };
 }
 
-const OAI_CANNED = {
-  id: 'chatcmpl-always',
-  object: 'chat.completion',
-  created: 1700000000,
-  model: 'gpt-4o-mini',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const OAI_CANNED = oaiCanned('chatcmpl-always');
 
 /** A minimal RequestContext-shaped PolicyContext with an empty message list. */
 function emptyRequestContext() {

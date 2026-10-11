@@ -53,7 +53,7 @@ export interface SessionKey {
   token?: string;
 }
 
-/** A domain event emitted through the {@link EventBus}. */
+/** A domain event emitted through the {@link TelemetryEventBus}. */
 export interface PolicyEvent {
   /** Unique event id. */
   id: string;

@@ -3,12 +3,17 @@ import type {
   ClientConfig,
   Matcher,
   PolicyContext,
+  RequestContext,
+  ResponseContext,
   Rule,
   SessionKey,
   ToolCall,
   ToolResult,
 } from '../ports';
 import type { Message } from '../session/session';
+import type { ActionEffect } from './actions';
+import type { PolicyAction } from './ruleEngine';
+import type { FeedbackMessage } from './feedbackStore';
 
 /**
  * Re-exported from `src/ports` (the single source of truth lives there).
@@ -97,4 +102,55 @@ export interface Match {
  */
 export interface PolicyMatcher {
   matches(ctx: PolicyContext): Match | null;
+}
+
+/**
+ * The discriminator values of the policy {@link ActionEffect} union
+ * (`'block' | 'hideTool' | 'rewriteArgs' | 'injectMessage'`). Derived from the
+ * union (not hand-listed), so a newly-added action kind is picked up
+ * automatically — a core part of the Open/Closed design.
+ */
+export type ActionEffectKind = ActionEffect['type'];
+
+/**
+ * A Strategy that owns ONE policy action kind end to end: how to apply it to the
+ * stream (request and response phases), how to describe it, and how to validate
+ * and build its wire spec. Each action module contributes one strategy; the
+ * registry in `actions/index.ts` maps each {@link ActionEffectKind} to its
+ * strategy, so both the policy stage (dispatching by `effect.type`) and ruleSpec
+ * (dispatching by `spec.type`) look up a strategy instead of switching on the
+ * kind. Adding a new action therefore needs only a new strategy file + a single
+ * registry entry (Open/Closed).
+ */
+export interface ActionStrategy {
+  /** The effect kind this strategy handles (mirrors `ActionEffect.type`). */
+  readonly type: ActionEffectKind;
+
+  /** Apply the effect to a REQUEST context, editing its message stream in place. */
+  applyRequest(ctx: RequestContext, effect: ActionEffect): void;
+
+  /**
+   * Apply the effect to a RESPONSE context, editing it in place. `queue` bridges
+   * response-side effects (e.g. `block`, `injectMessage`) into the session's next
+   * request via the per-session feedback store.
+   */
+  applyResponse(
+    ctx: ResponseContext,
+    effect: ActionEffect,
+    sessionKey: SessionKey,
+    queue: (key: string | SessionKey, message: FeedbackMessage) => void,
+  ): void;
+
+  /** A short, human-readable summary of the applied effect (the intervention event's `detail`). */
+  describe(effect: ActionEffect): string;
+
+  /**
+   * Validate a raw JSON action spec (the wire form). Returns an error message for
+   * a malformed spec, or `null` when this kind's required fields are present and
+   * correctly typed.
+   */
+  validateSpec(spec: unknown): string | null;
+
+  /** Build a concrete {@link PolicyAction} from a raw JSON action spec (throws when a required field is missing). */
+  buildSpec(spec: unknown): PolicyAction;
 }

@@ -1,6 +1,6 @@
 /**
- * Domain events emitted through the telemetry {@link EventBus} (slice 6a of
- * telemetry/storage). These power the live dashboard: the real-time tool-call
+ * Domain events emitted through the telemetry {@link TelemetryEventBus} (slice 6a
+ * of telemetry/storage). These power the live dashboard: the real-time tool-call
  * stream plus the intervention log.
  *
  * Relationship to the port's {@link PolicyEvent} (`src/ports/domain.ts`):
@@ -22,12 +22,13 @@
 import type { ActionEffect } from '../policy/actions';
 
 /**
- * Minimal emitter surface shared by the port-level `EventBus`
- * (`src/ports/event-bus.ts`) and the telemetry {@link TelemetryEventBus}
+ * Minimal emitter surface shared by the {@link TelemetryEventBus} port
+ * (`src/ports/telemetry.ts`) and the telemetry {@link TelemetryEventBus}
  * (`./event-bus`): both expose an `emit(event)` method, so either bus instance can
  * be handed directly to emission code. Declared as a method (not a function-typed
- * property) with a deliberately permissive parameter type so BOTH bus levels remain
- * structurally assignable under `strictFunctionTypes`.
+ * property) with a deliberately permissive parameter type so a `TelemetryEventBus`
+ * (and the broader emitter surface it is assignable to) remains structurally
+ * assignable under `strictFunctionTypes`.
  */
 export interface TelemetryEmitter {
   /** Emit an event to all current subscribers (the parameter is intentionally permissive). */
@@ -131,5 +132,5 @@ export type TurnUsageEvent = {
   at: number;
 };
 
-/** Any event published through the telemetry {@link EventBus}. */
+/** Any event published through the telemetry {@link TelemetryEventBus}. */
 export type TelemetryEvent = ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent;

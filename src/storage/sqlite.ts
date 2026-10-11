@@ -1,5 +1,6 @@
 /**
- * SQLite-backed {@link Storage} repository (slice 6c-ii of telemetry/storage).
+ * SQLite-backed {@link TelemetryStorage} repository (slice 6c-ii of
+ * telemetry/storage).
  *
  * Built on Node's built-in {@link https://nodejs.org/api/sqlite.html
  * `node:sqlite`} (`DatabaseSync`) — no external dependency. It persists the
@@ -7,28 +8,27 @@
  * {@link module:./schema|`schema.ts`} and answers the aggregate queries the
  * live dashboard needs (counts, top tools, newest-first intervention log).
  *
- * Relationship to the port's `Storage` (`src/ports/storage.ts`):
+ * Relationship to the port (`src/ports/telemetry.ts` {@link TelemetryStorage}):
  *
- * This mirrors that port's **observable method surface** — implementing every one
- * of its methods (`getRule` / `listRules` / `saveRule`, `getEvent` /
- * `listEvents` / `saveEvent`, `queryAggregates`, `close`) while **specializing**
- * for the concrete telemetry model: it adds field-typed write methods
- * ({@link SqliteStorage.recordToolCall} / `recordIntervention`) operating on the
- * {@link ToolCallEvent} / {@link InterventionEvent} union plus aggregate queries
- * ({@link SqliteStorage.getCounts} / `getTopTools` / `getInterventions`). The
- * rule/event methods persist as JSON rows so the whole object stays genuinely
- * SQLite-backed and consistent across re-opens.
+ * It satisfies the port's telemetry-specific write surface
+ * ({@link SqliteStorage.recordToolCall} / `recordIntervention`) and adds the
+ * concrete field-typed write methods operating on the {@link ToolCallEvent} /
+ * {@link InterventionEvent} union plus aggregate queries
+ * ({@link SqliteStorage.getCounts} / `getTopTools` / `getInterventions`). It
+ * also exposes a broader rule/event persistence surface (the `getRule` /
+ * `listRules` / `saveRule`, `getEvent` / `listEvents` / `saveEvent`,
+ * `queryAggregates`, `close` methods) which persists as JSON rows so the whole
+ * object stays genuinely SQLite-backed and consistent across re-opens.
  *
  * The single deliberate specialization is `close()`: it is **synchronous**
- * (`void`) because `DatabaseSync.close()` is synchronous, rather than the
- * generic port's async `Promise<void>`. Like `TelemetryEventBus` reconciling
- * with the `EventBus` port, a returned {@link SqliteStorage} is used wherever a
- * specialized telemetry storage is expected, rather than as a raw structural
- * subtype of the generic `Storage` interface.
+ * (`void`) because `DatabaseSync.close()` is synchronous. Like `TelemetryEventBus`
+ * satisfying the {@link TelemetryEventBus} port, a returned {@link SqliteStorage}
+ * is used wherever a specialized telemetry storage is expected.
  */
 import { DatabaseSync } from 'node:sqlite';
 import { applyMigrations } from './schema';
 import type { Rule, PolicyEvent } from '../ports/domain';
+import type { TelemetryStorage } from '../ports/telemetry';
 import type { ToolCallEvent, InterventionEvent } from '../telemetry/events';
 
 /** Options for {@link createSqliteStorage}. */
@@ -56,9 +56,9 @@ export interface Counts {
 /**
  * A SQLite-backed storage repository specialized for the telemetry stream.
  *
- * Implements the full observable method surface of the `Storage` port plus the
- * concrete telemetry-specific write/query methods; see the module doc comment
- * for the relationship (the only specialization is the synchronous `close()`).
+ * Satisfies the {@link TelemetryStorage} port plus the concrete
+ * telemetry-specific write/query methods; see the module doc comment for the
+ * relationship (the only specialization is the synchronous `close()`).
  */
 export interface SqliteStorage {
   // --- concrete telemetry API (the primary purpose) -------------------------
@@ -77,7 +77,7 @@ export interface SqliteStorage {
   /** Close the underlying database synchronously. */
   close(): void;
 
-  // --- Storage-port observable surface --------------------------------------
+  // --- broader rule/event persistence surface ------------------------------
   /** Load a rule by id, or `null` if absent. */
   getRule(id: string): Promise<Rule | null>;
   /** List all rules. */

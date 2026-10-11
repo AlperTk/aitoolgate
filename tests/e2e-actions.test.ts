@@ -11,6 +11,7 @@ import {
   createRewriteArgsAction,
 } from '../src/policy/actions';
 import { createToolNameMatcher } from '../src/policy/matchers';
+import { closeHttpServer } from './helpers';
 
 /**
  * End-to-end coverage for the FOUR policy action types. Each case drives REAL HTTP
@@ -60,10 +61,6 @@ function portOf(server: http.Server): number {
   return address.port;
 }
 
-async function closeServer(server: http.Server): Promise<void> {
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-}
 
 interface FakeModel {
   server: http.Server;
@@ -101,7 +98,7 @@ async function createFakeModel(initialCanned: unknown): Promise<FakeModel> {
     setCanned: (canned: unknown) => {
       current = canned;
     },
-    close: () => closeServer(server),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -272,7 +269,7 @@ test('e2e actions: hideTool removes the named tool from the forwarded tools AND 
     assert.ok(names.includes(KEPT), `'${KEPT}' should still be present in the forwarded tools`);
     assert.ok(!JSON.stringify(forwarded).includes(HIDDEN), 'no reference to the hidden tool may remain anywhere in the forwarded request');
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -313,7 +310,7 @@ test('e2e actions: injectMessage inserts the corrective message into the forward
     const injected = forwarded.messages!.find((message) => hasContent(message, INJECT_CONTENT));
     assert.equal((injected as Msg | undefined)?.role, 'user', 'the injected message carries the configured role');
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -378,7 +375,7 @@ test('e2e actions: rewriteArgs rewrites only the matched tool call\u2019s argume
     const web = calls.find((call) => call.name === OTHER);
     assert.ok(web !== undefined && JSON.stringify(web.arguments).includes('hello'), 'web_search arguments are left untouched');
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -428,7 +425,7 @@ test('e2e actions: block denies only the matched tool call, leaving unmatched ca
     assert.ok(!names.includes(BLOCKED), `'${BLOCKED}' must be blocked out of the forwarded request`);
     assert.ok(names.includes(OTHER), `'${OTHER}' is NOT matched by the rule and must survive in the forwarded request`);
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -478,7 +475,7 @@ test('e2e actions: block drops the model-issued call from the client response an
     await res2.json();
     assert.ok(hasMessageWithContent(fakeModel.requests[1], BLOCK_FEEDBACK), 'the block denial feedback must be injected into the next same-session request');
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });

@@ -13,12 +13,9 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type McmServer } from '../src/server/index';
+import { startMcmServer, closeMcmServer } from './helpers';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
-
-type ServerOpts = Parameters<typeof createServer>[1];
-type MountOpts = Parameters<typeof createServer>[2];
 
 const isToolCall = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.call' }> => e.type === 'tool.call';
 const isToolResult = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.result' }> => e.type === 'tool.result';
@@ -49,32 +46,6 @@ function toolRes(id: string, name: string, content: string): Record<string, unkn
   return { role: 'tool', tool_call_id: id, name, content };
 }
 
-// --- server lifecycle ----------------------------------------------------------
-async function startServer(opts: ServerOpts, mount?: MountOpts): Promise<{ port: number; srv: McmServer; mcm: NonNullable<McmServer['mcm']> }> {
-  const srv = createServer(0, opts, mount); // auto-listens on an ephemeral port
-  await new Promise<void>((resolve, reject) => {
-    if (srv.listening) resolve();
-    else {
-      srv.once('listening', () => resolve());
-      srv.once('error', reject);
-    }
-  });
-  const addr = srv.address();
-  if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('server.mcm test handle is missing');
-  return { port: addr.port, srv, mcm };
-}
-async function closeServer(srv: McmServer): Promise<void> {
-  try {
-    srv.closeAllConnections();
-  } catch {
-    /* ignore */
-  }
-  await new Promise<void>((resolve) => {
-    srv.close(() => resolve());
-  });
-}
 async function post(port: number, path: string, body: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<Response> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
   return fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
@@ -107,7 +78,7 @@ test('N parallel same-name same-turn tool calls pair into N distinct stable-id t
     { role: 'system', content: 'You are a helpful assistant.' },
     { role: 'user', content: `Read ${N} files in parallel.` },
   ];
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
@@ -154,6 +125,6 @@ test('N parallel same-name same-turn tool calls pair into N distinct stable-id t
     assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending after the single follow-up');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });

@@ -2,16 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type http from 'node:http';
 import { createServer } from '../src/server/index';
-import type { FetchLike } from '../src/proxy/upstream';
+import { makeMockFetch, closeHttpServer } from './helpers';
 
-/** Build a mock upstream (fetch) that always returns a canned OpenAI response. */
-function makeMockFetch(canned: unknown): FetchLike {
-  return async () =>
-    new Response(JSON.stringify(canned), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-}
 
 function listen(server: http.Server): Promise<void> {
   return new Promise((resolve) => {
@@ -28,10 +20,6 @@ function portOf(server: http.Server): number {
   return address.port;
 }
 
-async function closeServer(server: http.Server): Promise<void> {
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-}
 
 test('POST /v1/chat/completions returns the upstream response (openai → openai)', async () => {
   const upstreamCanned = {
@@ -73,7 +61,7 @@ test('POST /v1/chat/completions returns the upstream response (openai → openai
     const body: unknown = await res.json();
     assert.deepEqual(body, upstreamCanned);
   } finally {
-    await closeServer(server);
+    await closeHttpServer(server);
   }
 });
 
@@ -141,7 +129,7 @@ test('POST /v1/messages returns a correctly-translated Anthropic response (anthr
     assert.equal(body.usage.input_tokens, 3);
     assert.equal(body.usage.output_tokens, 4);
   } finally {
-    await closeServer(server);
+    await closeHttpServer(server);
   }
 });
 
@@ -164,6 +152,6 @@ test('GET /v1/models returns the configured model(s)', async () => {
     assert.equal(body.object, 'list');
     assert.deepEqual(body.data.map((m) => m.id), ['gpt-4o-mini']);
   } finally {
-    await closeServer(server);
+    await closeHttpServer(server);
   }
 });

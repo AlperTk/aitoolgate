@@ -21,19 +21,13 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createServer, type McmServer } from '../src/server/index';
 import { createRuleStore } from '../src/api/ruleStore';
+import { closeMcmServer, oaiCanned } from './helpers';
 
 const HIDDEN = 'task';
 const KEPT = 'web_search';
 
 /** Canned OpenAI non-streaming completion returned by the mock upstream. */
-const OAI_CANNED = {
-  id: 'chatcmpl-runtime-rules',
-  object: 'chat.completion',
-  created: 1700000000,
-  model: 'gpt-4o-mini',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const OAI_CANNED = oaiCanned('chatcmpl-runtime-rules');
 
 /** The tool definitions a fresh inbound request advertises (hidden + kept). */
 function openAiTools(): unknown[] {
@@ -76,14 +70,6 @@ async function startServer(
   return { port: addr.port, srv };
 }
 
-async function closeServer(srv: McmServer): Promise<void> {
-  try {
-    srv.closeAllConnections();
-  } catch {
-    /* ignore */
-  }
-  await new Promise<void>((resolve) => srv.close(() => resolve()));
-}
 
 test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart', async () => {
   // The single live rule store: REST writes here, the proxy engine reads it live.
@@ -166,7 +152,7 @@ test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart',
     assert.ok(!names.includes(HIDDEN), `'${HIDDEN}' must be excluded from the forwarded tools by the runtime-added rule`);
     assert.ok(names.includes(KEPT), `'${KEPT}' should still be present in the forwarded tools`);
   } finally {
-    if (srv) await closeServer(srv);
+    if (srv) await closeMcmServer(srv);
     try {
       upstream.closeAllConnections();
     } catch {

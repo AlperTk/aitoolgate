@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import type { ApiProvider } from './providerSpec';
+import { createCrudStore, type CrudCtx } from './crudStore';
 
 /** Options for {@link createApiProviderStore}. */
 export interface ProviderStoreOptions {
@@ -52,9 +52,12 @@ export interface ApiProviderStore {
   size(): number;
 }
 
-/** Shallow-copy a provider so callers can't mutate the stored instance via a reference. */
-function copyProvider(provider: ApiProvider): ApiProvider {
-  return { ...provider };
+/** The provider's domain-specific extra surface on top of the shared CRUD base (the ≤1-active invariant). */
+interface ProviderStoreExtras {
+  /** Make the provider at `id` the sole active row (clears others). `true` if the row existed. */
+  setActive(id: string): boolean;
+  /** The single currently-active provider (copy), or `undefined` when none is active. */
+  getActive(): ApiProvider | undefined;
 }
 
 /** Merge a validated {@link ProviderPatch} into an existing record, touching known fields only. */
@@ -69,103 +72,86 @@ function mergePatch(existing: ApiProvider, patch: ProviderPatch): ApiProvider {
   return merged;
 }
 
-/** Build an in-memory {@link ApiProviderStore}, preserving the ≤1-active invariant throughout. */
+/** Clear every row's active flag. */
+function clearAllActive(byId: Map<string, ApiProvider>): void {
+  for (const rec of byId.values()) rec.isActive = false;
+}
+
+/** Clear every row then mark exactly `id` active (no-op when the id is unknown). */
+function markActive(id: string, byId: Map<string, ApiProvider>): void {
+  clearAllActive(byId);
+  if (byId.has(id)) byId.get(id)!.isActive = true;
+}
+
+/** Safety net: collapse any accidental multi-active state down to at most one row. */
+function reconcileSingleActive(prefer: string | undefined, byId: Map<string, ApiProvider>): void {
+  let kept: string | undefined;
+  for (const rec of byId.values()) {
+    if (!rec.isActive) continue;
+    if (prefer === undefined && kept === undefined) kept = rec.id;
+    else rec.isActive = false;
+  }
+}
+
+/**
+ * Build an in-memory {@link ApiProviderStore} over the shared {@link
+ * createCrudStore} base, preserving the ≤1-active invariant throughout. The base
+ * holds the defensive-copy / seed / reset / id-assignment boilerplate; the
+ * default-filling in `toStored` and the active-invariant hooks below stay here.
+ */
 export function createApiProviderStore(options: ProviderStoreOptions = {}): ApiProviderStore {
-  // Detached snapshot of the initial rows (copies) used as the reset baseline. Inserted
-  // verbatim (flags preserved) — seeding never forces activation on its own.
-  const initial: ApiProvider[] = (options.initial ?? []).map(copyProvider);
-  const byId = new Map<string, ApiProvider>(initial.map((p) => [p.id, p]));
-
-  function restoreInitial(): void {
-    byId.clear();
-    for (const p of initial) byId.set(p.id, p);
-  }
-
-  function clearAllActive(): void {
-    for (const rec of byId.values()) rec.isActive = false;
-  }
-
-  /** Clear every row then mark exactly `id` active (no-op when the id is unknown). */
-  function markActive(id: string): void {
-    clearAllActive();
-    if (byId.has(id)) byId.get(id)!.isActive = true;
-  }
-
-  /** Safety net: collapse any accidental multi-active state down to at most one row. */
-  function reconcileSingleActive(prefer?: string): void {
-    let kept: string | undefined;
-    for (const rec of byId.values()) {
-      if (!rec.isActive) continue;
-      if (prefer === undefined && kept === undefined) kept = rec.id;
-      else rec.isActive = false;
-    }
-  }
-
-  return {
-    list() {
-      return [...byId.values()].map(copyProvider);
+  return createCrudStore<ApiProvider, Partial<ApiProvider>, ProviderPatch, ProviderStoreExtras>({
+    initial: options.initial,
+    // Apply the provider defaults (a full record); the base assigns a unique id when missing/empty.
+    toStored: (provider) => ({
+      id: provider.id ?? '',
+      name: provider.name ?? '',
+      baseUrl: provider.baseUrl ?? '',
+      model: provider.model ?? '',
+      apiKey: provider.apiKey ?? null,
+      protocol: provider.protocol ?? 'openai',
+      isActive: provider.isActive ?? false,
+      createdAt: provider.createdAt ?? Date.now(),
+    }),
+    // Auto-first activation OR an explicit request makes this row THE active one.
+    afterStore: (stored, wasEmpty, ctx) => {
+      if (wasEmpty || stored.isActive) markActive(stored.id, ctx.byId);
+      else reconcileSingleActive(undefined, ctx.byId);
     },
-    get(id) {
-      const found = byId.get(id);
-      return found === undefined ? undefined : copyProvider(found);
-    },
-    add(provider) {
-      const wasEmpty = byId.size === 0;
-      const wantsActive = provider.isActive === true;
-      const stored: ApiProvider = {
-        id: typeof provider.id === 'string' && provider.id.length > 0 ? provider.id : randomUUID(),
-        name: provider.name ?? '',
-        baseUrl: provider.baseUrl ?? '',
-        model: provider.model ?? '',
-        apiKey: provider.apiKey ?? null,
-        protocol: provider.protocol ?? 'openai',
-        isActive: provider.isActive ?? false,
-        createdAt: provider.createdAt ?? Date.now(),
-      };
-      byId.set(stored.id, stored);
-      // Auto-first activation OR an explicit request makes this row THE active one.
-      if (wasEmpty || wantsActive) markActive(stored.id);
-      else reconcileSingleActive(undefined);
-      return copyProvider(stored);
-    },
-    update(id, patch) {
-      const existing = byId.get(id);
+    update: (id, patch, ctx) => {
+      const existing = ctx.byId.get(id);
       if (existing === undefined) return undefined;
       const updated = mergePatch(existing, patch);
-      byId.delete(id);
-      byId.set(updated.id, updated);
+      ctx.byId.delete(id);
+      ctx.byId.set(updated.id, updated);
       // Reconcile the single-active invariant based on whether/what changed here.
-      if ('isActive' in patch && updated.isActive) markActive(updated.id);
-      else reconcileSingleActive(updated.isActive ? updated.id : undefined);
-      return copyProvider(updated);
+      if ('isActive' in patch && updated.isActive) markActive(updated.id, ctx.byId);
+      else reconcileSingleActive(updated.isActive ? updated.id : undefined, ctx.byId);
+      return ctx.copy(updated);
     },
-    setActive(id) {
-      const exists = byId.has(id);
-      if (exists) markActive(id);
-      return exists;
-    },
-    getActive() {
-      for (const rec of byId.values()) {
-        if (rec.isActive) return copyProvider(rec);
-      }
-      return undefined;
-    },
-    remove(id) {
-      const target = byId.get(id);
-      const removed = byId.delete(id);
+    remove: (id, ctx) => {
+      const target = ctx.byId.get(id);
+      const removed = ctx.byId.delete(id);
       if (!removed) return false;
-      if (target?.isActive && byId.size > 0) {
+      if (target?.isActive && ctx.byId.size > 0) {
         // Promote the lexicographically-lowest-id remaining provider to active.
-        const ids = [...byId.keys()].sort();
-        markActive(ids[0]);
+        const ids = [...ctx.byId.keys()].sort();
+        markActive(ids[0], ctx.byId);
       }
       return true;
     },
-    reset() {
-      restoreInitial();
-    },
-    size() {
-      return byId.size;
-    },
-  };
+    extras: (ctx) => ({
+      setActive(id) {
+        const exists = ctx.byId.has(id);
+        if (exists) markActive(id, ctx.byId);
+        return exists;
+      },
+      getActive() {
+        for (const rec of ctx.byId.values()) {
+          if (rec.isActive) return ctx.copy(rec);
+        }
+        return undefined;
+      },
+    }),
+  });
 }

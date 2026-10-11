@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { loadConfig } from '../../config/config';
 import { createProxyHandler, type ProxyOptions, type ProxyHandler } from '../proxy/index';
+import { defaultProxyDefaults } from '../composition';
 import { createApiHandler, type RequestHandler } from '../api/http';
 import { createWsServer, type WsServer } from '../api/ws';
 import { createRuleStore, type RuleStore } from '../api/ruleStore';
@@ -18,7 +19,7 @@ import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
 import { createCollector, type Collector } from '../telemetry/collector';
 import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
 import { createSqliteStorage, type SqliteStorage } from '../storage/sqlite';
-import type { PolicyRule } from '../policy/ruleEngine';
+import { flagshipLoopRule, type PolicyRule } from '../policy/ruleEngine';
 
 /**
  * Optional configuration for mounting the REST API, WebSocket server, and
@@ -286,16 +287,24 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     ruleStore = createRuleStore(mount?.initialRules ? { initial: mount.initialRules } : {});
   }
 
-  // The policy stage evaluates against the LIVE rule collection: statically supplied
-  // rules PLUS whatever the REST rule store holds at evaluation time. A caller that
-  // already wires its own `rules` source (array or getter, per the full-stack
-  // convention) is honored as-is. An empty collection is a clean no-op, so request
+  // The policy stage evaluates against the LIVE rule collection: the always-on built-in
+  // flagship loop rule PLUS any statically supplied rules PLUS whatever the REST rule
+  // store holds at evaluation time. A caller that already wires its own `rules` source
+  // (array or getter, per the full-stack convention) is honored as-is. An empty
+  // store-backed collection (beyond the built-in) is a clean no-op, so request
   // passthrough is never altered.
+  //
+  // The flagship rule is spliced in here at WIRING time — it is NEVER added to the rule
+  // store, so `ruleStore.list()` stays clean, it is never persisted, and it is re-added
+  // on restart without a DB seed (the persistent store's seed/persist skip it by id).
+  // Evaluated first via its stable low priority (see FLAGSHIP_RULE_PRIORITY in ruleEngine).
   const callerRules = options?.policy?.rules;
+  const flagshipRule = flagshipLoopRule();
   const policyRules: PolicyRule[] | (() => PolicyRule[]) =
     typeof callerRules === 'function'
       ? callerRules
       : () => [
+          flagshipRule,
           ...(Array.isArray(callerRules) ? callerRules : []),
           ...ruleStore.list(),
         ];
@@ -361,6 +370,14 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   }
   applyActiveProvider(apiProviderStore.getActive()); // initialize consistent state once after seeding
 
+  // The server is the SINGLE composition root: it builds the policy stage from the
+  // LIVE rules getter (re-resolved on every evaluation) + the shared bus and injects
+  // it, so the proxy itself never imports a concrete policy factory. A caller that
+  // already supplied a pre-built stage (or a custom feedback store) is honored as-is.
+  const callerPolicy = options?.policy;
+  const policyStage =
+    callerPolicy?.stage ??
+    defaultProxyDefaults.makePolicyStage(policyRules, callerPolicy?.feedback, bus);
   const proxyOptions: ProxyOptions = {
     ...(options ?? {}),
     // Pass the SAME mutable reference captured above so per-request field reads observe live changes.
@@ -369,9 +386,14 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     // that share the configured bus so the live view always sees the stage's events.
     telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
     toolResultStore,
+    // Explicitly inject the concrete defaults bundle (the SSE extractor factory + timing/
+    // estimation helpers) so the server stays the single composition root for ALL telemetry
+    // wiring; the proxy sources `makeSseExtractor` / `usage` from this injected port.
+    defaults: defaultProxyDefaults,
     policy: {
-      ...(options?.policy ?? {}),
+      ...(callerPolicy ?? {}),
       rules: policyRules,
+      stage: policyStage,
     },
   };
   const handleProxyRequest: ProxyHandler = createProxyHandler(proxyOptions);

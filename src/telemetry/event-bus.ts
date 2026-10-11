@@ -2,16 +2,15 @@
  * In-memory telemetry event bus (Observer pattern). Synchronous, timer-free
  * dispatch for the {@link TelemetryEvent} union.
  *
- * Relationship to the port's `EventBus` (`src/ports/event-bus.ts`):
+ * Relationship to the port (`src/ports/telemetry.ts` {@link TelemetryEventBus}):
  *
  * This mirrors that port's **observable method surface** — the same method names
  * (`subscribe` returns an unsubscribe function; `emit` returns `Promise<void>`)
- * and the same synchronous-dispatch semantics — but **specialized** so handlers
- * receive the concrete, field-typed {@link TelemetryEvent} union rather than the
- * generic {@link PolicyEvent} payload bag. Because `TelemetryEvent` is a strict
- * narrowing of the port's event space, the returned bus is used wherever a
- * telemetry `TelemetryEventBus` is expected (e.g. wiring the live dashboard),
- * rather than as a raw structural subtype of the generic `EventBus` interface.
+ * and the same synchronous-dispatch semantics — so the returned bus structurally
+ * satisfies the port. Because {@link TelemetryEvent} is a strict, field-typed
+ * narrowing of the generic {@link PolicyEvent} payload bag, a returned bus is used
+ * wherever a telemetry `TelemetryEventBus` is expected (e.g. wiring the live
+ * dashboard or the model proxy).
  */
 import type { TelemetryEvent } from './events';
 

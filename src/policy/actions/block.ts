@@ -1,4 +1,7 @@
-import type { Action, Match, PolicyContext } from '../types';
+import type { Action, Match, PolicyContext, ActionStrategy, SessionKey } from '../types';
+import type { RequestContext, ResponseContext } from '../../ports';
+import type { PolicyAction } from '../ruleEngine';
+import type { FeedbackMessage } from '../feedbackStore';
 
 /**
  * The effect a policy {@link Action} applies to the stream when a rule fires.
@@ -73,6 +76,84 @@ export function createBlockAction(config: BlockActionConfig): Action {
       return effect;
     },
   };
+}
+
+/**
+ * The `block` action strategy: applies a `block` effect (drop the offending tool
+ * call(s) from a request; drop them from a response AND queue never-silent
+ * feedback), describes it, and validates/builds its wire spec.
+ */
+export const blockStrategy: ActionStrategy = {
+  type: 'block',
+
+  applyRequest(ctx: RequestContext, effect: ActionEffect): void {
+    const block = effect as Extract<ActionEffect, { type: 'block' }>;
+    withAssistantToolCalls(ctx.messages, (message, toolCalls) => {
+      if (block.toolCallIds === undefined) {
+        message.tool_calls = [];
+      } else {
+        const blocked = new Set(block.toolCallIds);
+        message.tool_calls = toolCalls.filter(
+          (toolCall) => !(isRecord(toolCall) && typeof toolCall.id === 'string' && blocked.has(toolCall.id)),
+        );
+      }
+    });
+  },
+
+  applyResponse(
+    ctx: ResponseContext,
+    effect: ActionEffect,
+    sessionKey: SessionKey,
+    queue: (key: string | SessionKey, message: FeedbackMessage) => void,
+  ): void {
+    const block = effect as Extract<ActionEffect, { type: 'block' }>;
+    // Drop the offending tool call(s) from the response. When `toolCallIds` is
+    // omitted, block every call carried on the context.
+    if (ctx.toolCalls.length > 0) {
+      if (block.toolCallIds === undefined) {
+        ctx.toolCalls = [];
+      } else {
+        const blocked = new Set(block.toolCallIds);
+        ctx.toolCalls = ctx.toolCalls.filter((call) => !blocked.has(call.id));
+      }
+    }
+    // A block is never silent: queue its feedback for the next request.
+    queue(sessionKey, { role: 'user', content: block.message });
+  },
+
+  describe(effect: ActionEffect): string {
+    const block = effect as Extract<ActionEffect, { type: 'block' }>;
+    return block.toolCallIds !== undefined
+      ? `blocked ${block.toolCallIds.length} tool call(s) (${block.message})`
+      : `blocked all tool calls (${block.message})`;
+  },
+
+  validateSpec(_spec: unknown): string | null {
+    // `block` has no required fields (reason / message / template are all optional).
+    return null;
+  },
+
+  buildSpec(spec: unknown): PolicyAction {
+    const record = spec as Record<string, unknown>;
+    const config: BlockActionConfig = {};
+    if (typeof record.reason === 'string') config.reason = record.reason;
+    if (typeof record.message === 'string') config.message = record.message;
+    if (typeof record.template === 'string') config.template = record.template;
+    return createBlockAction(config) as PolicyAction;
+  },
+};
+
+/** Visit each assistant message that carries an OpenAI-style `tool_calls` list. */
+function withAssistantToolCalls(
+  messages: unknown[],
+  mutate: (message: Record<string, unknown>, toolCalls: unknown[]) => void,
+): void {
+  for (const message of messages) {
+    if (!isRecord(message) || message.role !== 'assistant') continue;
+    const toolCalls = message.tool_calls;
+    if (!Array.isArray(toolCalls)) continue;
+    mutate(message, toolCalls);
+  }
 }
 
 /**

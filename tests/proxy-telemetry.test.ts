@@ -3,18 +3,11 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type http from 'node:http';
 import { createProxyHandler } from '../src/proxy/index';
-import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
+import type { UpstreamClient } from '../src/proxy/upstream';
+import { makeMockFetch } from './helpers';
 import { createSqliteStorage } from '../src/storage/sqlite';
 import { flagshipLoopRule } from '../src/policy/ruleEngine';
 
-/** Build a mock upstream (fetch) that always returns a canned OpenAI response. */
-function makeMockFetch(canned: unknown): FetchLike {
-  return async () =>
-    new Response(JSON.stringify(canned), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-}
 
 /** Minimal ServerResponse-shaped sink capturing status + body for inspection. */
 interface MockResponse extends http.ServerResponse {

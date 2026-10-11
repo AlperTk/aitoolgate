@@ -1,5 +1,8 @@
-import type { ModelConfig, ToolCall } from './domain';
-import type { RequestContext, ResponseContext, ResultContext } from './pipeline';
+import type {
+  RequestContext,
+  ResponseContext,
+  ResultContext,
+} from './pipeline';
 
 /** The contexts any matcher/action can observe (request / response / result). */
 export type PolicyContext = RequestContext | ResponseContext | ResultContext;
@@ -22,23 +25,4 @@ export interface Action {
   readonly name: string;
   /** Apply the behavior to the context. */
   apply(ctx: PolicyContext): void;
-}
-
-/**
- * Supplies injectable tools (e.g. MCP servers, skills) as plugins (Strategy).
- */
-export interface ToolProvider {
-  /** Stable id for this provider. */
-  readonly id: string;
-  /** Tool definitions contributed by this provider. */
-  listTools(): Promise<ToolCall[]> | ToolCall[];
-}
-
-/**
- * Chooses the upstream model for a request (Strategy).
- * v1: single configured model; extensible to per-client routing / fallback.
- */
-export interface ModelRouter {
-  /** Route the request to the model it should be forwarded to. */
-  route(ctx: RequestContext): Promise<ModelConfig> | ModelConfig;
 }

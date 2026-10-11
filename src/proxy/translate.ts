@@ -12,6 +12,9 @@ import type {
   OpenAIContent,
   OpenAIToolCall,
 } from './types';
+import type { ResponseContext } from '../ports/pipeline';
+import type { ToolCall } from '../ports/domain';
+import { normalizeUsage, parseArgs, isRecord } from '../telemetry/protocol-common';
 
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -23,17 +26,6 @@ function extractOpenAIText(content: OpenAIContent | undefined): string {
     .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
     .map((part) => part.text)
     .join('');
-}
-
-/** Parse a JSON tool-call argument string into an object (defaults to `{}`). */
-function parseArgs(args: string | undefined): Record<string, unknown> {
-  if (args == null || args.trim() === '') return {};
-  try {
-    const parsed: unknown = JSON.parse(args);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
 }
 
 function toAnthropicTool(tool: OpenAIFunctionTool): AnthropicTool {
@@ -87,7 +79,7 @@ export function openaiToAnthropicRequest(request: OpenAIChatRequest): AnthropicR
         type: 'tool_use',
         id: toolCall.id,
         name: toolCall.function.name,
-        input: parseArgs(toolCall.function.arguments),
+        input: parseArgs(toolCall.function.arguments) ?? {},
       });
     }
     if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
@@ -179,7 +171,7 @@ export function openaiResponseToAnthropic(response: OpenAIChatResponse): Anthrop
       type: 'tool_use',
       id: toolCall.id,
       name: toolCall.function.name,
-      input: parseArgs(toolCall.function.arguments),
+      input: parseArgs(toolCall.function.arguments) ?? {},
     });
   }
   if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
@@ -192,22 +184,15 @@ export function openaiResponseToAnthropic(response: OpenAIChatResponse): Anthrop
   // (and thus the translated total) when present. Carrying only the cache hit keeps the
   // translated total (input_tokens + cache_read_input_tokens + output_tokens) reconciling with
   // the source's true total (prompt_tokens + completion_tokens).
-  const usageRecord = (response.usage ?? {}) as Record<string, unknown>;
-  const prompt = typeof usageRecord.prompt_tokens === 'number' ? usageRecord.prompt_tokens : 0;
-  const completion = typeof usageRecord.completion_tokens === 'number' ? usageRecord.completion_tokens : 0;
-  const details =
-    typeof usageRecord.prompt_tokens_details === 'object' && usageRecord.prompt_tokens_details !== null
-      ? (usageRecord.prompt_tokens_details as Record<string, unknown>)
-      : undefined;
-  const cached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
+  const neutral = normalizeUsage(response.usage);
   const usage: {
     input_tokens: number;
     output_tokens: number;
     cache_read_input_tokens?: number;
   } = {
-    input_tokens: Math.max(0, prompt - cached),
-    output_tokens: completion,
-    ...(cached > 0 ? { cache_read_input_tokens: cached } : {}),
+    input_tokens: neutral?.input ?? 0,
+    output_tokens: neutral?.output ?? 0,
+    ...(neutral?.cacheHitInput ? { cache_read_input_tokens: neutral.cacheHitInput } : {}),
   };
   return {
     id: response.id,
@@ -245,12 +230,11 @@ export function anthropicResponseToOpenAI(response: AnthropicResponse): OpenAICh
   // OpenAI `prompt_tokens` is the TOTAL input (includes cached), with the cache hit on
   // `prompt_tokens_details.cached_tokens`. Anthropic's base `input_tokens` excludes cache tokens,
   // so total input = input_tokens + cache_creation + cache_read; the cache read is the hit.
-  const usageRecord = (response.usage ?? {}) as Record<string, unknown>;
-  const input = typeof usageRecord.input_tokens === 'number' ? usageRecord.input_tokens : 0;
-  const output = typeof usageRecord.output_tokens === 'number' ? usageRecord.output_tokens : 0;
-  const cacheRead = typeof usageRecord.cache_read_input_tokens === 'number' ? usageRecord.cache_read_input_tokens : 0;
-  const cacheCreation = typeof usageRecord.cache_creation_input_tokens === 'number' ? usageRecord.cache_creation_input_tokens : 0;
-  const promptTokens = input + cacheCreation + cacheRead;
+  const neutral = normalizeUsage(response.usage);
+  const baseInput = neutral?.input ?? 0;
+  const cacheHit = neutral?.cacheHitInput ?? 0;
+  const output = neutral?.output ?? 0;
+  const promptTokens = baseInput + cacheHit;
   const usage: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -260,7 +244,7 @@ export function anthropicResponseToOpenAI(response: AnthropicResponse): OpenAICh
     prompt_tokens: promptTokens,
     completion_tokens: output,
     total_tokens: promptTokens + output,
-    ...(cacheRead > 0 ? { prompt_tokens_details: { cached_tokens: cacheRead } } : {}),
+    ...(cacheHit > 0 ? { prompt_tokens_details: { cached_tokens: cacheHit } } : {}),
   };
   return {
     id: response.id,
@@ -318,4 +302,106 @@ function mapStopReasonToFinishReason(reason: string): string {
     default:
       return 'stop';
   }
+}
+
+/**
+ * Rehydrate the raw wire response body from the (possibly-edited) provider-agnostic
+ * tool-call list (+ content), respecting the provider shape the raw body carries
+ * (OpenAI `choices[].message.tool_calls`; Anthropic assistant `content[]` with
+ * `tool_use` blocks). Mutates the raw body in place and is idempotent: when the view
+ * is unchanged from the pre-pipeline `original` summary, the raw body is left
+ * byte-for-byte identical to the upstream response.
+ */
+export function syncResponseBody(
+  ctx: ResponseContext,
+  original: { toolCalls: ToolCall[]; content: string },
+): void {
+  const raw = ctx.raw;
+  if (!isRecord(raw)) return;
+  // Only touch the wire when the provider-agnostic view actually differs from what
+  // the upstream returned, so an unedited passthrough is returned unchanged.
+  if (ctx.content === original.content && toolCallsEqual(ctx.toolCalls, original.toolCalls)) return;
+  const protocol = detectResponseProtocol(raw);
+  if (protocol === 'openai') rehydrateOpenAIResponse(raw, ctx.toolCalls);
+  else if (protocol === 'anthropic') rehydrateAnthropicResponse(raw, ctx.toolCalls);
+}
+
+/** Classify a raw response body by provider shape (`unknown` → no rehydration). */
+function detectResponseProtocol(raw: Record<string, unknown>): 'openai' | 'anthropic' | 'unknown' {
+  const choices = raw.choices;
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      if (isRecord(choice) && isRecord(choice.message)) return 'openai';
+    }
+  }
+  if (Array.isArray(raw.content)) return 'anthropic';
+  return 'unknown';
+}
+
+/** Overwrite/clear each OpenAI assistant `choices[].message.tool_calls` from the view. */
+function rehydrateOpenAIResponse(raw: Record<string, unknown>, toolCalls: ToolCall[]): void {
+  const choices = raw.choices;
+  if (!Array.isArray(choices)) return;
+  for (const choice of choices) {
+    if (!isRecord(choice)) continue;
+    const message = choice.message;
+    if (!isRecord(message)) continue;
+    if (toolCalls.length > 0) {
+      message.tool_calls = toolCalls.map((tc) => ({
+        id: tc.id,
+        type: 'function',
+        function: { name: tc.name, arguments: JSON.stringify(tc.arguments ?? {}) },
+      }));
+    } else {
+      delete message.tool_calls;
+    }
+  }
+}
+
+/** Rebuild an Anthropic assistant `content[]` from non-tool blocks + fresh `tool_use` blocks. */
+function rehydrateAnthropicResponse(raw: Record<string, unknown>, toolCalls: ToolCall[]): void {
+  const content = raw.content;
+  if (!Array.isArray(content)) return;
+  // Keep non-`tool_use` blocks (e.g. text) in their original order, then emit one
+  // `tool_use` block per remaining tool call (drops clear them, rewrites update them).
+  const blocks: Record<string, unknown>[] = content.filter(
+    (block): block is Record<string, unknown> => isRecord(block) && block.type !== 'tool_use',
+  );
+  for (const tc of toolCalls) {
+    blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments ?? {} });
+  }
+  raw.content = blocks;
+}
+
+/** True when two tool-call lists carry identical provider-agnostic data. */
+function toolCallsEqual(a: readonly ToolCall[], b: readonly ToolCall[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (!deepEqual(a[i].id, b[i].id) || !deepEqual(a[i].name, b[i].name) || !deepEqual(a[i].arguments, b[i].arguments)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Structural equality for plain (JSON-like) values. */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  if (typeof a === 'object') {
+    const aObj = a as Record<string, unknown>;
+    const bObj = b as Record<string, unknown>;
+    if (Object.keys(aObj).length !== Object.keys(bObj).length) return false;
+    for (const key of Object.keys(aObj)) {
+      if (!Object.prototype.hasOwnProperty.call(bObj, key) || !deepEqual(aObj[key], bObj[key])) return false;
+    }
+    return true;
+  }
+  return Number.isNaN(a as number) && Number.isNaN(b as number);
 }

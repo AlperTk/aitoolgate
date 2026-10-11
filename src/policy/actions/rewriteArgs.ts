@@ -1,5 +1,8 @@
-import type { Action, PolicyContext } from '../types';
+import type { Action, PolicyContext, ActionStrategy, SessionKey } from '../types';
 import type { ActionEffect } from './block';
+import type { RequestContext, ResponseContext } from '../../ports';
+import type { PolicyAction } from '../ruleEngine';
+import type { FeedbackMessage } from '../feedbackStore';
 
 /** Configuration for {@link createRewriteArgsAction}. */
 export interface RewriteArgsActionConfig {
@@ -48,6 +51,71 @@ export function createRewriteArgsAction(config: RewriteArgsActionConfig): Action
       return effect;
     },
   };
+}
+
+/**
+ * The `rewriteArgs` action strategy: applies a `rewriteArgs` effect (rewrites the
+ * target tool call's arguments in a request's stream, or in the response's tool
+ * call), describes it, and validates/builds its wire spec.
+ */
+export const rewriteArgsStrategy: ActionStrategy = {
+  type: 'rewriteArgs',
+
+  applyRequest(ctx: RequestContext, effect: ActionEffect): void {
+    const rewrite = effect as Extract<ActionEffect, { type: 'rewriteArgs' }>;
+    withAssistantToolCalls(ctx.messages, (message, toolCalls) => {
+      message.tool_calls = toolCalls.map((toolCall) => {
+        if (!isRecord(toolCall) || toolCall.id !== rewrite.toolCallId) return toolCall;
+        const functionRecord: Record<string, unknown> = isRecord(toolCall.function)
+          ? { ...toolCall.function }
+          : {};
+        functionRecord.arguments = rewrite.newArguments;
+        return { ...toolCall, function: functionRecord };
+      });
+    });
+  },
+
+  applyResponse(ctx: ResponseContext, effect: ActionEffect): void {
+    const rewrite = effect as Extract<ActionEffect, { type: 'rewriteArgs' }>;
+    const target = ctx.toolCalls.find((call) => call.id === rewrite.toolCallId);
+    if (target) target.arguments = parseArgs(rewrite.newArguments);
+  },
+
+  describe(effect: ActionEffect): string {
+    const rewrite = effect as Extract<ActionEffect, { type: 'rewriteArgs' }>;
+    return `rewrote arguments for tool call ${rewrite.toolCallId}`;
+  },
+
+  validateSpec(spec: unknown): string | null {
+    const record = spec as Record<string, unknown>;
+    if (!isRecord(record.arguments)) return 'missing required "arguments" object';
+    return null;
+  },
+
+  buildSpec(spec: unknown): PolicyAction {
+    const record = spec as Record<string, unknown>;
+    if (!isRecord(record.arguments)) {
+      throw new Error('action "rewriteArgs" requires an "arguments" object');
+    }
+    const config: RewriteArgsActionConfig = { arguments: record.arguments };
+    if (typeof record.toolName === 'string') config.toolName = record.toolName;
+    if (typeof record.toolCallId === 'string') config.toolCallId = record.toolCallId;
+    if (record.mode === 'replace' || record.mode === 'merge') config.mode = record.mode;
+    return createRewriteArgsAction(config) as PolicyAction;
+  },
+};
+
+/** Visit each assistant message that carries an OpenAI-style `tool_calls` list. */
+function withAssistantToolCalls(
+  messages: unknown[],
+  mutate: (message: Record<string, unknown>, toolCalls: unknown[]) => void,
+): void {
+  for (const message of messages) {
+    if (!isRecord(message) || message.role !== 'assistant') continue;
+    const toolCalls = message.tool_calls;
+    if (!Array.isArray(toolCalls)) continue;
+    mutate(message, toolCalls);
+  }
 }
 
 /** Resolve the target call: prefer `toolCallId`, else first name match. */

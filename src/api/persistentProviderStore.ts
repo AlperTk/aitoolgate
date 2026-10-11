@@ -13,14 +13,19 @@
  * stored `isActive`, defensively collapsing to ≤1 active). When the table is empty
  * AND a `seedFallback` record is supplied (the env-derived upstream snapshot), that
  * fallback becomes the single auto-active row — so pre-existing env-based deployments
- * gain an equivalent default provider without user action. Persistence is best-effort:
- * a failing open/read/write logs a warning and leaves the in-memory store untouched.
+ * gain an equivalent default provider without user action.
+ *
+ * The shared {@link createPersistentStore} base holds the `openDb` / queueMicrotask
+ * defer / `DELETE … WHERE id = ?` + warn + finally-close boilerplate; the row
+ * UPSERT mapping, the `seedFallback` boot seed, and the provider's `setActive` /
+ * `getActive` write-through stay here. Persistence is best-effort: a failing
+ * open/read/write logs a warning and leaves the in-memory store untouched.
  */
-import { DatabaseSync } from 'node:sqlite';
 import { applyMigrations } from '../storage/schema';
 import type { ApiProvider } from './providerSpec';
 import type { ApiProviderStore } from './providerStore';
 import { createApiProviderStore } from './providerStore';
+import { createPersistentStore, openDb } from './crudStore';
 
 /** Options for {@link createPersistentProviderStore}. */
 export interface PersistentProviderStoreOptions {
@@ -36,10 +41,6 @@ export interface PersistentProviderStoreOptions {
 
 /** A row returned by SQLite `StatementSync.all()`: string-keyed values. */
 type Row = Record<string, unknown>;
-
-function openDb(dbFile: string): DatabaseSync {
-  return new DatabaseSync(dbFile);
-}
 
 /** Map a stored `api_providers` row back onto an {@link ApiProvider}. */
 function rowToProvider(row: Row): ApiProvider {
@@ -110,17 +111,6 @@ function upsertRecord(dbFile: string, provider: ApiProvider): void {
   }
 }
 
-function deleteRow(dbFile: string, id: string): void {
-  const db = openDb(dbFile);
-  try {
-    db.prepare('DELETE FROM api_providers WHERE id = ?').run(id);
-  } catch (err) {
-    console.warn(`mcp-manager: could not delete persisted provider ${id}:`, err);
-  } finally {
-    db.close();
-  }
-}
-
 /** Wrap a base {@link ApiProviderStore} so mutations are mirrored through to SQLite. */
 export function createPersistentProviderStore(options: PersistentProviderStoreOptions = {}): ApiProviderStore {
   const dbFile = options.dbFile ?? ':memory:';
@@ -141,44 +131,31 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
 
   const base = createApiProviderStore({ initial: records });
 
-  /** Persist the current record at `id`, deferred one microtask (best-effort). */
-  function schedulePersist(id: string): void {
-    queueMicrotask(() => {
-      const current = base.get(id);
-      if (current === undefined) return;
-      try {
-        upsertRecord(dbFile, current);
-      } catch (err) {
-        console.warn(`mcp-manager: could not persist provider ${id}:`, err);
-      }
-    });
-  }
-
-  return {
-    list: () => base.list(),
-    get: (id) => base.get(id),
-    size: () => base.size(),
-    getActive: () => base.getActive(),
-    add(provider) {
-      const stored = base.add(provider);
-      schedulePersist(stored.id);
-      return stored;
-    },
-    update(id, patch) {
-      const updated = base.update(id, patch);
-      if (updated !== undefined) schedulePersist(updated.id);
-      return updated;
-    },
-    setActive(id) {
-      const activated = base.setActive(id);
-      if (activated) schedulePersist(id);
-      return activated;
-    },
-    remove(id) {
-      const removed = base.remove(id);
-      if (removed) deleteRow(dbFile, id);
-      return removed;
-    },
-    reset: () => base.reset(),
+  // Domain-specific persist: UPSERT the current row at `id` (best-effort).
+  const persist = (id: string): void => {
+    const current = base.get(id);
+    if (current === undefined) return;
+    try {
+      upsertRecord(dbFile, current);
+    } catch (err) {
+      console.warn(`mcp-manager: could not persist provider ${id}:`, err);
+    }
   };
+
+  return createPersistentStore({
+    base,
+    dbFile,
+    table: 'api_providers',
+    entity: 'provider',
+    persist,
+    // The provider's ≤1-active surface: getActive passthrough + setActive write-through.
+    extras: (ctx) => ({
+      getActive: () => base.getActive(),
+      setActive: (id: string) => {
+        const activated = base.setActive(id);
+        if (activated) ctx.schedulePersist(id);
+        return activated;
+      },
+    }),
+  });
 }

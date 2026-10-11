@@ -4,6 +4,7 @@ import http from 'node:http';
 import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import { createHideToolAction } from '../src/policy/actions';
+import { oaiCanned } from './helpers';
 
 /**
  * End-to-end regression tests for the `hideTool` policy action: when a matching rule
@@ -105,14 +106,7 @@ async function startProxy(options: ProxyOptions): Promise<{ server: http.Server;
   return { server, port: portOf(server) };
 }
 
-const OAI_CANNED = {
-  id: 'chatcmpl-hid',
-  object: 'chat.completion',
-  created: 1700000000,
-  model: 'gpt-4o-mini',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const OAI_CANNED = oaiCanned('chatcmpl-hid');
 const ANTH_CANNED = {
   id: 'msg_hid',
   type: 'message',

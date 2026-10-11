@@ -15,12 +15,9 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type McmServer } from '../src/server/index';
+import { startMcmServer, closeMcmServer } from './helpers';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
-
-type ServerOpts = Parameters<typeof createServer>[1];
-type MountOpts = Parameters<typeof createServer>[2];
 
 const isToolCall = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.call' }> => e.type === 'tool.call';
 const isToolResult = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.result' }> => e.type === 'tool.result';
@@ -63,32 +60,6 @@ function toolRes(id: string, name: string, content: string): Record<string, unkn
   return { role: 'tool', tool_call_id: id, name, content };
 }
 
-// --- server lifecycle ----------------------------------------------------------
-async function startServer(opts: ServerOpts, mount?: MountOpts): Promise<{ port: number; srv: McmServer; mcm: NonNullable<McmServer['mcm']> }> {
-  const srv = createServer(0, opts, mount); // auto-listens on an ephemeral port
-  await new Promise<void>((resolve, reject) => {
-    if (srv.listening) resolve();
-    else {
-      srv.once('listening', () => resolve());
-      srv.once('error', reject);
-    }
-  });
-  const addr = srv.address();
-  if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('server.mcm test handle is missing');
-  return { port: addr.port, srv, mcm };
-}
-async function closeServer(srv: McmServer): Promise<void> {
-  try {
-    srv.closeAllConnections();
-  } catch {
-    /* ignore */
-  }
-  await new Promise<void>((resolve) => {
-    srv.close(() => resolve());
-  });
-}
 async function post(port: number, path: string, body: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<Response> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
   return fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
@@ -125,7 +96,7 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     { role: 'user', content: 'Do three different things.' },
   ];
   const SESS = 'sess-multi';
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     {
       upstream: openaiUpstream(seqFetch([
         jsonRes(callBody), // Req1 (non-stream) -> issues sb_1..sb_3
@@ -207,7 +178,7 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     }
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -237,7 +208,7 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
   ];
   const SESS = 'sess-stream-c';
   // Req1 (streamed): native Anthropic frames above. Req2 (non-stream): resolves all three via tool_result blocks.
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     {
       upstream: anthropicUpstream(seqFetch([
         sseRes(anthropicSse(frames)),
@@ -311,7 +282,7 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
     }
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -338,7 +309,7 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     { role: 'user', content: 'Do three different things.' },
   ];
   const ISSUE_SESSION = 'X'; // the issuing request's session key
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     {
       upstream: openaiUpstream(seqFetch([
         jsonRes(callBody), // Req1 (non-stream, session X) -> issues sd_1..sd_3 under session X
@@ -393,7 +364,7 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     }
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -409,7 +380,7 @@ test('S-E (openai non-stream): issue + result pairing is unchanged', async () =>
     { role: 'user', content: 'Look it up, please.' },
   ];
   const SESS = 'sess-sea';
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
@@ -432,7 +403,7 @@ test('S-E (openai non-stream): issue + result pairing is unchanged', async () =>
     assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -452,7 +423,7 @@ test('S-E (anthropic non-stream): issue + result pairing is unchanged', async ()
     { role: 'user', content: 'Check the weather and search for x.' },
   ];
   const SESS = 'sess-seb';
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: anthropicUpstream(seqFetch([jsonRes(callBody), jsonRes({ id: 'msg_seb_done', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] })])) },
     { ws: false },
   );
@@ -489,7 +460,7 @@ test('S-E (anthropic non-stream): issue + result pairing is unchanged', async ()
     assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -516,7 +487,7 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
     usage: { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11 },
   };
   const SESS = 'sess-sf';
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
@@ -545,6 +516,6 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
     );
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });

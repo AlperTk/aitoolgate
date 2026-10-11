@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import type { PolicyRule } from '../policy/ruleEngine';
+import { createCrudStore } from './crudStore';
 
 /**
  * Options for {@link createRuleStore}.
@@ -50,65 +50,31 @@ export interface RuleStore {
   size(): number;
 }
 
-/** Shallow-copy a rule so callers cannot mutate the stored instance via a returned reference. */
-function copyRule(rule: PolicyRule): PolicyRule {
-  return { ...rule };
-}
-
 /**
- * Create an in-memory {@link RuleStore}. Pass {@link RuleStoreOptions.initial}
- * to seed it; otherwise it starts empty. The store holds defensive copies
- * throughout — {@link RuleStore.add}, {@link RuleStore.update},
- * {@link RuleStore.get}, and {@link RuleStore.list} all operate on / return
- * copies, so mutating any returned object cannot corrupt the store. Hand the
- * returned rules to `createRuleEngine` via a getter (`() => store.list()`) for
- * live add/remove reflected on each evaluation.
+ * Create an in-memory {@link RuleStore} over the shared {@link createCrudStore}
+ * base (which holds the defensive-copy / initial-seed / reset / id-assignment
+ * boilerplate). Pass {@link RuleStoreOptions.initial} to seed it; otherwise it
+ * starts empty. The store holds defensive copies throughout — `add`, `update`,
+ * `get`, and `list` all operate on / return copies, so mutating any returned
+ * object cannot corrupt the store. Hand the returned rules to `createRuleEngine`
+ * via a getter (`() => store.list()`) for live add/remove reflected on each
+ * evaluation.
  */
 export function createRuleStore(options: RuleStoreOptions = {}): RuleStore {
-  // Detached snapshot of the initial rules (copies) used as the reset baseline.
-  const initial: PolicyRule[] = (options.initial ?? []).map(copyRule);
-  const rules = new Map<string, PolicyRule>(initial.map((rule) => [rule.id, rule]));
-
-  function restoreInitial(): void {
-    rules.clear();
-    for (const rule of initial) {
-      rules.set(rule.id, rule);
-    }
-  }
-
-  return {
-    list() {
-      return [...rules.values()].map(copyRule);
-    },
-    get(id) {
-      const found = rules.get(id);
-      return found === undefined ? undefined : copyRule(found);
-    },
-    add(rule) {
-      const id = typeof rule.id === 'string' && rule.id.length > 0 ? rule.id : randomUUID();
-      const stored: PolicyRule = { ...rule, id };
-      rules.set(id, stored);
-      return copyRule(stored);
-    },
-    update(id, patch) {
-      const existing = rules.get(id);
+  return createCrudStore<PolicyRule, PolicyRule, RulePatch>({
+    initial: options.initial,
+    // A full rule needs no defaults; the base assigns a unique id when missing/empty.
+    toStored: (rule) => ({ ...rule }),
+    update: (id, patch, ctx) => {
+      const existing = ctx.byId.get(id);
       if (existing === undefined) return undefined;
       const { matcher, action, ...rest } = patch;
       const updated: PolicyRule = { ...existing, ...rest };
       if (matcher !== undefined) updated.matcher = matcher;
       if (action !== undefined) updated.action = action;
-      if (updated.id !== id) rules.delete(id);
-      rules.set(updated.id, updated);
-      return copyRule(updated);
+      if (updated.id !== id) ctx.byId.delete(id);
+      ctx.byId.set(updated.id, updated);
+      return ctx.copy(updated);
     },
-    remove(id) {
-      return rules.delete(id);
-    },
-    reset() {
-      restoreInitial();
-    },
-    size() {
-      return rules.size;
-    },
-  };
+  });
 }

@@ -11,16 +11,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
-import { createServer, type McmServer } from '../src/server/index';
+import { startMcmServer, closeMcmServer } from './helpers';
 import { createRuleStore } from '../src/api/ruleStore';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
 import { createToolNameMatcher } from '../src/policy/matchers/index';
 import { createInjectMessageAction } from '../src/policy/actions/index';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
-
-type ServerOpts = Parameters<typeof createServer>[1];
-type MountOpts = Parameters<typeof createServer>[2];
 
 // Type guards keep captured events fully typed without fragile casts.
 const isToolCall = (e: TelemetryEvent): e is Extract<TelemetryEvent, { type: 'tool.call' }> => e.type === 'tool.call';
@@ -128,32 +125,6 @@ async function stats(port: number): Promise<StatsSummary> {
   return res.json() as Promise<StatsSummary>;
 }
 
-// --- server lifecycle -------------------------------------------------------------
-async function startServer(opts: ServerOpts, mount?: MountOpts): Promise<{ port: number; srv: McmServer; mcm: NonNullable<McmServer['mcm']> }> {
-  const srv = createServer(0, opts, mount); // auto-listens on an ephemeral port
-  await new Promise<void>((resolve, reject) => {
-    if (srv.listening) resolve();
-    else {
-      srv.once('listening', () => resolve());
-      srv.once('error', reject);
-    }
-  });
-  const addr = srv.address();
-  if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('server.mcm test handle is missing');
-  return { port: addr.port, srv, mcm };
-}
-async function closeServer(srv: McmServer): Promise<void> {
-  try {
-    srv.closeAllConnections();
-  } catch {
-    /* ignore */
-  }
-  await new Promise<void>((resolve) => {
-    srv.close(() => resolve());
-  });
-}
 
 // --- raw RFC6455 WebSocket client ----------------------------------------------
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -257,7 +228,7 @@ test('full pipeline: request → proxy → policy → telemetry → stats', asyn
     matcher: createToolNameMatcher({ toolName: 'search_web' }),
     action: createInjectMessageAction({ role: 'user', content: 'Please stop repeating searches.' }) as PolicyAction,
   };
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: upstream(jsonFetch(CANNED_COMPLETION)), policy: { rules: [rule] } },
     { ruleStore: createRuleStore(), ws: true },
   );
@@ -291,13 +262,13 @@ test('full pipeline: request → proxy → policy → telemetry → stats', asyn
     assert.ok(s.interventions.length >= 1, 'stats should reflect the recorded intervention');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
 // --- Test 2: WebSocket broadcasts live telemetry ---------------------------
 test('WebSocket receives live telemetry events broadcast from the shared bus', async () => {
-  const { port, srv, mcm } = await startServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) }, { ws: true });
+  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) }, { ws: true });
   const client = await connectAndHandshake(port);
   try {
     assert.ok(mcm.ws.size >= 1, 'the handshaked socket counts as an open WS client');
@@ -322,13 +293,13 @@ test('WebSocket receives live telemetry events broadcast from the shared bus', a
     } catch {
       /* ignore */
     }
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
 // --- Test 3: streaming SSE pass-through emits tool-call telemetry --------
 test('streaming request emits tool-call telemetry via the SSE extractor', async () => {
-  const { port, srv, mcm } = await startServer({ upstream: upstream(sseFetch(sseText())) }, { ws: false });
+  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(sseFetch(sseText())) }, { ws: false });
   const events: TelemetryEvent[] = [];
   const unsub = mcm.bus.subscribe((ev) => {
     events.push(ev);
@@ -354,7 +325,7 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
     assert.ok(s.topTools.some((t) => t.toolName === 'search_web'), 'topTools should include search_web');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -362,7 +333,7 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
 test('GET /api/events via the default server returns the tool.call emitted by a proxied request', async () => {
   // Default server options: only the upstream is pointed at a fake model that returns a single
   // tool_call; every other mount option (rule store, ws) stays at its default.
-  const { port, srv } = await startServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) });
+  const { port, srv } = await startMcmServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) });
   try {
     const res = await post(port, { ...chatBody(), stream: false });
     assert.equal(res.status, 200, 'the proxied response must be HTTP 200');
@@ -376,7 +347,7 @@ test('GET /api/events via the default server returns the tool.call emitted by a 
     assert.ok(toolCall !== undefined, 'GET /api/events must include the tool.call emitted by the proxied request');
     assert.equal(toolCall.toolName, 'search_web');
   } finally {
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -406,7 +377,7 @@ test('two successive same-session requests produce a real tool.result paired fro
   // One server → one shared bus/collector/tracker. Request N makes the model issue a tool call
   // (stable id + upstream usage); request N+1 (same session) feeds back the matching role:'tool'
   // result, which is paired against the recorded issue into a REAL tool.result.
-  const { port, srv, mcm } = await startServer({ upstream: upstream(turnFetch([CALL_BODY, FINAL_BODY])) }, { ws: false });
+  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(turnFetch([CALL_BODY, FINAL_BODY])) }, { ws: false });
   const events: TelemetryEvent[] = [];
   const unsub = mcm.bus.subscribe((ev) => {
     events.push(ev);
@@ -456,7 +427,7 @@ test('two successive same-session requests produce a real tool.result paired fro
     assert.equal(topSW.totalResponseTokens, Math.round(TOOL_RESULT_CONTENT.length / 4), 'totalResponseTokens = round(chars/4) for the resolved result');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -470,7 +441,7 @@ const STREAM_TOOL_RESULT = '<web-search-results-stream>';
 
 test('two successive same-session STREAMING requests produce a real tool.result paired from the streamed tool.call', async () => {
   // Request N → SSE with one tool call + usage; request N+1 → SSE final answer (no calls).
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: upstream(sseTurnFetch([sseCallWithUsage(), sseFinalAnswer()])) },
     { ws: false },
   );
@@ -537,7 +508,7 @@ test('two successive same-session STREAMING requests produce a real tool.result 
     assert.equal(top.totalResponseTokens, Math.round(STREAM_TOOL_RESULT.length / 4), 'totalResponseTokens = round(chars/4) for the streaming result');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -546,7 +517,7 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
   // Two tool calls in ONE streamed response share one turn-level `at`; even though the usage chunk
   // arrives after the first call is finalized, the shared `at` makes the collector count the turn's
   // usage exactly once. Request N+1 feeds back BOTH results so both resolve into real tool.results.
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: upstream(sseTurnFetch([sseTwoCallsWithUsage(), sseFinalAnswer()])) },
     { ws: false },
   );
@@ -607,7 +578,7 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
     assert.equal(top.totalResponseTokens, Math.round('<result-a>'.length / 4) + Math.round('<result-b>'.length / 4), 'totalResponseTokens = sum of estimated tokens for both results');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -624,7 +595,7 @@ test('a turn whose response has no upstream usage emits a token-less tool.call b
   };
   const SESS = 'sess-no-usage';
   const RESULT_CONTENT = '<no-usage-results>';
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: upstream(turnFetch([NO_USAGE_CALL, NO_USAGE_FINAL])) },
     { ws: false },
   );
@@ -666,7 +637,7 @@ test('a turn whose response has no upstream usage emits a token-less tool.call b
     assert.equal(result.chars, RESULT_CONTENT.length, 'chars reflects the result payload size even when the turn had no tokens');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -683,7 +654,7 @@ test('a streamed OpenAI turn requests upstream token usage (stream_options.inclu
     }
     return baseFetch(url, init);
   };
-  const { port, srv, mcm } = await startServer({ upstream: upstream(recordingFetch) }, { ws: false });
+  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(recordingFetch) }, { ws: false });
   const events: TelemetryEvent[] = [];
   const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
   try {
@@ -708,7 +679,7 @@ test('a streamed OpenAI turn requests upstream token usage (stream_options.inclu
     );
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });
 
@@ -739,7 +710,7 @@ test('two distinct tools with different payload sizes yield correct per-tool res
   const expectedShortTokens = Math.round(SHORT_RESULT.length / 4);   // 2
   const expectedLongTokens = Math.round(LONG_RESULT.length / 4);     // 5
 
-  const { port, srv, mcm } = await startServer(
+  const { port, srv, mcm } = await startMcmServer(
     { upstream: upstream(turnFetch([CALL_BODY_10, FINAL_BODY_10])) },
     { ws: false },
   );
@@ -794,6 +765,6 @@ test('two distinct tools with different payload sizes yield correct per-tool res
     assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'totalTokens from call-turn is still present in the summary');
   } finally {
     unsub();
-    await closeServer(srv);
+    await closeMcmServer(srv);
   }
 });

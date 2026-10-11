@@ -174,6 +174,17 @@ export interface FlagshipLoopRuleOptions {
 }
 
 /**
+ * The stable evaluation priority of the built-in flagship loop rule.
+ *
+ * A LOW value (high precedence) so the "always on" built-in safety rule is
+ * evaluated FIRST — before any caller-supplied or user-created rules (all of
+ * which sort after it, or tie and lose to it by array order). This keeps the
+ * flagship rule's ordering deterministic and documented, independent of its
+ * position in the effective rule set the production wiring splices it into.
+ */
+export const FLAGSHIP_RULE_PRIORITY = 0;
+
+/**
  * The FLAGSHIP loop-detection rule: detect a run of consecutive identical tool
  * calls and inject a single corrective message prompting a different approach.
  *
@@ -199,6 +210,10 @@ export function flagshipLoopRule(options: FlagshipLoopRuleOptions = {}): PolicyR
   return {
     id: 'flagship-loop-rule',
     enabled: true,
+    // The "always on" built-in rule is evaluated first (high precedence). See
+    // FLAGSHIP_RULE_PRIORITY. A missing priority would sort it after every
+    // explicitly-prioritized rule, which is not the intended ordering.
+    priority: FLAGSHIP_RULE_PRIORITY,
     description:
       'Detects consecutive identical tool calls and injects a corrective message to break the loop.',
     matcher,

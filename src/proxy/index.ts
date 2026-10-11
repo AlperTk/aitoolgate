@@ -7,16 +7,19 @@ import type {
   ResultContext,
 } from '../ports/pipeline';
 import { createPipeline } from '../pipeline';
-import { createPolicyStage } from '../policy/policyStage';
-import { createRuleEngine, type PolicyRule } from '../policy/ruleEngine';
-import { SessionFeedbackStore } from '../policy/feedbackStore';
+import type { PolicyRule } from '../policy/ruleEngine';
+import { defaultProxyDefaults } from '../composition';
 import type { FetchLike, UpstreamClient } from './upstream';
 import { handleOpenAIRoute } from './openai';
 import { handleAnthropicRoute } from './anthropic';
-import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
-import { createCollector, type Collector } from '../telemetry/collector';
-import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/toolMetrics';
-import type { SqliteStorage } from '../storage/sqlite';
+import type {
+  TelemetryEventBus,
+  Collector,
+  ToolMetricsTracker,
+  TelemetryStorage,
+  FeedbackStore,
+  ProxyDefaults,
+} from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
 
 export type { FetchLike, UpstreamClient };
@@ -28,10 +31,11 @@ const DEFAULT_SESSION_HEADER = 'x-session-id';
  * Options controlling the optional POLICY enforcement around each request/response.
  *
  * When present on {@link ProxyOptions}, `createProxyHandler` builds a pipeline that
- * includes a policy stage (`createPolicyStage`) so its REQUEST phase runs before
- * the upstream model call and its RESPONSE phase runs after it. The client's
- * session token (read from {@link PolicyOptions.sessionIdHeader}) is surfaced onto
- * the request context so the stage can use it in `deriveSessionKey`.
+ * includes a policy stage (built from `options.policy` via the proxy defaults, or a
+ * caller-injected `options.policy.stage`) so its REQUEST phase runs before the
+ * upstream model call and its RESPONSE phase runs after it. The client's session
+ * token (read from {@link PolicyOptions.sessionIdHeader}) is surfaced onto the
+ * request context so the stage can use it in `deriveSessionKey`.
  */
 export interface PolicyOptions {
   /**
@@ -43,9 +47,18 @@ export interface PolicyOptions {
   rules: PolicyRule[] | (() => PolicyRule[]);
   /**
    * Per-session feedback queue bridging response-side actions into the NEXT
-   * request. Defaults to a fresh in-memory {@link SessionFeedbackStore}.
+   * request. Defaults to a fresh in-memory feedback store (built via the proxy
+   * defaults). Typed as the {@link FeedbackStore} port.
    */
-  feedback?: SessionFeedbackStore;
+  feedback?: FeedbackStore;
+  /**
+   * A pre-built policy stage injected from the composition root; used directly
+   * when present (so a caller can wire a custom stage without the proxy importing
+   * any concrete policy factory). When absent, a stage is built from
+   * {@link PolicyOptions.rules} + {@link PolicyOptions.feedback} via the proxy
+   * defaults.
+   */
+  stage?: PipelineStage;
   /**
    * Header carrying the client session token (surfaced onto the request context's
    * `sessionKey.token`). Defaults to `x-session-id`.
@@ -84,6 +97,14 @@ export interface ProxyOptions {
    * emitted WS event stays metadata-only. When omitted, nothing is stored.
    */
   toolResultStore?: ToolResultStore;
+  /**
+   * Default builders for the policy stage and telemetry wiring, used only for the
+   * fields the caller leaves unset (bus / tracker / collector / built-from-rules
+   * stage / SSE extractor / usage helpers). Defaults to the concrete in-process
+   * composition ({@link defaultProxyDefaults}) so direct callers that omit this
+   * (e.g. tests) keep working unchanged.
+   */
+  defaults?: ProxyDefaults;
 }
 
 /**
@@ -93,14 +114,14 @@ export interface ProxyOptions {
  * `.telemetry` view on the returned handler.
  */
 export interface ProxyTelemetryOptions {
-  /** The telemetry event bus to feed the collector / persist from. Defaults to a fresh {@link createEventBus}. */
+  /** The telemetry event bus to feed the collector / persist from. Defaults to a fresh bus (built via the proxy defaults). */
   bus?: TelemetryEventBus;
-  /** A live aggregation view over the bus. Defaults to {@link createCollector} subscribed to the configured bus. */
+  /** A live aggregation view over the bus. Defaults to a collector (built via the proxy defaults) subscribed to the configured bus. */
   collector?: Collector;
-  /** A live tool-call latency tracker pairing issued calls with their later results. Defaults to a fresh {@link createToolMetricsTracker}. */
+  /** A live tool-call latency tracker pairing issued calls with their later results. Defaults to a fresh tracker (built via the proxy defaults). */
   tracker?: ToolMetricsTracker;
-  /** Optional SQLite-backed persistence for the event stream; omitted → no persistence (never auto-created). */
-  storage?: SqliteStorage;
+  /** Optional persistence for the event stream; omitted → no persistence (never auto-created). */
+  storage?: TelemetryStorage;
 }
 
 /**
@@ -116,8 +137,8 @@ export interface ProxyTelemetry {
   readonly collector: Collector;
   /** A live tool-call latency tracker pairing issued calls with their later results (always present). */
   readonly tracker: ToolMetricsTracker;
-  /** Optional SQLite-backed persistence; present only when a storage was configured. */
-  readonly storage?: SqliteStorage;
+  /** Optional persistence; present only when a storage was configured. */
+  readonly storage?: TelemetryStorage;
 }
 
 /**
@@ -211,8 +232,8 @@ class SessionTokenPipeline implements Pipeline {
  * `options.telemetry.bus`) so tool-call/result telemetry is emitted regardless of
  * whether a policy is configured; when a policy IS configured it is also fed to the
  * policy stage. A live {@link Collector} subscribed to that bus plus an optional
- * {@link SqliteStorage} (persists when supplied, never auto-created) are exposed on
- * the returned handler as a NON-ENUMERABLE `.telemetry` property
+ * {@link TelemetryStorage} (persists when supplied, never auto-created) are exposed
+ * on the returned handler as a NON-ENUMERABLE `.telemetry` property
  * ({@link ProxyHandler.telemetry}) without changing the handler's call signature.
  * That view is attached only when a policy is configured OR `options.telemetry` is
  * supplied; absent both, `handler.telemetry` stays `undefined` (unchanged).
@@ -222,6 +243,11 @@ class SessionTokenPipeline implements Pipeline {
 export function createProxyHandler(options: ProxyOptions): ProxyHandler {
   const policy = options.policy;
   const sessionIdHeader = policy?.sessionIdHeader ?? DEFAULT_SESSION_HEADER;
+  // Default builders for the policy stage + telemetry wiring. The proxy never imports a
+  // concrete factory itself: it depends on this injected/port-typed bundle (see
+  // `src/ports/telemetry.ts`), defaulting to the concrete in-process composition so
+  // direct callers (e.g. tests) that omit `options.defaults` keep working unchanged.
+  const defaults = options.defaults ?? defaultProxyDefaults;
 
   let tokenPipeline: SessionTokenPipeline | undefined = undefined;
   let pipeline: Pipeline;
@@ -232,12 +258,12 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
   // The SAME bus is threaded into every request path below via `deps`, so emission
   // works with or without a policy.
   const tele = options.telemetry;
-  const bus = tele?.bus ?? createEventBus();
+  const bus = tele?.bus ?? defaults.makeBus();
   // A shared tool-call latency tracker ALWAYS exists (like the bus) so request-phase result
   // detection and response-phase issue recording work with or without a policy stage. It is
-  // honored when a caller supplies one; otherwise a fresh default is created and threaded into
-  // every request path exactly like the bus above.
-  const tracker = tele?.tracker ?? createToolMetricsTracker();
+  // honored when a caller supplies one; otherwise a fresh default is created (via the proxy
+  // defaults) and threaded into every request path exactly like the bus above.
+  const tracker = tele?.tracker ?? defaults.makeTracker();
   const storage = tele?.storage;
 
   // Expose the live `.telemetry` view ONLY when a policy stage is present OR an
@@ -246,7 +272,7 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
   // NOT gated this way — it is always wired through the always-present bus above.
   const shouldAttach = policy !== undefined || tele !== undefined;
   let collector: Collector | undefined = tele?.collector;
-  if (shouldAttach && collector === undefined) collector = createCollector({ bus });
+  if (shouldAttach && collector === undefined) collector = defaults.makeCollector(bus);
   if (shouldAttach && storage !== undefined) {
     // Persist events only when an explicit storage is supplied (never auto-created),
     // guarding each write so a failing store cannot break the pipeline flow.
@@ -264,20 +290,28 @@ export function createProxyHandler(options: ProxyOptions): ProxyHandler {
     : undefined;
 
   if (policy) {
-    const engine = createRuleEngine(policy.rules);
-    const feedback = policy.feedback ?? new SessionFeedbackStore();
-
     const base = options.pipeline ?? createPipeline();
-    // Append the policy stage (request phase precedes the upstream call, response
-    // phase follows it) so its REQUEST/RESPONSE phases emit onto the telemetry bus.
-    base.use(createPolicyStage({ engine, feedback, bus }));
+    // Use a pre-built stage injected by the composition root when present; otherwise build
+    // one from the rules + feedback via the proxy defaults (the proxy never imports a
+    // concrete policy factory). The stage's REQUEST phase precedes the upstream call and its
+    // RESPONSE phase follows it, so both emit onto the shared telemetry bus.
+    const stage = policy.stage ?? defaults.makePolicyStage(policy.rules, policy.feedback, bus);
+    base.use(stage);
     tokenPipeline = new SessionTokenPipeline(base);
     pipeline = tokenPipeline;
   } else {
     pipeline = options.pipeline ?? createPipeline();
   }
 
-  const deps = { upstream: options.upstream, pipeline, bus, tracker, toolResultStore: options.toolResultStore };
+  const deps = {
+    upstream: options.upstream,
+    pipeline,
+    bus,
+    tracker,
+    toolResultStore: options.toolResultStore,
+    sseExtractor: defaults.makeSseExtractor,
+    usage: defaults.usage,
+  };
 
   const handler = async function handleProxyRequest(
     req: http.IncomingMessage,

@@ -48,6 +48,7 @@ import { Transform } from 'node:stream';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from './events';
 import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
 import { estimateTokensFromChars } from './tokenEstimate';
+import { parseArgs, stableCallId, normalizeUsage, isRecord, type NormalizedUsage } from './protocol-common';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -108,7 +109,7 @@ export function createSseToolCallExtractor(
   let finished = false;
   // The turn's upstream usage, parsed once from a trailing `usage` chunk, shared by every tool
   // call emitted this stream so they all carry the same turn-level tokens (or none).
-  let streamUsage: { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined;
+  let streamUsage: NormalizedUsage | undefined;
   // A single turn-level timestamp shared by EVERY tool call emitted this stream, so the
   // collector's per-(sessionKey, at) token dedup collapses a multi-call turn into one.
   let turnAt: number | undefined;
@@ -117,7 +118,7 @@ export function createSseToolCallExtractor(
     return turnAt;
   };
   // A set of ids already assigned this stream so the stable-id fallback never hands two sibling
-  // calls in one batch turn the same id (mirrors stableToolCallId in proxy/context.ts).
+  // calls in one batch turn the same id (shared stableCallId helper in telemetry/protocol-common).
   const seenIds = new Set<string>();
   // Character mass of streamed RESPONSE TEXT (both protocols) plus FINALIZED tool-call arguments —
   // together the full observed model-side output, used to ESTIMATE the turn's output tokens when
@@ -126,17 +127,6 @@ export function createSseToolCallExtractor(
   let emittedArgsChars = 0;
   // Count of tool.call events actually emitted this stream (gates the final `turn.usage`).
   let callsEmitted = 0;
-
-  /** Parse an accumulated `arguments` string into an object; `undefined` when absent/non-object. */
-  const parseArgs = (raw: string): Record<string, unknown> | undefined => {
-    if (raw.trim() === '') return undefined;
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      return isRecord(parsed) ? (parsed as Record<string, unknown>) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
 
   /**
    * Emit and drop the accumulated call at `index` (only when it carries a tool name). When a
@@ -162,7 +152,7 @@ export function createSseToolCallExtractor(
     // `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch turn NEVER share an
     // identical id — the field the dashboard dedups on. The same id feeds both the emitted event
     // and the tracker so a later result stays linked to its originating call.
-    const id = stableStreamCallId(sessionKey, at, index, acc.id, seenIds);
+    const id = stableCallId(sessionKey, at, index, acc.id, seenIds);
     // Fold THIS call's raw argument character mass into the whole-turn OUTPUT estimate and count
     // the emitted call (so even a usage-less stream that observed tool calls still emits its
     // final `turn.usage`).
@@ -328,7 +318,7 @@ export function createSseToolCallExtractor(
     // location and MERGED across frames so split input/output numbers collapse into ONE
     // turn-level usage shared by every emitted call (or none when no usage is present).
     const nestedUsage = isRecord(parsed.message) ? parsed.message.usage : undefined;
-    const usage = normalizeStreamUsage(parsed.usage ?? nestedUsage);
+    const usage = normalizeUsage(parsed.usage ?? nestedUsage);
     if (usage !== undefined) streamUsage = mergeUsage(streamUsage, usage);
     // OpenAI-shaped streaming tool-call fragments.
     const choices = parsed.choices;
@@ -384,72 +374,6 @@ export function createSseToolCallExtractor(
 }
 
 /**
- * Normalize a streamed `usage` object into the provider-agnostic
- * `{ input?, output?, total?, cacheHitInput? }` shape (matching {@link ToolCallEvent.tokens}).
- * Understands both the OpenAI `prompt_tokens/completion_tokens/total_tokens` (cached tokens on
- * `prompt_tokens_details.cached_tokens`) and Anthropic `input_tokens/output_tokens` (cache fields
- * on `cache_read_input_tokens` / `cache_creation_input_tokens`) shapes; the input is split into
- * base (`input`) and cache-hit (`cacheHitInput`) with `total` = input+cacheHitInput+output when
- * the provider omits it. Best-effort: returns `undefined` when no numeric usage field is present,
- * so callers omit tokens rather than fabricate. `cacheHitInput` is left absent (not fabricated)
- * when the frame carries no cache field, so {@link mergeUsage} can let a later frame's value win.
- */
-function normalizeStreamUsage(usage: unknown): { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined {
-  if (!isRecord(usage)) return undefined;
-  const out: { input?: number; output?: number; total?: number; cacheHitInput?: number } = {};
-  const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-  let hasAny = false;
-  // OpenAI: prompt_tokens (includes cached) / completion_tokens / total_tokens. Cached tokens
-  // arrive on the final `usage` chunk as prompt_tokens_details.cached_tokens.
-  if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
-    const cached = isRecord(usage.prompt_tokens_details) && isNumber(usage.prompt_tokens_details.cached_tokens)
-      ? (usage.prompt_tokens_details.cached_tokens as number)
-      : undefined;
-    if (cached !== undefined) out.cacheHitInput = cached;
-    if (isNumber(usage.prompt_tokens)) {
-      out.input = Math.max(0, usage.prompt_tokens - (cached ?? 0));
-      hasAny = true;
-    }
-    if (isNumber(usage.completion_tokens)) {
-      out.output = usage.completion_tokens;
-      hasAny = true;
-    }
-    if (isNumber(usage.total_tokens)) {
-      out.total = usage.total_tokens;
-      hasAny = true;
-    } else if (out.input !== undefined && out.output !== undefined) {
-      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
-      hasAny = true;
-    }
-    return hasAny ? out : undefined;
-  }
-  // Anthropic: input_tokens (excludes cache tokens) / output_tokens. Cache fields arrive
-  // (cumulative) on message_delta: cache_read_input_tokens (the cache hit) and
-  // cache_creation_input_tokens (folded into base input — writing the cache is NOT a hit).
-  if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
-    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : undefined;
-    const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
-    // base input and cacheHitInput are clamped >= 0 so a corrupt negative cache field can never
-    // leak a negative input/cacheHitInput/total (mirrors the OpenAI clamp above).
-    if (cacheRead !== undefined) out.cacheHitInput = Math.max(0, cacheRead);
-    if (isNumber(usage.input_tokens)) {
-      out.input = Math.max(0, usage.input_tokens + cacheCreation);
-      hasAny = true;
-    }
-    if (isNumber(usage.output_tokens)) {
-      out.output = usage.output_tokens;
-      hasAny = true;
-    }
-    if (out.input !== undefined && out.output !== undefined) {
-      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
-      hasAny = true;
-    }
-    return hasAny ? out : undefined;
-  }
-  return undefined;
-}
-
-/**
  * Merge two normalized usages into one, FIELD-AWARE: each numeric field independently takes
  * the value from the MOST RECENT frame that reports it (last-reported-value-wins per field).
  * This makes a later frame's FINAL value win over an earlier preliminary one — e.g. an
@@ -460,11 +384,8 @@ function normalizeStreamUsage(usage: unknown): { input?: number; output?: number
  * both input and output are known, `total` is recomputed as input+cacheHitInput+output so the
  * merged (and `finish()`-emitted) total always reconciles with the final field values.
  */
-function mergeUsage(
-  prev: { input?: number; output?: number; total?: number; cacheHitInput?: number } | undefined,
-  next: { input?: number; output?: number; total?: number; cacheHitInput?: number },
-): { input?: number; output?: number; total?: number; cacheHitInput?: number } {
-  const out: { input?: number; output?: number; total?: number; cacheHitInput?: number } = { ...(prev ?? {}) };
+function mergeUsage(prev: NormalizedUsage | undefined, next: NormalizedUsage): NormalizedUsage {
+  const out: NormalizedUsage = { ...(prev ?? {}) };
   // Each numeric field is independently last-reported-value-wins: the most recent frame that
   // reports a given field overrides the accumulated value for that field.
   for (const key of ['input', 'output', 'total', 'cacheHitInput'] as const) {
@@ -476,35 +397,4 @@ function mergeUsage(
     out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
   }
   return out;
-}
-
-/**
- * Assign a stable, turn-unique id to one streamed tool call. Prefers the upstream id when present;
- * otherwise synthesizes a deterministic `${sessionKey}#${at}#${index}` id. A monotonic suffix
- * (`~1`, `~2`, …) is appended whenever the computed id would still collide with a sibling already
- * seen in this stream (e.g. two blocks sharing one upstream id), guaranteeing NO two sibling calls
- * in a batch turn ever share an identical id — the field the dashboard dedups on. Mirrors
- * `stableToolCallId` in `proxy/context.ts` so both emission paths produce the same contract.
- */
-function stableStreamCallId(
-  sessionKey: string,
-  at: number,
-  index: number,
-  preferredId: string,
-  seen: Set<string>,
-): string {
-  const base = preferredId !== '' ? preferredId : `${sessionKey}#${at}#${index}`;
-  let id = base;
-  let n = 0;
-  while (seen.has(id)) {
-    n += 1;
-    id = `${base}~${n}`;
-  }
-  seen.add(id);
-  return id;
-}
-
-/** Type guard: is the value a non-null, non-array object? */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

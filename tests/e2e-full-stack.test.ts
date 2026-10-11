@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import * as net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
-import { createServer, type McmServer } from '../src/server/index';
+import type { McmServer } from '../src/server/index';
+import { startMcmServer, closeMcmServer } from './helpers';
 import { createRuleStore } from '../src/api/ruleStore';
 import type { TelemetryEvent } from '../src/telemetry/events';
 import type { PolicyRule } from '../src/policy/ruleEngine';
@@ -107,23 +108,6 @@ async function createMockUpstream(initial: unknown): Promise<MockUpstream> {
   };
 }
 
-// --- server lifecycle ----------------------------------------------------------
-async function startServer(opts: Parameters<typeof createServer>[1], mount?: Parameters<typeof createServer>[2]): Promise<{ port: number; srv: McmServer; mcm: NonNullable<McmServer['mcm']> }> {
-  const srv = createServer(0, opts, mount);
-  await new Promise<void>((resolve, reject) => {
-    if (srv.listening) resolve();
-    else { srv.once('listening', () => resolve()); srv.once('error', reject); }
-  });
-  const addr = srv.address();
-  if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('server.mcm test handle is missing');
-  return { port: addr.port, srv, mcm };
-}
-async function closeServer(srv: McmServer): Promise<void> {
-  try { srv.closeAllConnections(); } catch { /* ignore */ }
-  await new Promise<void>((resolve) => srv.close(() => resolve()));
-}
 
 // --- raw WebSocket client (RFC6455) -------------------------------------------
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -211,7 +195,7 @@ test('e2e full stack: health + OpenAI + Anthropic SSE + policy + tool-results + 
 
   try {
     // Start the real server: protocol 'anthropic' so both OpenAI (translated) and Anthropic paths work.
-    const { port, srv: startedSrv, mcm } = await startServer(
+    const { port, srv: startedSrv, mcm } = await startMcmServer(
       {
         upstream: { baseUrl: `http://127.0.0.1:${upstream.port}/v1`, model: 'claude-3-opus', protocol: 'anthropic' },
         // Dynamic rules getter: re-evaluated on every request so REST-created rules fire live.
@@ -526,7 +510,7 @@ test('e2e full stack: health + OpenAI + Anthropic SSE + policy + tool-results + 
     unsub();
   } finally {
     try { wsClient?.socket.destroy(); } catch { /* ignore */ }
-    if (srv) await closeServer(srv);
+    if (srv) await closeMcmServer(srv);
     await upstream.close();
   }
 });

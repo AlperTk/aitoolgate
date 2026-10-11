@@ -15,9 +15,12 @@
  * cannot round-trip on their own. On boot the persisted specs are rehydrated via
  * {@link buildRuleFromSpec}. The built-in `flagshipLoopRule` is never persisted.
  *
- * Persistence is best-effort: a failing read/write logs a warning and leaves the
- * in-memory store untouched, so the server always boots (see requirement: fall
- * back to a non-persistent store).
+ * The shared {@link createPersistentStore} base holds the `openDb` / queueMicrotask
+ * defer / `DELETE … WHERE id = ?` + warn + finally-close boilerplate; the
+ * domain-specific "skip the flagship" behavior lives in the `seed` / `persist`
+ * callbacks below. Persistence is best-effort: a failing read/write logs a
+ * warning and leaves the in-memory store untouched, so the server always boots
+ * (see requirement: fall back to a non-persistent store).
  */
 import { DatabaseSync } from 'node:sqlite';
 import type { RuleStore } from './ruleStore';
@@ -25,6 +28,7 @@ import type { SqliteStorage } from '../storage/sqlite';
 import type { Rule } from '../ports/domain';
 import { buildRuleFromSpec, describeRule, validateSpec } from './ruleSpec';
 import type { RuleSpec } from './ruleSpec';
+import { createPersistentStore, openDb } from './crudStore';
 
 /** Built-in loop-detection rule id; never persisted across restarts. */
 const FLAGSHIP_RULE_ID = 'flagship-loop-rule';
@@ -53,19 +57,13 @@ export interface PersistentRuleStoreOptions {
 export function createPersistentRuleStore(options: PersistentRuleStoreOptions): RuleStore {
   const { base, storage, dbFile, specs } = options;
 
-  // Seed the base store from any rules already persisted on disk (synchronous,
-  // before the first request is served). Best-effort: a failure must not block boot.
-  seedFromDb();
-
-  function openDb(): DatabaseSync {
-    return new DatabaseSync(dbFile);
-  }
-
-  /** Rehydrate persisted {@link RuleSpec}s into the base store (idempotent upsert). */
-  function seedFromDb(): void {
+  // Rehydrate persisted {@link RuleSpec}s into the base store (idempotent upsert).
+  // Best-effort: a failure must not block boot. The built-in flagship rule is
+  // skipped so it is never resurrected from disk.
+  const seedFromDb = (): void => {
     let db: DatabaseSync | undefined;
     try {
-      db = openDb();
+      db = openDb(dbFile);
       const rows = db.prepare('SELECT data_json FROM rules').all() as Array<Record<string, unknown>>;
       for (const row of rows) {
         let spec: RuleSpec;
@@ -88,58 +86,26 @@ export function createPersistentRuleStore(options: PersistentRuleStoreOptions): 
     } finally {
       db?.close();
     }
-  }
+  };
 
-  /** Persist the current rule at `id` as its {@link RuleSpec}, deferred one microtask. */
-  function schedulePersist(id: string): void {
-    queueMicrotask(() => {
-      persistId(id);
-    });
-  }
-
-  function persistId(id: string): void {
+  // Persist the current rule at `id` as its {@link RuleSpec}, skipping the flagship
+  // rule. Prefer the exact submitted/merged spec; fall back to a best-effort descriptor.
+  const persistId = (id: string): void => {
     const current = base.get(id);
     if (current === undefined || current.id === FLAGSHIP_RULE_ID) return;
-    // Prefer the exact submitted/merged spec; fall back to a best-effort descriptor.
     const spec = specs?.get(id) ?? describeRule(current);
     const toStore: RuleSpec = { ...spec, id: current.id };
     void storage.saveRule(toStore as unknown as Rule).catch((err) => {
       console.warn(`mcp-manager: could not persist rule ${id}:`, err);
     });
-  }
-
-  /** Delete the persisted row for `id` (best-effort; a failure leaves memory intact). */
-  function deleteRuleRow(id: string): void {
-    let db: DatabaseSync | undefined;
-    try {
-      db = openDb();
-      db.prepare('DELETE FROM rules WHERE id = ?').run(id);
-    } catch (err) {
-      console.warn(`mcp-manager: could not delete persisted rule ${id}:`, err);
-    } finally {
-      db?.close();
-    }
-  }
-
-  return {
-    list: () => base.list(),
-    get: (id) => base.get(id),
-    add(rule) {
-      const stored = base.add(rule);
-      schedulePersist(stored.id);
-      return stored;
-    },
-    update(id, patch) {
-      const updated = base.update(id, patch);
-      if (updated !== undefined) schedulePersist(updated.id); // write-through only on a real change
-      return updated;
-    },
-    remove(id) {
-      const removed = base.remove(id);
-      if (removed) deleteRuleRow(id);
-      return removed;
-    },
-    reset: () => base.reset(),
-    size: () => base.size(),
   };
+
+  return createPersistentStore({
+    base,
+    dbFile,
+    table: 'rules',
+    entity: 'rule',
+    seed: seedFromDb,
+    persist: persistId,
+  });
 }

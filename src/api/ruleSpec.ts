@@ -20,7 +20,7 @@
  * `options.specs` and prefers them over this fallback).
  */
 import { randomUUID } from 'node:crypto';
-import type { Action, PolicyMatcher } from '../policy/types';
+import type { ActionEffectKind, PolicyMatcher } from '../policy/types';
 import type { PolicyAction, PolicyRule } from '../policy/ruleEngine';
 import {
   createLoopDetector,
@@ -30,18 +30,7 @@ import {
   ALWAYS_MATCHER_BRAND,
 } from '../policy/matchers';
 import type { LoopDetectorOptions, AlwaysMatcher } from '../policy/matchers';
-import {
-  createBlockAction,
-  createHideToolAction,
-  createRewriteArgsAction,
-  createInjectMessageAction,
-} from '../policy/actions';
-import type {
-  BlockActionConfig,
-  HideToolActionConfig,
-  RewriteArgsActionConfig,
-  InjectMessageActionConfig,
-} from '../policy/actions';
+import { ACTION_STRATEGIES } from '../policy/actions';
 
 /** JSON-serializable matcher descriptor, discriminated by `type`. */
 export type MatcherSpec =
@@ -138,11 +127,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Cast a port-action factory result to the concrete engine-facing shape. */
-function asPolicyAction(action: Action): PolicyAction {
-  return action as PolicyAction;
-}
-
 /** True when the given matcher is the unconditional "always" matcher. */
 function isAlwaysMatcher(matcher: PolicyMatcher): boolean {
   return (matcher as AlwaysMatcher)[ALWAYS_MATCHER_BRAND] === true;
@@ -183,47 +167,16 @@ export function buildMatcher(spec: MatcherSpec): PolicyMatcher {
 }
 
 /**
- * Build a concrete {@link PolicyAction} from an {@link ActionSpec}, dispatching
- * on `type` to the right existing factory (each returns a port `Action`, cast
- * to the effect-returning `PolicyAction`). Throws a descriptive error when a
- * required field for the chosen `type` is missing. Unknown extra fields are
- * ignored.
+ * Build a concrete {@link PolicyAction} from an {@link ActionSpec} by looking up
+ * the action's strategy in the {@link ACTION_STRATEGIES} registry (via `spec.type`)
+ * and delegating to its `buildSpec`. Adding a new action needs only a new strategy
+ * + a registry entry — no edit to this function. Throws a descriptive error when a
+ * required field for the chosen `type` is missing. Unknown extra fields are ignored.
  */
 export function buildAction(spec: ActionSpec): PolicyAction {
-  switch (spec.type) {
-    case 'block': {
-      const config: BlockActionConfig = {};
-      if (typeof spec.reason === 'string') config.reason = spec.reason;
-      if (typeof spec.message === 'string') config.message = spec.message;
-      if (typeof spec.template === 'string') config.template = spec.template;
-      return asPolicyAction(createBlockAction(config));
-    }
-    case 'hideTool': {
-      if (!Array.isArray(spec.toolNames)) {
-        throw new Error('action "hideTool" requires a "toolNames" array');
-      }
-      const config: HideToolActionConfig = { toolNames: spec.toolNames };
-      return asPolicyAction(createHideToolAction(config));
-    }
-    case 'rewriteArgs': {
-      if (!isRecord(spec.arguments)) {
-        throw new Error('action "rewriteArgs" requires an "arguments" object');
-      }
-      const config: RewriteArgsActionConfig = { arguments: spec.arguments };
-      if (typeof spec.toolName === 'string') config.toolName = spec.toolName;
-      if (typeof spec.toolCallId === 'string') config.toolCallId = spec.toolCallId;
-      if (spec.mode === 'replace' || spec.mode === 'merge') config.mode = spec.mode;
-      return asPolicyAction(createRewriteArgsAction(config));
-    }
-    case 'injectMessage': {
-      if (typeof spec.content !== 'string') {
-        throw new Error('action "injectMessage" requires a "content" string');
-      }
-      const config: InjectMessageActionConfig = { content: spec.content };
-      if (spec.role === 'user' || spec.role === 'system') config.role = spec.role;
-      return asPolicyAction(createInjectMessageAction(config));
-    }
-  }
+  // Dispatch to the action's strategy via the registry: adding a new action needs
+  // only a new strategy + a single registry entry, no edit to this function.
+  return ACTION_STRATEGIES[spec.type].buildSpec(spec);
 }
 
 /**
@@ -306,12 +259,12 @@ const KNOWN_MATCHER_TYPES = new Set<['toolName' | 'argPattern' | 'loop' | 'alway
   'always',
 ]);
 
-const KNOWN_ACTION_TYPES = new Set<['block' | 'hideTool' | 'rewriteArgs' | 'injectMessage'][number]>([
-  'block',
-  'hideTool',
-  'rewriteArgs',
-  'injectMessage',
-]);
+/**
+ * The set of known action types, derived from the action registry so a newly
+ * registered action is picked up automatically (a core part of the Open/Closed
+ * design; no hand-listed array to edit).
+ */
+const KNOWN_ACTION_TYPES = new Set<ActionEffectKind>(Object.keys(ACTION_STRATEGIES) as ActionEffectKind[]);
 
 /** Validate the `matcher` member of a spec; returns an error message or `null`. */
 function validateMatcher(value: unknown): string | null {
@@ -347,23 +300,11 @@ function validateAction(value: unknown): string | null {
   if (!isRecord(value)) return 'must be an object';
   const t = value.type;
   if (t === undefined) return 'missing "type"';
-  if (typeof t !== 'string' || !KNOWN_ACTION_TYPES.has(t as 'block')) {
+  if (typeof t !== 'string' || !KNOWN_ACTION_TYPES.has(t as ActionEffectKind)) {
     return `unknown action type ${JSON.stringify(t)}`;
   }
-  switch (t) {
-    case 'hideTool':
-      if (!Array.isArray(value.toolNames)) return 'missing required "toolNames" array';
-      break;
-    case 'rewriteArgs':
-      if (!isRecord(value.arguments)) return 'missing required "arguments" object';
-      break;
-    case 'injectMessage':
-      if (typeof value.content !== 'string') return 'missing required "content" string';
-      break;
-    default:
-      break;
-  }
-  return null;
+  // Dispatch required-field validation to the action's strategy via the registry.
+  return ACTION_STRATEGIES[t as ActionEffectKind].validateSpec(value);
 }
 
 /**

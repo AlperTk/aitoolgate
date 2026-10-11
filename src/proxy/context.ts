@@ -2,10 +2,11 @@ import type http from 'node:http';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
 import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
-import type { ToolMetricsTracker } from '../telemetry/toolMetrics';
-import { monotonicEpochMs } from '../telemetry/toolMetrics';
-import { estimateTurnUsage } from '../telemetry/tokenEstimate';
+import type { ToolMetricsTracker, TelemetryHelpers } from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
+import { parseArgs, stableCallId, normalizeUsage, isRecord } from '../telemetry/protocol-common';
+import type { NormalizedUsage } from '../telemetry/protocol-common';
+import { syncResponseBody } from './translate';
 import type { UpstreamClient, UpstreamResult } from './upstream';
 
 /** Read and parse a JSON request body; an empty body resolves to `{}`. */
@@ -132,7 +133,7 @@ function toToolCall(toolCall: unknown): ToolCall {
   return {
     id: t?.id ?? '',
     name: t?.function?.name ?? '',
-    arguments: parseArgs(t?.function?.arguments),
+    arguments: parseArgs(t?.function?.arguments) ?? {},
   };
 }
 
@@ -151,16 +152,6 @@ function extractTextContent(content: unknown): string {
   return '';
 }
 
-function parseArgs(args: unknown): Record<string, unknown> {
-  if (typeof args !== 'string' || args.trim() === '') return {};
-  try {
-    const parsed: unknown = JSON.parse(args);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
 /** Send a JSON response with the given HTTP status. */
 export function sendJSON(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -176,8 +167,8 @@ export function sendJSON(res: http.ServerResponse, status: number, body: unknown
 export interface RunPipelineOptions {
   /**
    * Optional telemetry event bus to emit `tool.call` / `tool.result` / `turn.usage` events onto
-   * after the response phase. Accepts EITHER the port-level `EventBus` or the
-   * telemetry `TelemetryEventBus` (both expose `emit`, so either is structurally
+   * after the response phase. Accepts the {@link TelemetryEventBus} port (or any
+   * {@link TelemetryEmitter}; both expose `emit`, so either is structurally
    * compatible). When omitted, no events are emitted (behavior unchanged). `tool.call`
    * emission runs on EVERY path (default and policy alike) and is centralized here, so a
    * policy stage never double-emits; the policy stage owns only intervention events.
@@ -193,8 +184,8 @@ export interface RunPipelineOptions {
   /**
    * Optional timing source (epoch milliseconds) for this request's telemetry timestamps
    * — the issue time recorded for this response's tool calls AND the arrival time used
-   * when pairing incoming results. Defaults to the shared monotonic wall-clock
-   * ({@link monotonicEpochMs}); inject a controllable clock for deterministic tests.
+   * when pairing incoming results. Defaults to the injected helper's `now` (or a
+   * shared wall-clock); inject a controllable clock for deterministic tests.
    */
   now?: () => number;
   /**
@@ -203,6 +194,14 @@ export interface RunPipelineOptions {
    * WS event stays metadata-only. When omitted, nothing is stored (behavior unchanged).
    */
   toolResultStore?: ToolResultStore;
+  /**
+   * Optional telemetry timing + token-estimation helpers. When provided, their
+   * `now` / `estimateTurnUsage` are used as the PRIMARY timing/estimation source;
+   * otherwise a generic wall-clock is used (behavior unchanged when the helpers are
+   * threaded by the route handlers from the proxy deps, so the proxy never hard-codes
+   * a concrete clock/estimator).
+   */
+  usage?: TelemetryHelpers;
 }
 
 export async function runThroughPipeline(
@@ -219,8 +218,8 @@ export async function runThroughPipeline(
 
   // Tool telemetry has two phases, and BOTH run here UNCONDITIONALLY so that tool-call
   // and tool-result observation are IDENTICAL whether or not a policy stage is present.
-  // The policy stage owns ONLY its INTERVENTION events (see createPolicyStage); it no
-  // longer emits tool.call on its own (that produced id/token-less duplicates which
+  // The policy stage owns ONLY its INTERVENTION events (built via the proxy defaults); it
+  // no longer emits tool.call on its own (that produced id/token-less duplicates which
   // skipped the tracker and left the pending set empty). Tool-RESULT detection
   // (request phase) reads the incoming role:'tool' / tool_result messages; tool-CALL
   // observation (response phase, below) emits one tool.call (stable id + turn tokens)
@@ -237,7 +236,7 @@ export async function runThroughPipeline(
   // unconditionally; a no-op when no bus/tracker is wired or nothing to pair. It reads
   // the request messages independently (never touches rehydration) and does not disturb
   // policy-stage ordering.
-  resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx, opts?.now, opts?.toolResultStore);
+  resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx, opts?.now, opts?.toolResultStore, opts?.usage);
 
   const result = await forward(processedRequest.raw);
   const summary = summarizeResponse(result.body);
@@ -261,7 +260,7 @@ export async function runThroughPipeline(
   // (not only tool-related content). No synthetic per-response tool.result is emitted here; real
   // results are emitted in the request phase above once the client feeds them back. A no-op when
   // neither a bus nor a tracker is wired (pure passthrough — behavior unchanged).
-  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, summary.content, opts?.now);
+  emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, summary.content, opts?.now, opts?.usage);
   return { status: result.status, body: processedResponse.raw };
 }
 
@@ -278,8 +277,11 @@ export function toClientId(client: ClientConfig): string | undefined {
   return undefined;
 }
 
-/** Normalized upstream token usage (provider-agnostic). `cacheHitInput` is the portion of input tokens served from the provider cache (0 when there is none); `total` = input + cacheHitInput + output. */
-export type NormalizedUsage = { input?: number; output?: number; total?: number; cacheHitInput?: number };
+/**
+ * Normalized upstream token usage (provider-agnostic). Re-exported from the shared
+ * `telemetry/protocol-common` module (the single source of truth for this shape).
+ */
+export type { NormalizedUsage };
 
 /**
  * Emit one `tool.call` event per observed tool call (carrying its stable `id` and the
@@ -313,10 +315,11 @@ function emitResponseTelemetry(
   usage: NormalizedUsage | undefined,
   content: string,
   now?: () => number,
+  helpers?: TelemetryHelpers,
 ): void {
   const sessionKey = toSessionKeyString(requestCtx.sessionKey);
   const clientId = toClientId(requestCtx.client);
-  const at = (now ?? monotonicEpochMs)();
+  const at = (now ?? helpers?.now ?? Date.now)();
   // Assign EVERY issued call a stable, turn-unique id (the upstream tool_call id when present,
   // else a deterministic `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch
   // turn NEVER share an identical id — the field the dashboard dedups on. The same id feeds both
@@ -324,7 +327,7 @@ function emitResponseTelemetry(
   const seenIds = new Set<string>();
   const issued = toolCalls.map((call, index) => ({
     call,
-    id: stableToolCallId(sessionKey, at, index, call.id, seenIds),
+    id: stableCallId(sessionKey, at, index, call.id, seenIds),
   }));
   if (bus !== undefined) {
     for (const { call, id } of issued) {
@@ -348,7 +351,15 @@ function emitResponseTelemetry(
   // each distinct turn exactly once. A usage-less, call-free final-answer turn carries no token
   // source and emits nothing (omit, don't fabricate — pure-passthrough behavior unchanged).
   if (bus !== undefined && (usage !== undefined || toolCalls.length > 0)) {
-    const turnTokens = usage ?? estimateTurnUsage(requestCtx.messages, content, toolCalls);
+    // Estimate only when the injected helper provides it; otherwise report zeros so a
+    // usage-less, call-bearing turn contributes no fabricated token mass. In the wired
+    // proxy path the helper is always present (threaded from the composition root).
+    const estimate = helpers?.estimateTurnUsage;
+    const turnTokens =
+      usage ??
+      (estimate !== undefined
+        ? estimate(requestCtx.messages, content, toolCalls)
+        : { input: 0, output: 0, total: 0, cacheHitInput: 0 });
     const input = turnTokens.input ?? 0;
     const cacheHitInput = turnTokens.cacheHitInput ?? 0;
     const output = turnTokens.output ?? 0;
@@ -408,33 +419,6 @@ function makeTurnUsageEvent(
 }
 
 /**
- * Assign a stable, turn-unique id to one issued tool call. Prefers the upstream tool-call id when
- * present; otherwise synthesizes a deterministic `${sessionKey}#${at}#${index}` id. A monotonic
- * suffix (`~1`, `~2`, …) is appended whenever the computed id would still collide with a sibling
- * already seen in this same turn (e.g. two calls sharing one upstream id), guaranteeing NO two
- * sibling calls in a batch turn ever share an identical id — the field the dashboard dedups on.
- * Mirrors `stableStreamCallId` in `telemetry/stream-extract.ts` so both emission paths produce
- * the same contract.
- */
-function stableToolCallId(
-  sessionKey: string,
-  at: number,
-  index: number,
-  preferredId: string,
-  seen: Set<string>,
-): string {
-  const base = preferredId !== '' ? preferredId : `${sessionKey}#${at}#${index}`;
-  let id = base;
-  let n = 0;
-  while (seen.has(id)) {
-    n += 1;
-    id = `${base}~${n}`;
-  }
-  seen.add(id);
-  return id;
-}
-
-/**
  * Detect tool results arriving from the incoming request's messages, pair them against
  * previously-issued calls via the shared tracker, and emit one REAL `tool.result` event
  * per resolved entry (`durationMs = resultArrivalAt - issuedCall.at`, plus the result's
@@ -469,6 +453,7 @@ export function resolveAndEmitToolResults(
   requestCtx: RequestContext,
   now?: () => number,
   store?: ToolResultStore,
+  helpers?: TelemetryHelpers,
 ): void {
   if (tracker === undefined || bus === undefined) return;
   const incoming = extractIncomingToolResults(requestCtx.messages);
@@ -478,7 +463,7 @@ export function resolveAndEmitToolResults(
   // ONE honest shared arrival time per request (requests arrive atomically), taken from the
   // caller's injectable timing source (default: the shared monotonic wall-clock). Every result
   // in this request subtracts its OWN matched call's issue time from this single arrival time.
-  const at = (now ?? monotonicEpochMs)();
+  const at = (now ?? helpers?.now ?? Date.now)();
   const resolved = tracker.resolveResults(
     sessionKey,
     incoming.map((result) => ({ toolCallId: result.toolCallId, at, chars: result.chars })),
@@ -608,66 +593,14 @@ function rawContentToString(content: unknown): { content: string; chars: number 
   return { content: full.slice(0, MAX_TOOL_RESULT_CONTENT_CHARS), chars: full.length };
 }
 
-/** True for finite numeric values. */
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-/** True when a normalized usage carries at least one numeric field. */
-function hasAnyValue(usage: NormalizedUsage): boolean {
-  return usage.input !== undefined || usage.output !== undefined || usage.total !== undefined || usage.cacheHitInput !== undefined;
-}
-
 /**
- * Normalize upstream token usage from the (native or cross-protocol translated) response
- * body into `{ input?, output?, total?, cacheHitInput? }`. The protocol is detected from
- * which usage fields are present — OpenAI `usage.{prompt_tokens,completion_tokens,total_tokens}`
- * vs Anthropic `usage.{input_tokens,output_tokens}` (total = input+cacheHitInput+output
- * when absent) — so the real upstream numbers are read regardless of translation. The
- * whole input is split into BASE input (`input`, not served from cache) and cache-hit
- * input (`cacheHitInput`): OpenAI `prompt_tokens` INCLUDES `prompt_tokens_details.cached_tokens`
- * (so base = prompt − cached, cache-hit = cached), whereas Anthropic `input_tokens`
- * EXCLUDES cache tokens (so base = input_tokens + cache_creation, cache-hit = cache_read).
+ * Normalize a response body's `usage` field into the provider-agnostic
+ * {@link NormalizedUsage} shape, delegating to the shared {@link normalizeUsage}
+ * (the single source of the OpenAI/Anthropic usage-normalization math).
  */
 function extractUsage(body: unknown): NormalizedUsage | undefined {
   if (!isRecord(body)) return undefined;
-  const usage = body.usage;
-  if (!isRecord(usage)) return undefined;
-  // OpenAI shape: usage.{prompt_tokens, completion_tokens, total_tokens}. `prompt_tokens`
-  // includes cached tokens (a subset), so split it into base input + cache-hit input.
-  if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
-    const out: NormalizedUsage = {};
-    const prompt = isNumber(usage.prompt_tokens) ? usage.prompt_tokens : undefined;
-    const details = isRecord(usage.prompt_tokens_details) ? usage.prompt_tokens_details : undefined;
-    const cached = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : 0;
-    out.cacheHitInput = cached;
-    if (prompt !== undefined) out.input = Math.max(0, prompt - cached);
-    else if (cached > 0) out.input = 0;
-    if (isNumber(usage.completion_tokens)) out.output = usage.completion_tokens;
-    if (isNumber(usage.total_tokens)) out.total = usage.total_tokens;
-    else if (out.input !== undefined || out.output !== undefined) {
-      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
-    }
-    return hasAnyValue(out) ? out : undefined;
-  }
-  // Anthropic shape: usage.{input_tokens, output_tokens}. `input_tokens` excludes cache
-  // tokens, so fold cache-creation into base input and carry cache-read as the cache hit.
-  if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
-    const out: NormalizedUsage = {};
-    const input = isNumber(usage.input_tokens) ? usage.input_tokens : undefined;
-    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : 0;
-    const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
-    // base input and cacheHitInput are clamped >= 0 (mirrors the OpenAI clamp above) so a
-    // corrupt negative cache field can never leak a negative input/cacheHitInput/total.
-    out.cacheHitInput = Math.max(0, cacheRead);
-    if (input !== undefined) out.input = Math.max(0, input + cacheCreation);
-    if (isNumber(usage.output_tokens)) out.output = usage.output_tokens;
-    if (out.input !== undefined || out.output !== undefined) {
-      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
-    }
-    return hasAnyValue(out) ? out : undefined;
-  }
-  return undefined;
+  return normalizeUsage(body.usage);
 }
 
 /** Emit an event through an optional bus without ever letting a failure surface. */
@@ -683,11 +616,6 @@ function safeEmit(bus: TelemetryEmitter, event: ToolCallEvent | ToolResultEvent 
 }
 
 
-/** True if `value` is a non-null, non-array object (a plain JSON-like record). */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 /**
  * Reflect the (possibly-edited) provider-agnostic message stream back onto the raw
  * wire request body's `messages` field. Guarded so that only wire bodies that
@@ -702,106 +630,4 @@ function syncRequestMessages(ctx: RequestContext): void {
   if (!Array.isArray(existing)) return; // not a message protocol: leave untouched
   if (existing === ctx.messages) return; // stream untouched: already in sync
   raw.messages = ctx.messages;
-}
-
-/**
- * Rehydrate the raw wire response body from the (possibly-edited) provider-agnostic
- * tool-call list (+ content), respecting the provider shape the raw body carries
- * (OpenAI `choices[].message.tool_calls`; Anthropic assistant `content[]` with
- * `tool_use` blocks). Mutates the raw body in place and is idempotent: when the view
- * is unchanged from the pre-pipeline `original` summary, the raw body is left
- * byte-for-byte identical to the upstream response.
- */
-function syncResponseBody(
-  ctx: ResponseContext,
-  original: { toolCalls: ToolCall[]; content: string },
-): void {
-  const raw = ctx.raw;
-  if (!isRecord(raw)) return;
-  // Only touch the wire when the provider-agnostic view actually differs from what
-  // the upstream returned, so an unedited passthrough is returned unchanged.
-  if (ctx.content === original.content && toolCallsEqual(ctx.toolCalls, original.toolCalls)) return;
-  const protocol = detectResponseProtocol(raw);
-  if (protocol === 'openai') rehydrateOpenAIResponse(raw, ctx.toolCalls);
-  else if (protocol === 'anthropic') rehydrateAnthropicResponse(raw, ctx.toolCalls);
-}
-
-/** Classify a raw response body by provider shape (`unknown` → no rehydration). */
-function detectResponseProtocol(raw: Record<string, unknown>): 'openai' | 'anthropic' | 'unknown' {
-  const choices = raw.choices;
-  if (Array.isArray(choices)) {
-    for (const choice of choices) {
-      if (isRecord(choice) && isRecord(choice.message)) return 'openai';
-    }
-  }
-  if (Array.isArray(raw.content)) return 'anthropic';
-  return 'unknown';
-}
-
-/** Overwrite/clear each OpenAI assistant `choices[].message.tool_calls` from the view. */
-function rehydrateOpenAIResponse(raw: Record<string, unknown>, toolCalls: ToolCall[]): void {
-  const choices = raw.choices;
-  if (!Array.isArray(choices)) return;
-  for (const choice of choices) {
-    if (!isRecord(choice)) continue;
-    const message = choice.message;
-    if (!isRecord(message)) continue;
-    if (toolCalls.length > 0) {
-      message.tool_calls = toolCalls.map((tc) => ({
-        id: tc.id,
-        type: 'function',
-        function: { name: tc.name, arguments: JSON.stringify(tc.arguments ?? {}) },
-      }));
-    } else {
-      delete message.tool_calls;
-    }
-  }
-}
-
-/** Rebuild an Anthropic assistant `content[]` from non-tool blocks + fresh `tool_use` blocks. */
-function rehydrateAnthropicResponse(raw: Record<string, unknown>, toolCalls: ToolCall[]): void {
-  const content = raw.content;
-  if (!Array.isArray(content)) return;
-  // Keep non-`tool_use` blocks (e.g. text) in their original order, then emit one
-  // `tool_use` block per remaining tool call (drops clear them, rewrites update them).
-  const blocks: Record<string, unknown>[] = content.filter(
-    (block): block is Record<string, unknown> => isRecord(block) && block.type !== 'tool_use',
-  );
-  for (const tc of toolCalls) {
-    blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments ?? {} });
-  }
-  raw.content = blocks;
-}
-
-/** True when two tool-call lists carry identical provider-agnostic data. */
-function toolCallsEqual(a: readonly ToolCall[], b: readonly ToolCall[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (!deepEqual(a[i].id, b[i].id) || !deepEqual(a[i].name, b[i].name) || !deepEqual(a[i].arguments, b[i].arguments)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Structural equality for plain (JSON-like) values. */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b || a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) if (!deepEqual(a[i], b[i])) return false;
-    return true;
-  }
-  if (typeof a === 'object') {
-    const aObj = a as Record<string, unknown>;
-    const bObj = b as Record<string, unknown>;
-    if (Object.keys(aObj).length !== Object.keys(bObj).length) return false;
-    for (const key of Object.keys(aObj)) {
-      if (!Object.prototype.hasOwnProperty.call(bObj, key) || !deepEqual(aObj[key], bObj[key])) return false;
-    }
-    return true;
-  }
-  return Number.isNaN(a as number) && Number.isNaN(b as number);
 }

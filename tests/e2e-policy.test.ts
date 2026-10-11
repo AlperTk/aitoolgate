@@ -7,6 +7,7 @@ import { createToolNameMatcher } from '../src/policy/matchers/index';
 import { createBlockAction } from '../src/policy/actions/index';
 import { createEventBus } from '../src/telemetry/event-bus';
 import { createCollector } from '../src/telemetry/collector';
+import { closeHttpServer } from './helpers';
 /** The corrective message injected by the default flagship loop rule. */
 const LOOP_CORRECTION =
   'You appear to be stuck repeating the same tool call. Stop repeating identical calls and change your approach to make progress.';
@@ -40,10 +41,6 @@ function portOf(server: http.Server): number {
   return address.port;
 }
 
-async function closeServer(server: http.Server): Promise<void> {
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-}
 
 /** A fake upstream model: records each request body it receives and returns a canned OpenAI response. */
 interface FakeModel {
@@ -82,7 +79,7 @@ async function createFakeModel(initialCanned: unknown): Promise<FakeModel> {
     setCanned: (canned: unknown) => {
       current = canned;
     },
-    close: () => closeServer(server),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -225,7 +222,7 @@ test('e2e policy: flagship loop rule injects a corrective message that reaches t
     assert.equal(messageRole(extras[0]), 'user');
     assert.equal(messageContent(extras[0]), LOOP_CORRECTION);
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -290,7 +287,7 @@ test('e2e policy: block rule drops the bash call from the response and queues fe
     assert.equal(messageRole(extras2[0]), 'user');
     assert.equal(messageContent(extras2[0]), BLOCK_FEEDBACK);
   } finally {
-    if (proxy) await closeServer(proxy.server);
+    if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();
   }
 });
@@ -364,7 +361,7 @@ test(
       // ...and exactly ONE REAL tool.result, paired across the two successive requests.
       assert.equal(summary.totalResults, 1, `expected exactly one real tool.result, got ${summary.totalResults}`);
     } finally {
-      if (proxy) await closeServer(proxy.server);
+      if (proxy) await closeHttpServer(proxy.server);
       await fakeModel.close();
       collector.dispose();
     }
