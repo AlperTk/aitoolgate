@@ -14,7 +14,7 @@ description: What aitoolgate is, who it serves, its scope, core use cases, and t
 
 ## Core use cases
 1. Point an AI client at the proxy's OpenAI (`/v1/chat/completions`, `/v1/models`) or Anthropic (`/v1/messages`) endpoint instead of the provider directly.
-2. Author **policy rules** (matcher + action) to block tool calls, detect tool-call loops, hide tools, inject corrective feedback, or rewrite tool arguments — live, without restarting.
+2. Author **policy rules** (matcher + action) to detect tool-call loops, hide tools, add tool descriptions, inject corrective feedback, or rewrite tool arguments — live, without restarting.
 3. Watch sessions in real time via the dashboard: live tool-call stream, per-tool metrics/tokens, intervention log.
 4. Drill into any tool call's actual returned value (`GET /api/tool-results/:id`).
 5. Optionally persist rules, telemetry events, and tool-result values to local SQLite.

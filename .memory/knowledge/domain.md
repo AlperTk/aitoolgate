@@ -37,7 +37,8 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 - **Rule selection is ALL-match, not first-match.** Only `enabled` rules fire, evaluated in ascending `priority` (missing = last; ties by array index). Multiple rules can apply in one pass.
 - Matchers return `Match | null`; only `always` never returns `null`. The others may legitimately produce `null` (no match).
 - The **flagship loop rule is ACTIVE by default**: it is wired into the default rule set at composition time (priority 0, evaluated first), is **never persisted** (the rule store stays clean), and is re-added on restart without a DB seed. It is STATELESS; per-session cooldown is laddered in the **policy stage** (which owns per-session feedback state). Don't put per-session state into a rule.
-- `hideTool` strips tools from `raw.tools` **and** removes references from messages. `block` on a response drops the tool calls **and** queues user feedback for the next request — it is never silent.
+- `hideTool` strips tools from `raw.tools` **and** removes references from messages.
+- `addDescription` sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); on a response it is a graceful no-op (a bare response carries no tool list).
 - `injectMessage` on a response is **queued for the next request**, not spliced into the current response.
 - `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
 - **Tool-call emission is centralized** in `context.ts` (`emitResponseTelemetry`), NOT in the policy stage — the stage emits only interventions. Avoid double-counting. It also emits ONE whole-turn `turn.usage` per turn that HAS a token source (upstream-reported usage OR issued tool calls): reported usage when present, else an ESTIMATE over all request messages + response content/tool calls; a usage-less, call-free final-answer turn emits NOTHING (omit, don't fabricate). The SSE path mirrors this at stream end (`stream-extract.ts`).
@@ -52,7 +53,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 ## Matchers (return `Match | null`)
 | Type | Fields | Behavior |
 |---|---|---|
-| `toolName` | `toolName?`, `toolNames?` | name equality on any call. |
+| `toolName` | `toolName?`, `toolNames?` | fires when the name is PRESENT in the context: names an actual tool call (response `toolCalls` / a request assistant `tool_calls` entry) OR — additively — names a tool definition the request offers (`ctx.raw.tools`, either provider shape). The additive request-phase match lets `hideTool`/`addDescription` act directly on the request's tool set. |
 | `argPattern` | `pattern: string\|RegExp`, `toolName?`, `toolNames?` | **case-sensitive** regex vs serialized args (optional name restriction). |
 | `loop` (loopDetector) | `window?=4`, `requireConsecutive?=true`, `paramIdentity/resultIdentity='normalized'\|'exact'` | builds `(call→result)` pairs; signature = `name␟paramsKey␟resultKey` (normalized = key-order/whitespace-insensitive); flags `window` consecutive identical signatures. |
 | `always` | brand flag | fires unconditionally; never `null`. |
@@ -60,10 +61,10 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 ## Actions (`ActionEffect` union)
 | Type | Effect |
 |---|---|
-| `block` `{toolCallIds?, message}` | drops matched calls (request) / drops + queues user feedback (response); supports `{tool}`/`{reason}` templating. |
 | `hideTool` `{toolNames[]}` | removes those tools from `raw.tools` and from message references. |
 | `rewriteArgs` `{toolCallId, newArguments, mode:'replace'\|'merge'}` | mutates a tool call's arguments. |
 | `injectMessage` `{role, content}` | splices into the request; if on a response, queued for the next request. |
+| `addDescription` `{description, toolNames[]}` | sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); response-phase is a graceful no-op (a bare response carries no tool list). |
 
 ## Invariants & state
 - **Session feedback queue:** FIFO, keyed by `fingerprint`; drained and spliced at the injection index (after the system prefix, before the trailing user turn).
