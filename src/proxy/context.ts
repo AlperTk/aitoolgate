@@ -4,7 +4,7 @@ import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipelin
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
 import type { ToolMetricsTracker, TelemetryHelpers } from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
-import { parseArgs, stableCallId, normalizeUsage, isRecord } from '../telemetry/protocol-common';
+import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap } from '../telemetry/protocol-common';
 import type { NormalizedUsage } from '../telemetry/protocol-common';
 import { syncResponseBody } from './translate';
 import type { UpstreamClient, UpstreamResult } from './upstream';
@@ -329,9 +329,14 @@ function emitResponseTelemetry(
     call,
     id: stableCallId(sessionKey, at, index, call.id, seenIds),
   }));
+  // Map each issued tool name to the request-provided description (both OpenAI
+  // tools[i].function.description and Anthropic tools[i].description) so the emitted
+  // tool.call event can carry it. Unknown names (or a request with no `tools` array)
+  // simply omit the field. toolDescriptionMap is non-throwing, so this stays safe.
+  const descByTool = toolDescriptionMap(requestCtx.raw);
   if (bus !== undefined) {
     for (const { call, id } of issued) {
-      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at, id));
+      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at, id, descByTool.get(call.name)));
     }
   }
   // Record issued calls so a LATER request carrying their results can pair them. The same `at`
@@ -376,6 +381,8 @@ function emitResponseTelemetry(
  * Build a {@link ToolCallEvent}. `args` and `tokens` are included only when present; `id` is the
  * caller-assigned stable tool-call id (always non-empty on the emitter paths, where every
  * emitted call carries a stable, turn-unique id — the field the dashboard dedups on).
+ * `description` (the request-provided tool description, looked up by the call's name) is
+ * included only when present, so a tool with no description simply omits the field.
  */
 function makeToolCallEvent(
   sessionKey: string,
@@ -384,6 +391,7 @@ function makeToolCallEvent(
   usage: NormalizedUsage | undefined,
   at: number,
   id: string,
+  description?: string,
 ): ToolCallEvent {
   const hasArgs = Object.keys(call.arguments ?? {}).length > 0;
   return {
@@ -395,6 +403,7 @@ function makeToolCallEvent(
     ...(id !== '' ? { id } : {}),
     ...(usage !== undefined ? { tokens: usage } : {}),
     ...(clientId !== undefined ? { clientId } : {}),
+    ...(typeof description === 'string' && description !== '' ? { description } : {}),
   };
 }
 

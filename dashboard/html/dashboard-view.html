@@ -23,6 +23,7 @@
           <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
             <th scope="col">Status</th>
             <th scope="col">Tool</th>
+            <th scope="col">Description</th>
             <th scope="col">Session</th>
             <th scope="col">Time</th>
             <th scope="col" class="num-col">Dur (ms)</th>
@@ -35,7 +36,7 @@
           <ul id="stream-list" class="stream-list"></ul>
           <div id="stream-empty" class="empty">Waiting for tool calls…</div>
         </div>
-        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters.</div>
+        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters. The Description column shows each tool's description from the request's tool definitions; "—" means the request provided none.</div>
       </section>
 
       <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->

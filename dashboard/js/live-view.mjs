@@ -45,16 +45,26 @@ export function appendTokenAndSizeCells(main, ev) {
 export function setNumCellText(cell, v) {
   if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = fmtOpt(v);
 }
+// Append the Description cell: the tool.call event's request-provided description, or a '—'
+// placeholder when absent (orphan result rows carry no callEv, so they always show '—'). The
+// full text is exposed via the cell's title attribute so a truncated value stays readable.
+export function appendDescriptionCell(main, description) {
+  var text = typeof description === 'string' ? description : '';
+  var cell = el('span', 's-description', text !== '' ? text : '\u2014');
+  if (text !== '') cell.title = text;
+  main.appendChild(cell);
+}
 
 
 /* ---- stream-head self-healing -------------------------------------- */
 // Canonical column headers for the live call stream, matching the shared
-// 10-track grid template used by createCallRow() rows. Normalizing the
+// 11-track grid template used by createCallRow() rows. Normalizing the
 // header at init guarantees correct structure regardless of the served HTML
 // state (stale cache / service worker / older copy); idempotent by design.
 var STREAM_HEAD_CELLS = [
   ['Status', ''],
   ['Tool', ''],
+  ['Description', ''],
   ['Session', ''],
   ['Time', ''],
   ['Dur (ms)', 'num-col'],
@@ -63,7 +73,7 @@ var STREAM_HEAD_CELLS = [
   ['Total', 'num-col'],
   ['Size', 'num-col'],
 ];
-// Rebuild the .stream-head so it contains exactly the canonical 10 cells,
+// Rebuild the .stream-head so it contains exactly the canonical 11 cells,
 // mirroring the .row-main layout. Container attributes are left intact; the
 // final empty cell carries aria-hidden instead of scope.
 export function normalizeStreamHead() {
@@ -102,6 +112,7 @@ export function createCallRow(ev) {
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
+  appendDescriptionCell(main, ev.description);
   var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
@@ -169,6 +180,7 @@ export function createOrphanResultRow(ev) {
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
+  appendDescriptionCell(main, undefined);
   var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);

@@ -45,6 +45,13 @@ export type ToolCallEvent = {
   clientId?: string;
   /** Name of the tool invoked. */
   toolName: string;
+  /**
+   * The tool's human-readable description, taken from the incoming request's `tools`
+   * definition (matched by the tool call's name — both OpenAI `tools[i].function.description`
+   * and Anthropic `tools[i].description`). Omitted when the request provided no description
+   * for this tool (or no `tools` array at all), so the dashboard shows a placeholder instead.
+   */
+  description?: string;
   /** Parsed arguments of the call, if any. */
   args?: unknown;
   /** Stable tool-call id (`ToolCall.id`; OpenAI `tool_calls[].id` / Anthropic `tool_use.id`), present when available. */

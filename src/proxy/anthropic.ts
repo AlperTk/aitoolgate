@@ -128,6 +128,11 @@ async function streamSameProtocol(
     // `turn.usage` event carrying honest input tokens over all message text.
     undefined,
     deps.usage.estimateInputTokens(requestCtx.messages),
+    // The request's raw body (carrying the client's `tools`), so each streamed tool.call can
+    // carry the request-provided tool description (matched by the call's name) — mirroring the
+    // buffered emission path. Uses `requestCtx.raw` (the original request) like the other fields
+    // threaded into the extractor above.
+    requestCtx.raw,
   );
   pipeUpstreamStream(res, upstreamResponse, extractor);
 }

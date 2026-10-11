@@ -45,6 +45,43 @@ export function parseArgs(args: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * Build a tool-name → description map from a request's `tools` array, understanding BOTH
+ * provider wire shapes by value (no protocol switch):
+ *   - OpenAI:    `tools[i].function.{ name, description }`
+ *   - Anthropic: `tools[i].{ name, description }`
+ * For each tool the top-level `name`/`description` win when present (the Anthropic shape),
+ * falling back to the nested `function.*` fields (the OpenAI shape), so a tool carrying
+ * either layout is resolved. Best-effort: `raw` absent or carrying no `tools` array yields
+ * an EMPTY map (callers simply omit the description); a tool with a missing/empty name or a
+ * non-string/empty description is skipped (never fabricated). Reused by the proxy so the
+ * emitted `tool.call` event carries the request-provided description for the dashboard.
+ */
+export function toolDescriptionMap(raw: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!isRecord(raw)) return map;
+  const tools = raw.tools;
+  if (!Array.isArray(tools)) return map;
+  for (const tool of tools) {
+    if (!isRecord(tool)) continue;
+    const fn = isRecord(tool.function) ? tool.function : undefined;
+    const name =
+      typeof tool.name === 'string' && tool.name !== ''
+        ? tool.name
+        : fn !== undefined && typeof fn.name === 'string' && fn.name !== ''
+          ? fn.name
+          : undefined;
+    const description =
+      typeof tool.description === 'string' && tool.description !== ''
+        ? tool.description
+        : fn !== undefined && typeof fn.description === 'string' && fn.description !== ''
+          ? fn.description
+          : undefined;
+    if (name !== undefined && description !== undefined) map.set(name, description);
+  }
+  return map;
+}
+
+/**
  * Assign a stable, turn-unique id to one tool call. Prefers the upstream tool-call id
  * when present; otherwise synthesizes a deterministic `${sessionKey}#${at}#${index}` id.
  * A monotonic suffix (`~1`, `~2`, …) is appended whenever the computed id would still

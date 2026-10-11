@@ -111,7 +111,9 @@ export interface TelemetryHelpers {
  * Port: a factory building the passthrough SSE tool-call extractor `Transform`.
  * The concrete `telemetry/stream-extract` `createSseToolCallExtractor` satisfies
  * this signature (its `bus` parameter is the broader `TelemetryEmitter`, which
- * `TelemetryEventBus` is assignable to).
+ * `TelemetryEventBus` is assignable to). The optional `requestRaw` is the incoming
+ * request body; when provided, each emitted `tool.call` event carries the
+ * request-provided tool description (matched by the call's name).
  */
 export interface SseExtractorFactory {
   (
@@ -121,6 +123,7 @@ export interface SseExtractorFactory {
     tracker?: ToolMetricsTracker,
     now?: () => number,
     inputTokens?: number,
+    requestRaw?: unknown,
   ): Transform;
 }
 

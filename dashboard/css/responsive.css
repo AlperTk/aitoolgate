@@ -16,7 +16,7 @@
   .row-main .col-num { display: none; }
   .stream-head,
   .row-main {
-    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) 1.2rem;
+    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) 1.2rem;
   }
   /* Safety net so the wide top-tools table can't push the page wider either. */
   .tools-scroll { overflow-x: auto; }

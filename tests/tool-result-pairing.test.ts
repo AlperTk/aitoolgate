@@ -519,3 +519,213 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
     await closeAtgServer(srv);
   }
 });
+
+// --- tool.call description: taken from the request's `tools` array (by name) ---
+// A request whose `tools` array carries descriptions produces tool.call events that
+// carry the matching description (matched by the tool call's name). An unknown tool
+// name (absent from the request's tools) yields NO description field at all.
+
+const descByName = (calls: TelemetryEvent[], name: string): Extract<TelemetryEvent, { type: 'tool.call' }> | undefined =>
+  calls.filter(isToolCall).find((c) => c.toolName === name);
+
+// OpenAI wire shape: tools[i].function.{ name, description }.
+test('tool.call carries the request-provided description (OpenAI function shape); unknown tools omit it', async () => {
+  const callBody = {
+    id: 'chatcmpl-dsc', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant', content: null,
+        tool_calls: [
+          { id: 'dsc_1', type: 'function', function: { name: 'search_web', arguments: '{"q":"x"}' } },
+          { id: 'dsc_2', type: 'function', function: { name: 'mystery_tool', arguments: '{}' } },
+        ],
+      },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+  };
+  const reqTools = [
+    { type: 'function', function: { name: 'search_web', description: 'Search the web for information.' } },
+    { type: 'function', function: { name: 'get_weather', description: 'Get the current weather.' } },
+  ];
+  const SESS = 'sess-dsc';
+  const { port, srv, atg } = await startAtgServer(
+    { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    await post(port, '/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'Search for x.' }],
+      tools: reqTools,
+      stream: false,
+    }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two tool.call events observed');
+    const search = descByName(calls, 'search_web');
+    assert.ok(search, 'search_web tool.call present');
+    assert.equal(search?.description, 'Search the web for information.', 'the matched tool carries the request-provided description');
+    const mystery = descByName(calls, 'mystery_tool');
+    assert.ok(mystery, 'mystery_tool tool.call present (absent from the request tools)');
+    assert.equal(mystery?.description, undefined, 'an unknown tool name yields no description');
+    assert.ok(!('description' in mystery), 'no description key at all on the unknown tool call');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});
+
+// Anthropic wire shape: tools[i].{ name, description } (top-level, no `function` wrapper).
+test('tool.call carries the request-provided description (Anthropic top-level shape); unknown tools omit it', async () => {
+  const callBody = {
+    id: 'msg_dsc', type: 'message', role: 'assistant', model: 'claude-3-opus',
+    content: [
+      { type: 'text', text: 'Searching.' },
+      { type: 'tool_use', id: 'adsc_1', name: 'search_web', input: { q: 'x' } },
+      { type: 'tool_use', id: 'adsc_2', name: 'mystery_tool', input: {} },
+    ],
+    stop_reason: 'tool_use',
+    usage: { input_tokens: 5, output_tokens: 15 },
+  };
+  const reqTools = [
+    { name: 'search_web', description: 'Search the web (Anthropic).' },
+    { name: 'get_weather', description: 'Get the weather (Anthropic).' },
+  ];
+  const SESS = 'sess-adsc';
+  const { port, srv, atg } = await startAtgServer(
+    { upstream: anthropicUpstream(seqFetch([jsonRes(callBody), jsonRes({ id: 'msg_dsc_done', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] })])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    await post(port, '/v1/messages', {
+      model: 'claude-3-opus',
+      messages: [{ role: 'user', content: 'Search for x.' }],
+      tools: reqTools,
+      stream: false,
+    }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two tool.call events observed');
+    const search = descByName(calls, 'search_web');
+    assert.ok(search, 'search_web tool.call present');
+    assert.equal(search?.description, 'Search the web (Anthropic).', 'the matched tool carries the request-provided description');
+    const mystery = descByName(calls, 'mystery_tool');
+    assert.ok(mystery, 'mystery_tool tool.call present (absent from the request tools)');
+    assert.equal(mystery?.description, undefined, 'an unknown tool name yields no description');
+    assert.ok(!('description' in mystery), 'no description key at all on the unknown tool call');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});
+
+// --- tool.call description on the STREAMED (SSE) path: same request-`tools` lookup --------
+// The streamed extractor (telemetry/stream-extract.ts) is handed the request's raw body
+// (requestCtx.raw) so each tool.call it emits from an SSE stream carries the request-provided
+// tool description matched by the call's name — mirroring the buffered (proxy/context.ts)
+// path. Unknown tool names (absent from the request tools) omit the field entirely.
+
+test('STREAMED OpenAI: tool.call carries the request-provided description; unknown tools omit it', async () => {
+  // OpenAI-shaped SSE stream issuing two tool calls: search_web (has a request description)
+  // and mystery_tool (absent from the request tools -> no description field at all).
+  const sseBody =
+    'data: ' + JSON.stringify({ choices: [{ delta: { role: 'assistant', content: null, tool_calls: [{ index: 0, id: 'ssd_1', type: 'function', function: { name: 'search_web', arguments: '{"q":' } }] } }] }) + '\n\n' +
+    'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"x"}' } }] } }] }) + '\n\n' +
+    'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: 'ssd_2', type: 'function', function: { name: 'mystery_tool', arguments: '{}' } }] } }] }) + '\n\n' +
+    'data: [DONE]\n\n';
+  const reqTools = [
+    { type: 'function', function: { name: 'search_web', description: 'Search the web (streamed OpenAI).' } },
+    { type: 'function', function: { name: 'get_weather', description: 'Get the weather (streamed OpenAI).' } },
+  ];
+  const SESS = 'sess-ssd';
+  const { port, srv, atg } = await startAtgServer(
+    { upstream: openaiUpstream(seqFetch([sseRes(sseBody), jsonRes(FINAL_OPENAI_JSON)])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    const res = await post(port, '/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'Search for x.' }],
+      tools: reqTools,
+      stream: true,
+    }, { 'x-session-id': SESS });
+    assert.equal(res.status, 200, 'the streamed OpenAI request must be HTTP 200');
+    await res.text(); // drain the SSE so the extractor finalises + emits the tool.call events
+    await sleep(25);
+
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two streamed tool.call events observed');
+    const search = descByName(calls, 'search_web');
+    assert.ok(search, 'search_web streamed tool.call present');
+    assert.equal(search?.description, 'Search the web (streamed OpenAI).', 'the matched tool carries the request-provided description');
+    const mystery = descByName(calls, 'mystery_tool');
+    assert.ok(mystery, 'mystery_tool streamed tool.call present (absent from the request tools)');
+    assert.ok(!('description' in mystery), 'no description key at all on the unknown tool call');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});
+
+test('STREAMED Anthropic: tool.call carries the request-provided description; unknown tools omit it', async () => {
+  // Native Anthropic SSE stream issuing two tool_use blocks: search_web (has a request
+  // description) and mystery_tool (absent from the request tools -> no description field).
+  const frames: Array<{ event: string; data: Record<string, unknown> }> = [
+    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_sadsc', type: 'message', role: 'assistant', content: [], model: 'claude-3-opus', usage: { input_tokens: 20 } } } },
+    { event: 'content_block_start', data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { event: 'content_block_delta', data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Calling.' } } },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+    { event: 'content_block_start', data: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'asd_1', name: 'search_web' } } },
+    { event: 'content_block_delta', data: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"q":"x"}' } } },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 1 } },
+    { event: 'content_block_start', data: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'asd_2', name: 'mystery_tool' } } },
+    { event: 'content_block_delta', data: { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{}' } } },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 2 } },
+    { event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 40 } } },
+    { event: 'message_stop', data: { type: 'message_stop' } },
+  ];
+  const reqTools = [
+    { name: 'search_web', description: 'Search the web (streamed Anthropic).' },
+    { name: 'get_weather', description: 'Get the weather (streamed Anthropic).' },
+  ];
+  const SESS = 'sess-sadsc';
+  const { port, srv, atg } = await startAtgServer(
+    { upstream: anthropicUpstream(seqFetch([sseRes(anthropicSse(frames)), jsonRes({ id: 'msg_sadsc_done', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] })])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    const res = await post(port, '/v1/messages', {
+      model: 'claude-3-opus',
+      messages: [{ role: 'user', content: 'Search for x.' }],
+      tools: reqTools,
+      stream: true,
+    }, { 'x-session-id': SESS });
+    assert.equal(res.status, 200, 'the streamed Anthropic request must be HTTP 200');
+    await res.text(); // drain the SSE so the extractor finalises + emits the tool.call events
+    await sleep(25);
+
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two streamed tool.call events observed');
+    const search = descByName(calls, 'search_web');
+    assert.ok(search, 'search_web streamed tool.call present');
+    assert.equal(search?.description, 'Search the web (streamed Anthropic).', 'the matched tool carries the request-provided description');
+    const mystery = descByName(calls, 'mystery_tool');
+    assert.ok(mystery, 'mystery_tool streamed tool.call present (absent from the request tools)');
+    assert.ok(!('description' in mystery), 'no description key at all on the unknown tool call');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});

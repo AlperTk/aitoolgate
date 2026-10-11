@@ -48,7 +48,7 @@ import { Transform } from 'node:stream';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from './events';
 import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
 import { estimateTokensFromChars } from './tokenEstimate';
-import { parseArgs, stableCallId, normalizeUsage, isRecord, type NormalizedUsage } from './protocol-common';
+import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap, type NormalizedUsage } from './protocol-common';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -77,7 +77,11 @@ interface StreamToolCall {
  * call's per-first-observation issue time recorded into the shared tracker. An OPTIONAL
  * precomputed estimated INPUT-token mass of this stream's REQUEST (`inputTokens`; see
  * `estimateInputTokens` in `tokenEstimate.ts`) lets the final `turn.usage` event carry honest
- * input tokens even when the provider reports no stream usage.
+ * input tokens even when the provider reports no stream usage. An OPTIONAL request `raw`
+ * body (`requestRaw`) lets each emitted `tool.call` event carry the request-provided tool
+ * description (matched by the call's name — both OpenAI `tools[i].function.description` and
+ * Anthropic `tools[i].description`), mirroring the buffered (`proxy/context.ts`) emission path;
+ * omitted when the request provides no description for the tool (or no `tools` array at all).
  */
 export function createSseToolCallExtractor(
   bus: TelemetryEmitter | undefined,
@@ -86,9 +90,15 @@ export function createSseToolCallExtractor(
   tracker?: ToolMetricsTracker,
   now?: () => number,
   inputTokens?: number,
+  requestRaw?: unknown,
 ): Transform {
   // Injectable timing source (epoch milliseconds); defaults to the shared monotonic wall-clock.
   const clockNow = now ?? monotonicEpochMs;
+  // Map each streamed tool name to the request-provided description (both OpenAI
+  // tools[i].function.description and Anthropic tools[i].description) so the emitted
+  // tool.call event can carry it, mirroring the buffered (proxy/context.ts) path.
+  // toolDescriptionMap is non-throwing; a request with no `tools` array yields an empty map.
+  const toolDescs = toolDescriptionMap(requestRaw);
 
   /** Emit through the optional bus, swallowing any synchronous or async failure. */
   const emitEvent = (event: ToolCallEvent | ToolResultEvent | TurnUsageEvent): void => {
@@ -158,12 +168,16 @@ export function createSseToolCallExtractor(
     // final `turn.usage`).
     callsEmitted += 1;
     emittedArgsChars += acc.args.length;
+    // The request-provided tool description (matched by the call's name), attached only when
+    // present so a tool with no description simply omits the field (mirrors the buffered path).
+    const description = toolDescs.get(acc.name);
     emitEvent({
       type: 'tool.call',
       sessionKey,
       toolName: acc.name,
       ...(id !== '' ? { id } : {}),
       ...(args !== undefined ? { args } : {}),
+      ...(typeof description === 'string' && description !== '' ? { description } : {}),
       at,
       // Attach the turn's upstream usage when the provider reported it on the stream (omitted otherwise).
       ...(streamUsage !== undefined ? { tokens: streamUsage } : {}),
