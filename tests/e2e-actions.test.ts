@@ -5,7 +5,6 @@ import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import type { PolicyMatcher } from '../src/policy/types';
 import {
-  createBlockAction,
   createHideToolAction,
   createInjectMessageAction,
   createRewriteArgsAction,
@@ -22,9 +21,6 @@ import { closeHttpServer } from './helpers';
  *   - injectMessage : the corrective message is injected into the forwarded request
  *   - rewriteArgs   : the MATCHED tool call's arguments are rewritten in the forwarded request
  *                     (leaving unmatched calls untouched)
- *   - block         : the MATCHED tool call is blocked/denied — selectively, leaving
- *                     unmatched calls intact — AND its denial feedback is queued into the
- *                     next same-session request.
  *
  * Matchers are chosen to demonstrate each effect: `always` for unconditional actions
  * (`hideTool`, `injectMessage`) and a `toolName` matcher where a specific call must be
@@ -33,12 +29,10 @@ import { closeHttpServer } from './helpers';
 
 const HIDDEN = 'secret_tool';
 const KEPT = 'keep_tool';
-const BLOCKED = 'bash';
 const OTHER = 'web_search';
 const EDITED = 'edit_file';
 const INJECT_CONTENT = 'STOP AND RECONSIDER YOUR APPROACH';
 const SESSION_TOKEN = 'sess-e2e-actions';
-const BLOCK_FEEDBACK = "Tool call 'bash' was blocked: forbidden";
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror tests/e2e-hideTool.test.ts and tests/e2e-policy.test.ts)
@@ -374,106 +368,6 @@ test('e2e actions: rewriteArgs rewrites only the matched tool call\u2019s argume
     // The non-targeted call is left untouched (proves the rewrite is scoped to the match).
     const web = calls.find((call) => call.name === OTHER);
     assert.ok(web !== undefined && JSON.stringify(web.arguments).includes('hello'), 'web_search arguments are left untouched');
-  } finally {
-    if (proxy) await closeHttpServer(proxy.server);
-    await fakeModel.close();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// 4a) block (request phase) — the MATCHED tool call is blocked, others survive
-// ---------------------------------------------------------------------------
-
-test('e2e actions: block denies only the matched tool call, leaving unmatched calls intact', async () => {
-  const fakeModel = await createFakeModel(oaiPlainCompletion());
-  let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
-  try {
-    const rule: PolicyRule = {
-      id: 'e2e-block-request',
-      enabled: true,
-      description: `block ${BLOCKED}`,
-      matcher: createToolNameMatcher({ toolName: BLOCKED }),
-      action: createBlockAction({ reason: 'forbidden' }) as PolicyAction,
-    };
-    proxy = await startProxy({
-      upstream: { baseUrl: `http://127.0.0.1:${fakeModel.port}/v1`, model: 'gpt-4o-mini', protocol: 'openai' },
-      policy: { rules: [rule] },
-    });
-
-    // History carries BOTH the blocked bash call and an unrelated web_search call.
-    const inbound: Msg[] = [
-      { role: 'system', content: 'You are a helpful assistant.' },
-      {
-        role: 'assistant',
-        content: null,
-        tool_calls: [
-          { id: 'c-bash', type: 'function', function: { name: BLOCKED, arguments: JSON.stringify({ command: 'rm -rf /' }) } },
-          { id: 'c-web', type: 'function', function: { name: OTHER, arguments: JSON.stringify({ q: 'hello' }) } },
-        ],
-      },
-      { role: 'user', content: 'Continue.' },
-    ];
-    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-4o-mini', messages: inbound }),
-    });
-    assert.equal(res.status, 200);
-    await res.json();
-
-    const names = assistantCallNames(fakeModel.requests[0]);
-    assert.ok(!names.includes(BLOCKED), `'${BLOCKED}' must be blocked out of the forwarded request`);
-    assert.ok(names.includes(OTHER), `'${OTHER}' is NOT matched by the rule and must survive in the forwarded request`);
-  } finally {
-    if (proxy) await closeHttpServer(proxy.server);
-    await fakeModel.close();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// 4b) block (response phase) — the model-issued call is denied + feedback queued
-// ---------------------------------------------------------------------------
-
-test('e2e actions: block drops the model-issued call from the client response and queues denial feedback', async () => {
-  const fakeModel = await createFakeModel(oaiToolCallCompletion('bash-1', BLOCKED, { command: 'rm -rf /' }));
-  let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
-  try {
-    const rule: PolicyRule = {
-      id: 'e2e-block-response',
-      enabled: true,
-      description: `block ${BLOCKED}`,
-      matcher: createToolNameMatcher({ toolName: BLOCKED }),
-      action: createBlockAction({ reason: 'forbidden' }) as PolicyAction,
-    };
-    proxy = await startProxy({
-      upstream: { baseUrl: `http://127.0.0.1:${fakeModel.port}/v1`, model: 'gpt-4o-mini', protocol: 'openai' },
-      policy: { rules: [rule], sessionIdHeader: 'x-session-id' },
-    });
-    const port = proxy.port;
-    const post = (messages: Msg[]): Promise<Response> =>
-      fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-session-id': SESSION_TOKEN },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages }),
-      });
-
-    // Request #1: the model issues a bash tool call -> it must be dropped from the CLIENT response.
-    const res1 = await post(freshMessages());
-    assert.equal(res1.status, 200);
-    const body1 = (await res1.json()) as { choices?: { message?: Msg }[] };
-    const msg1 = body1?.choices?.[0]?.message;
-    assert.ok(msg1 !== undefined, 'the client response must carry an assistant message');
-    const toolCalls = ((msg1!.tool_calls ?? []) as { function?: { name?: string } }[]);
-    assert.ok(!toolCalls.some((tc) => tc.function?.name === BLOCKED), 'the bash tool call must be dropped from the client response');
-
-    // From here on the model returns a plain turn for this session.
-    fakeModel.setCanned(oaiPlainCompletion());
-
-    // Request #2: same session -> the queued block denial feedback must reach the forwarded request.
-    const res2 = await post(freshMessages());
-    assert.equal(res2.status, 200);
-    await res2.json();
-    assert.ok(hasMessageWithContent(fakeModel.requests[1], BLOCK_FEEDBACK), 'the block denial feedback must be injected into the next same-session request');
   } finally {
     if (proxy) await closeHttpServer(proxy.server);
     await fakeModel.close();

@@ -126,7 +126,14 @@
 
       <!-- Panel 3: intervention log -->
       <section id="interventions-panel" class="card">
-        <h2>Intervention log</h2>
+        <!-- Section-scoped Clear button: clears ONLY this intervention log (rows +
+             their client-side state), NOT the tool-call stream. Mirrors the stats
+             panel's card-head Clear pattern (heading left, action button right). -->
+        <div class="card-head">
+          <h2>Intervention log</h2>
+          <button type="button" class="btn btn-danger" id="btn-clear-interventions"
+                  title="Clears the intervention log currently shown in this dashboard (client-side only)">Clear</button>
+        </div>
         <div class="list-wrap">
           <ul id="intervention-list" class="stream-list"></ul>
           <div id="intervention-empty" class="empty iv-empty">

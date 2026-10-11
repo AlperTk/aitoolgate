@@ -27,11 +27,6 @@ export const MATCHER_FIELDS = {
 };
 
 export const ACTION_FIELDS = {
-  block: [
-    { key: 'reason', label: 'Reason', kind: 'text', hint: 'Substituted for {reason}' },
-    { key: 'message', label: 'Message', kind: 'text', hint: 'Verbatim; overrides template' },
-    { key: 'template', label: 'Template', kind: 'text', hint: 'Supports {tool} and {reason}' }
-  ],
   hideTool: [
     { key: 'toolNames', label: 'Tools to hide', kind: 'list', required: true, hint: 'Comma-separated tool names' }
   ],

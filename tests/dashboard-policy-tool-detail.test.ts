@@ -109,21 +109,27 @@ const rowNameless = (): any => ({
   expanded: true,
 });
 
-/* ---- (a) buildPolicySection renders the three controls for a named call --- */
-test('policy section renders the three controls for a named tool call', () => {
+/* ---- (a) buildPolicySection renders the three controls for a named call ---- */
+test('policy section renders the three controls (hide/addDescription/new) for a named tool call', () => {
   const h: string = LV.buildPolicySection(rowNamed('read_file'));
-  assert.match(h, /data-policy="block"/, 'block control present');
   assert.match(h, /data-policy="hide"/, 'hide control present');
+  assert.match(h, /data-policy="addDescription"/, 'Override (addDescription) control present');
   assert.match(h, /data-policy="new"/, 'new control present');
-  assert.match(h, />Block</, 'Block visible text');
   assert.match(h, />Hide</, 'Hide visible text');
+  assert.match(h, />Override<\/button>/, 'Override visible text');
   assert.match(h, /New policy \u2192/, 'New policy arrow visible text');
   assert.match(h, /class="rd-section policy-section"/, 'policy-section present');
   assert.match(h, /<div class="rd-label">Policy<\/div>/, 'Policy label present');
   assert.match(h, /role="group"/, 'section carries role=group');
-  assert.match(h, /aria-label="Block tool read_file"/, 'block aria-label names the tool');
   assert.match(h, /aria-label="Hide tool read_file"/, 'hide aria-label names the tool');
+  assert.match(h, /aria-label="Hide tool read_file"/, 'hide aria-label names the tool');
+  assert.match(h, /aria-label="Override description for tool read_file"/, 'Override aria-label names the tool');
   assert.match(h, /aria-label="Create new policy rule for tool read_file"/, 'new aria-label names the tool');
+  // The Override control sits inside the Policy section's action row.
+  assert.ok(
+    h.indexOf('data-policy="addDescription"') > h.indexOf('class="rd-section policy-section"'),
+    'Override control is within the policy-section',
+  );
 });
 
 /* ---- (a) buildPolicySection is omitted for a name-less row --------------- */
@@ -131,26 +137,7 @@ test('policy section is omitted for a name-less orphan row', () => {
   assert.equal(LV.buildPolicySection(rowNameless()), '', 'no policy controls for a name-less row');
 });
 
-/* ---- (b) Block POSTs the exact spec, confirms, and refreshes ------------- */
-test('Block button POSTs the exact block spec, confirms, and refreshes the list', async () => {
-  resetCalls();
-  state.rules = [];
-  S.byId('notice')!.hidden = false;
-  await LV.handlePolicyAction('block', 'read_file');
-  await flush();
-  assert.equal(postCalls().length, 1, 'exactly one POST to api/rules');
-  assert.equal(postCalls()[0].url, 'api/rules');
-  assert.deepEqual(postCalls()[0].body, {
-    enabled: true,
-    matcher: { type: 'toolName', toolName: 'read_file' },
-    action: { type: 'block', message: 'Blocked: read_file' },
-  }, 'block spec char-shape matches the documented RuleSpec precisely');
-  assert.ok(getRuleCalls().length >= 1, 'a GET api/rules refresh follows the create');
-  assert.match(String(S.byId('notice')!.textContent), /policy rule created/);
-  assert.equal(S.byId('notice')!.hidden, false, 'success notice is visible');
-});
-
-/* ---- (c) Hide POSTs the exact hide spec ---------------------------------- */
+/* ---- (b) New policy prefills the editor, navigates, moves focus ---------- */
 test('Hide button POSTs the exact hide spec', async () => {
   resetCalls();
   state.rules = [];
@@ -169,13 +156,13 @@ test('New policy prefills the editor, navigates, moves focus, and consumes the p
   state.rules = [];
   (globalThis as any).location.hash = '';
   (S.byId('rule-description')! as any).focusedCount = 0;
-  R.prefillNewRule({ enabled: true, matcher: { type: 'toolName', toolName: 'read_file' }, action: { type: 'block' } });
+  R.prefillNewRule({ enabled: true, matcher: { type: 'toolName', toolName: 'read_file' }, action: { type: 'hideTool', toolNames: ['read_file'] } });
   assert.equal((globalThis as any).location.hash, '#/rules/new', 'navigates to the add-mode editor');
   // Simulate the router (hashchange -> applyRoute -> openNewRuleForm).
   R.openNewRuleForm();
   assert.equal(S.byId('matcher-type')!.value, 'toolName', 'matcher type pre-filled');
   assert.equal(controlValue('matcher-fields', 'toolName'), 'read_file', 'tool name pre-filled');
-  assert.equal(S.byId('action-type')!.value, 'block', 'action type pre-filled');
+  assert.equal(S.byId('action-type')!.value, 'hideTool', 'action type pre-filled');
   assert.equal(S.byId('rule-enabled')!.checked, true, 'enabled checked');
   assert.ok((S.byId('rule-description')! as any).focusedCount >= 1, 'focus moved into the editor form');
   assert.equal(S.byId('rule-editor-title')!.textContent, 'New rule', 'add mode, not edit');
@@ -186,13 +173,13 @@ test('New policy prefills the editor, navigates, moves focus, and consumes the p
 
 /* ---- (e) Duplicate enabled rules are not re-created ---------------------- */
 test('duplicate enabled rule suppresses the POST and notifies', async () => {
-  state.rules = [{ enabled: true, matcher: { type: 'toolName', toolName: 'x' }, action: { type: 'block' } }];
+  state.rules = [{ enabled: true, matcher: { type: 'toolName', toolName: 'x' }, action: { type: 'hideTool', toolNames: ['x'] } }];
   resetCalls();
-  await LV.handlePolicyAction('block', 'x');
+  await LV.handlePolicyAction('hide', 'x');
   await flush();
   assert.equal(postCalls().length, 0, 'no duplicate POST for an already-enabled identical rule');
   assert.ok(calls.every((c) => c.method !== 'POST'), 'no POST at all');
-  assert.match(String(S.byId('notice')!.textContent), /already blocked/);
+  assert.match(String(S.byId('notice')!.textContent), /already hidden/);
 });
 
 /* ---- failed POST surfaces an error notice without throwing --------------- */
@@ -209,7 +196,7 @@ test('failed POST shows an error notice without throwing (no refresh)', async ()
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
   };
   try {
-    await assert.doesNotReject(() => LV.handlePolicyAction('block', 'x'));
+    await assert.doesNotReject(() => LV.handlePolicyAction('hide', 'x'));
     await flush();
     assert.match(String(S.byId('notice')!.textContent), /not created/i, 'error notice surfaces the failed create');
     assert.match(String(S.byId('notice')!.textContent), /boom/);
@@ -218,4 +205,124 @@ test('failed POST shows an error notice without throwing (no refresh)', async ()
   } finally {
     (globalThis as any).fetch = savedFetch;
   }
+});
+
+/* ---- Description section: text, placeholder, and the Override button ---- */
+// A named call row that may carry a description (undefined when omitted).
+const rowWithDesc = (name: string, description?: string): any => ({
+  li: new FakeEl('li'),
+  callEv: { toolName: name, id: 'c1', at: 1, sessionKey: 's1', description },
+  resultEv: null,
+  activeTab: 'details' as any,
+  expanded: true,
+});
+
+/* (a) The section shows ONLY the event's description text — the "Override"
+   quick-action was relocated to the Policy section's action row. */
+test('description section shows only the tool description text (no Override button)', () => {
+  const h: string = LV.buildDescriptionSection(rowWithDesc('read_file', 'Reads a file from disk'));
+  assert.match(h, /class="rd-section description-section"/, 'description-section present');
+  assert.match(h, /<div class="rd-label">Description<\/div>/, 'Description label present');
+  assert.match(h, /<div class="rd-value">Reads a file from disk<\/div>/, 'description text shown in rd-value');
+  assert.doesNotMatch(h, /data-policy="addDescription"/, 'no Override button in the description section');
+  assert.doesNotMatch(h, />Override<\/button>/, 'no Override visible text in the description section');
+  assert.doesNotMatch(h, /data-policy=/, 'no policy controls of any kind in the description section');
+});
+
+/* (a) An absent description renders the em-dash placeholder; the section is text-only. */
+test('description section shows an em-dash placeholder and no policy controls when the event has no description', () => {
+  const h: string = LV.buildDescriptionSection(rowWithDesc('read_file'));
+  assert.match(h, /<div class="rd-value">\u2014<\/div>/, 'em-dash placeholder shown');
+  assert.doesNotMatch(h, /data-policy=/, 'no policy controls in the description section (named row)');
+  assert.doesNotMatch(h, /Reads a file/, 'no description text');
+});
+
+/* (b) The section is text-only (no policy controls) even for a name-less row. */
+test('description section renders no policy controls for a name-less row', () => {
+  const h: string = LV.buildDescriptionSection(rowNameless());
+  assert.match(h, /class="rd-section description-section"/, 'description section still present');
+  assert.match(h, /<div class="rd-value">\u2014<\/div>/, 'em-dash placeholder shown');
+  assert.doesNotMatch(h, /data-policy=/, 'no policy controls of any kind in the description section');
+});
+
+/* (b) Clicking "Override" (via handlePolicyAction) pre-fills the rule form. */
+test('Override pre-fills the rule form with tool name, addDescription action, and description', async () => {
+  resetCalls();
+  state.rules = [];
+  (globalThis as any).location.hash = '';
+  const p = LV.handlePolicyAction('addDescription', 'read_file', 'Reads a file from disk');
+  assert.equal(p && typeof p.then === 'function', true, 'returns a promise');
+  assert.equal((globalThis as any).location.hash, '#/rules/new', 'navigates to the add-mode editor');
+  // Simulate the router (hashchange -> applyRoute -> openNewRuleForm).
+  R.openNewRuleForm();
+  assert.equal(S.byId('matcher-type')!.value, 'toolName', 'matcher type pre-filled');
+  assert.equal(controlValue('matcher-fields', 'toolName'), 'read_file', 'tool name pre-filled');
+  assert.equal(S.byId('action-type')!.value, 'addDescription', 'action type pre-filled to addDescription');
+  assert.equal(controlValue('action-fields', 'description'), 'Reads a file from disk', 'description field pre-filled');
+  assert.equal(S.byId('rule-enabled')!.checked, true, 'enabled checked');
+  assert.equal(S.byId('rule-editor-title')!.textContent, 'New rule', 'add mode, not edit');
+});
+
+/* (b) With no description the form still opens as addDescription with an empty field. */
+test('Override with no description pre-fills an empty description field', async () => {
+  resetCalls();
+  state.rules = [];
+  (globalThis as any).location.hash = '';
+  await LV.handlePolicyAction('addDescription', 'read_file', '');
+  R.openNewRuleForm();
+  assert.equal(S.byId('action-type')!.value, 'addDescription', 'action type pre-filled to addDescription');
+  assert.equal(controlValue('action-fields', 'description'), '', 'empty description pre-filled');
+  assert.equal(controlValue('matcher-fields', 'toolName'), 'read_file', 'tool name pre-filled');
+});
+
+/* (c) A real DOM click on the Policy section's "Override" button (wired by
+   renderRowDetail -> bindPolicySection) pre-fills the rule form with the tool
+   name, addDescription action, and the event's description. */
+test('clicking the policy section Override button pre-fills the rule form (tool name + addDescription + description)', async () => {
+  resetCalls();
+  state.rules = [];
+  (globalThis as any).location.hash = '';
+  const rs = rowWithDesc('read_file', 'Reads a file from disk');
+  const detailEl = new FakeEl('div');
+  detailEl.className = 'row-detail';
+  (rs.li as any).querySelector = (sel: string) => (sel === '.row-detail' ? detailEl : null);
+  const btn = new FakeEl('button');
+  btn.setAttribute('data-policy', 'addDescription');
+  detailEl.appendChild(btn);
+  detailEl.querySelectorAll = (sel: string) => (sel === 'button[data-policy]' ? [btn] : []);
+  // Wire the policy buttons exactly as the real detail panel does.
+  LV.renderRowDetail(rs);
+  // Fire a real click (the module handler calls e.stopPropagation()).
+  (btn as any).click = function (): void {
+    const listeners = ((this as any)._listeners.click || []) as Array<(e?: any) => void>;
+    listeners.slice().forEach((fn) => fn.call(this, { stopPropagation: () => undefined }));
+  };
+  btn.click();
+  assert.equal((globalThis as any).location.hash, '#/rules/new', 'navigates to the add-mode editor');
+  R.openNewRuleForm();
+  assert.equal(S.byId('matcher-type')!.value, 'toolName', 'matcher type pre-filled');
+  assert.equal(controlValue('matcher-fields', 'toolName'), 'read_file', 'tool name pre-filled');
+  assert.equal(S.byId('action-type')!.value, 'addDescription', 'action type pre-filled to addDescription');
+  assert.equal(controlValue('action-fields', 'description'), 'Reads a file from disk', 'description field pre-filled');
+  assert.equal(S.byId('rule-enabled')!.checked, true, 'enabled checked');
+  assert.equal(S.byId('rule-editor-title')!.textContent, 'New rule', 'add mode, not edit');
+});
+
+/* (a) The Description section leads the details tab (text-only); the "Override"
+   button now sits in the Policy section's action row within the same tab. */
+test('details tab leads with the Description section and the Override button now sits in the Policy section', () => {
+  state.interventionsBySession = new Map();
+  const h: string = LV.buildDetailsPanel(rowWithDesc('read_file', 'Reads a file from disk'));
+  assert.match(h, /class="rd-section description-section"/, 'description section present in the details tab');
+  assert.match(h, /<div class="rd-value">Reads a file from disk<\/div>/, 'description text shown in the details tab');
+  assert.match(h, /data-policy="addDescription"/, 'Override button present in the details tab');
+  assert.ok(
+    h.indexOf('data-policy="addDescription"') > h.indexOf('class="rd-section policy-section"'),
+    'Override button is inside the policy-section (relocated from the description section)',
+  );
+  assert.ok(
+    h.indexOf('description-section') !== -1 &&
+      h.indexOf('description-section') < h.indexOf('policy-section'),
+    'description section precedes the policy section in the details tab',
+  );
 });

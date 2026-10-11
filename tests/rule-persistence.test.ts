@@ -273,12 +273,6 @@ test('rules.enabled=false yields a non-persistent in-memory store (no DB file, n
 const ACTION_SPECS: RuleSpec[] = [
   {
     enabled: true,
-    description: 'block-rule',
-    matcher: { type: 'toolName', toolName: 'bash' },
-    action: { type: 'block', reason: 'spam', message: 'no spam', template: 'blocked {tool} {reason}' },
-  },
-  {
-    enabled: true,
     description: 'hide-rule',
     matcher: { type: 'toolName', toolName: 'search_web' },
     action: { type: 'hideTool', toolNames: ['search_web', 'fetch_url'] },
@@ -294,6 +288,12 @@ const ACTION_SPECS: RuleSpec[] = [
     description: 'inject-rule',
     matcher: { type: 'always' },
     action: { type: 'injectMessage', role: 'system', content: 'stay focused' },
+  },
+  {
+    enabled: true,
+    description: 'add-description-rule',
+    matcher: { type: 'toolName', toolName: 'bash' },
+    action: { type: 'addDescription', description: 'Safely runs a shell command.' },
   },
 ];
 

@@ -79,7 +79,7 @@ function addIvRow(session: string, at: number): FakeEl {
   li.dataset.session = session;
   li.dataset.at = String(at);
   IV.children.push(li);
-  M.state.interventionRowData.set(li, { ruleId: 'r1', action: 'block', at, detail: 'stopped', sessionKey: session });
+  M.state.interventionRowData.set(li, { ruleId: 'r1', action: 'hideTool', at, detail: 'stopped', sessionKey: session });
   return li;
 }
 
@@ -97,7 +97,7 @@ beforeEach(() => {
   addCallRow('c2', 'WriteFile', 2000, 'error');
   addOrphan('Search', 3000);
   addIvRow('sess-a', 4000);
-  M.state.interventionsBySession.set('sess-a', [{ ruleId: 'r1', action: 'block', at: 4000 }]);
+  M.state.interventionsBySession.set('sess-a', [{ ruleId: 'r1', action: 'hideTool', at: 4000 }]);
 });
 
 test('Clear button click empties the on-screen stream + intervention lists', () => {

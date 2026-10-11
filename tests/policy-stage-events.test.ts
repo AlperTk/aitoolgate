@@ -5,7 +5,6 @@ import { createRuleEngine, flagshipLoopRule } from '../src/policy/ruleEngine';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import type { Action, PolicyMatcher } from '../src/policy/types';
 import {
-  createBlockAction,
   createHideToolAction,
   createInjectMessageAction,
 } from '../src/policy/actions';
@@ -149,33 +148,6 @@ test('request phase: the flagship loop rule emits an InterventionEvent with its 
   assert.ok(interventions[0].detail!.length > 0, 'the intervention carries a short human-readable detail');
   assert.ok(interventions[0].sessionKey.length > 0, 'the request-derived session key is recorded');
   assert.ok(typeof interventions[0].at === 'number', 'the intervention carries an epoch timestamp');
-});
-
-// --- InterventionEvent (response phase, block) -----------------------------
-
-test('response phase: a block rule emits an InterventionEvent without emitting a tool.call from the stage', async () => {
-  const key: SessionKey = { fingerprint: 'fp-block-events' };
-  const { bus, events } = capturingBus();
-  const stage = createPolicyStage({
-    engine: createRuleEngine([
-      ruleOf('block-bash', createBlockAction({ reason: 'forbidden' }), createToolNameMatcher({ toolName: 'bash' })),
-    ]),
-    bus,
-  });
-
-  await stage.onResponse!(makeResponse([{ id: 'c1', name: 'bash', arguments: { cmd: 'rm -rf /' } }], key));
-
-  const interventions = interventionEvents(events);
-  assert.equal(interventions.length, 1, 'exactly one intervention for the firing block rule');
-  assert.equal(interventions[0].ruleId, 'block-bash');
-  assert.equal(interventions[0].action, 'block');
-  assert.equal(interventions[0].sessionKey, 'fp-block-events', 'the response-derived session key is used');
-  assert.equal(typeof interventions[0].detail, 'string');
-  assert.ok(/block/i.test(interventions[0].detail!), 'the block detail mentions blocking');
-
-  // The stage no longer observes/publishes tool.call itself (that is centralized in
-  // proxy/context.ts); it records only the intervention here.
-  assert.equal(toolCallEvents(events).length, 0, 'the stage does not emit tool.call (context.ts centralizes emission)');
 });
 
 // --- no bus: identical behavior --------------------------------------------

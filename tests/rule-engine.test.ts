@@ -6,7 +6,6 @@ import {
 } from '../src/policy/ruleEngine';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import {
-  createBlockAction,
   createHideToolAction,
   createInjectMessageAction,
 } from '../src/policy/actions';
@@ -100,7 +99,7 @@ test('a matching rule produces its effect; a non-matching rule produces none', (
     ),
     ruleOf(
       'skips-read',
-      createBlockAction({ message: 'blocked' }) as PolicyAction,
+      createHideToolAction({ toolNames: ['read'] }) as PolicyAction,
       createToolNameMatcher({ toolName: 'read' }),
     ),
   ]);
@@ -133,8 +132,8 @@ test('disabled rules are skipped (no effect even if the matcher would match)', (
 test('priority order: effects and matches follow ascending priority (lower first)', () => {
   const engine = createRuleEngine([
     ruleOf(
-      'block-10',
-      createBlockAction({ message: 'blocked by block-10' }) as PolicyAction,
+      'hide-10',
+      createHideToolAction({ toolNames: ['bash'] }) as PolicyAction,
       alwaysMatch(),
       { priority: 10 },
     ),
@@ -147,10 +146,10 @@ test('priority order: effects and matches follow ascending priority (lower first
   ]);
   const result = engine.evaluate(makeRequest(bashCall()));
   // Array order is [block-10, inject-5], but evaluation order is by ascending priority.
-  assert.deepEqual(result.matches.map((m) => m.ruleId), ['inject-5', 'block-10']);
+  assert.deepEqual(result.matches.map((m) => m.ruleId), ['inject-5', 'hide-10']);
   assert.equal(result.effects.length, 2);
   assert.equal(result.effects[0].type, 'injectMessage');
-  assert.equal(result.effects[1].type, 'block');
+  assert.equal(result.effects[1].type, 'hideTool');
 });
 
 test('priority ties are broken by original array order', () => {
@@ -163,7 +162,7 @@ test('priority ties are broken by original array order', () => {
     ),
     ruleOf(
       'second',
-      createBlockAction({ message: 'second' }) as PolicyAction,
+      createHideToolAction({ toolNames: ['bash'] }) as PolicyAction,
       alwaysMatch(),
       { priority: 7 },
     ),
@@ -171,7 +170,7 @@ test('priority ties are broken by original array order', () => {
   const result = engine.evaluate(makeRequest(bashCall()));
   assert.deepEqual(result.matches.map((m) => m.ruleId), ['first', 'second']);
   assert.equal(result.effects[0].type, 'injectMessage');
-  assert.equal(result.effects[1].type, 'block');
+  assert.equal(result.effects[1].type, 'hideTool');
 });
 
 test('a missing priority sorts after any explicit priority (regardless of array position)', () => {

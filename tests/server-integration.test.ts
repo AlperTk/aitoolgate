@@ -299,7 +299,7 @@ test('a WS client receives frames for events emitted on the SHARED bus (same bus
       type: 'policy.intervention',
       sessionKey: 's',
       ruleId: 'r',
-      action: 'block',
+      action: 'hideTool',
       at: Date.now(),
     });
     const frame = await readTextFrame(h.socket, h.leftover);

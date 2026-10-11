@@ -156,7 +156,6 @@ export function findDuplicatePolicyRule(rules, name, actionType) {
 // Action type -> tokenized status tone used as a "severity" pill in the list.
 // Derived from how intrusive each action is (no field in the spec declares it).
 var SEVERITY_CLASS_BY_ACTION = {
-  block: 'badge-err',           // most impactful: drops the call + message
   hideTool: 'badge-interv',     // high: removes tools from the model's set
   rewriteArgs: 'badge-pending', // moderate: rewrites arguments in place
   injectMessage: 'badge-ok'     // low: adds a message to the stream
@@ -199,10 +198,6 @@ function matcherSummary(m) {
 function actionSummary(a) {
   if (!a) return '\u2014';
   switch (a.type) {
-    case 'block':
-      return typeof a.message === 'string' && a.message ? 'block \u00B7 \u201C' + truncate(a.message, 60) + '\u201D'
-        : typeof a.reason === 'string' && a.reason ? 'block \u00B7 reason: ' + truncate(a.reason, 60)
-          : typeof a.template === 'string' && a.template ? 'block \u00B7 template' : 'block call + message';
     case 'hideTool':
       return Array.isArray(a.toolNames) && a.toolNames.length ? 'hide ' + a.toolNames.join(', ') : 'hide tools';
     case 'rewriteArgs': {
@@ -280,11 +275,20 @@ export function renderMatcherFields(type, values) {
     box.appendChild(makeField('matcher-fields', def, values && values[def.key]));
   });
 }
+// The addDescription action was added to the backend after the field schemas in
+// rule-schema.mjs were authored, so ACTION_FIELDS has no entry for it. Merge its
+// single required `description` field in here (leaving every other action's schema
+// untouched) so renderActionFields / collectSpec handle it like any other action.
+var ACTION_FIELDS_ALL = Object.assign({}, ACTION_FIELDS, {
+  addDescription: [
+    { key: 'description', label: 'Tool description', kind: 'area', required: true, hint: 'The description text shown to the model for the matched tool' }
+  ]
+});
 // Rebuild the action-fields container for a type, optionally pre-filled.
 export function renderActionFields(type, values) {
   var box = $('action-fields');
   box.textContent = '';
-  (ACTION_FIELDS[type] || []).forEach(function (def) {
+  (ACTION_FIELDS_ALL[type] || []).forEach(function (def) {
     box.appendChild(makeField('action-fields', def, values && values[def.key]));
   });
 }
@@ -356,6 +360,9 @@ export function clientValidate(spec) {
   if (a.type === 'injectMessage' && !(typeof a.content === 'string' && a.content !== '')) {
     return 'action requires a non-empty "content" string';
   }
+  if (a.type === 'addDescription' && !(typeof a.description === 'string' && a.description !== '')) {
+    return 'action requires a non-empty "description" string';
+  }
   return null;
 }
 // Assemble a full RuleSpec from the current form state; { spec } or { error }.
@@ -365,7 +372,7 @@ export function collectSpec() {
   var err = readSection(MATCHER_FIELDS[state.curMatcherType] || [], $('matcher-fields'), spec.matcher);
   if (err) return { error: err };
   spec.action = { type: state.curActionType };
-  err = readSection(ACTION_FIELDS[state.curActionType], $('action-fields'), spec.action);
+  err = readSection(ACTION_FIELDS_ALL[state.curActionType], $('action-fields'), spec.action);
   if (err) return { error: err };
   var d = $('rule-description').value.trim();
   if (d) spec.description = d;
@@ -379,11 +386,30 @@ export function collectSpec() {
   if (verr) return { error: verr };
   return { spec: spec };
 }
+// The addDescription action is not in the static form HTML (dashboard/html/
+// rules-view.html), so before it is selected (prefill / edit / wiring) ensure the
+// action-type select carries an option for it. Idempotent: adds the option only
+// when it is missing.
+function ensureActionTypeOption(type) {
+  var sel = $('action-type');
+  if (!sel) return;
+  var has = false;
+  Array.prototype.forEach.call(sel.children || [], function (o) {
+    if (o && o.value === type) has = true;
+  });
+  if (!has) {
+    var o = document.createElement('option');
+    o.value = type;
+    o.textContent = type === 'addDescription' ? 'addDescription \u2014 set a tool description' : type;
+    sel.appendChild(o);
+  }
+}
 // Load an existing rule's serialized spec into the form for editing.
 export function loadSpecIntoForm(spec) {
   state.editingId = spec.id || '';
   state.curMatcherType = spec.matcher && spec.matcher.type ? spec.matcher.type : 'loop';
-  state.curActionType = spec.action && spec.action.type ? spec.action.type : 'block';
+  state.curActionType = spec.action && spec.action.type ? spec.action.type : 'hideTool';
+  ensureActionTypeOption(state.curActionType);
   $('matcher-type').value = state.curMatcherType;
   $('action-type').value = state.curActionType;
   renderMatcherFields(state.curMatcherType, spec.matcher || {});
@@ -399,7 +425,7 @@ export function loadSpecIntoForm(spec) {
 export function resetForm() {
   state.editingId = '';
   state.curMatcherType = 'loop';
-  state.curActionType = 'block';
+  state.curActionType = 'hideTool';
   $('matcher-type').value = state.curMatcherType;
   $('action-type').value = state.curActionType;
   renderMatcherFields(state.curMatcherType);
@@ -482,10 +508,26 @@ export function openNewRuleForm() {
   }
 }
 
-// Navigate to the ADD-mode editor with the form pre-filled from `spec`. Sets a
-// pending pre-fill then drives the router; if the current hash is already the
-// add editor (no hashchange will fire) it opens the form directly.
-export function prefillNewRule(spec) {
+// Navigate to the ADD-mode editor with the form pre-filled. Sets a pending
+// pre-fill then drives the router; if the current hash is already the add editor
+// (no hashchange will fire) it opens the form directly.
+//
+// Accepts either a full RuleSpec (the quick-create callers in live-view) or a
+// tool name + description that builds an addDescription spec:
+//   prefillNewRule(toolName, description)
+//     -> { matcher: { type: 'toolName', toolName }, action: { type: 'addDescription', description } }
+// so a tool-detail "Override" button can pre-fill the editor in one call.
+export function prefillNewRule(toolNameOrSpec, description) {
+  var spec;
+  if (typeof toolNameOrSpec === 'string' && typeof description === 'string') {
+    spec = {
+      enabled: true,
+      matcher: { type: 'toolName', toolName: toolNameOrSpec },
+      action: { type: 'addDescription', description: description }
+    };
+  } else {
+    spec = toolNameOrSpec;
+  }
   pendingNewRuleSpec = spec;
   if (String(location.hash || '').replace(/^#\/?/, '') !== 'rules/new') {
     location.hash = '#/rules/new'; // hashchange -> applyRoute -> openNewRuleForm()
@@ -526,6 +568,7 @@ export async function openEditRuleForm(id) {
 // (The editor's "Back to rules" link is a plain <a href="#/rules"> — native
 // hash navigation drives the router, so it needs no handler here.)
 export function bindFormEvents() {
+  ensureActionTypeOption('addDescription'); // the dropdown must offer it for manual selection
   var mt = $('matcher-type');
   if (mt) mt.addEventListener('change', function () {
     state.curMatcherType = this.value;

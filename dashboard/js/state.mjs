@@ -16,9 +16,9 @@ export const state = {
   // set while the form edits an existing rule
   editingId: '',
   // Defaults chosen so a freshly-emptied form still yields a valid RuleSpec:
-  // matcher "loop" (all fields optional) + action "block" (all fields optional).
+  // matcher "loop" (all fields optional) + action "hideTool".
   curMatcherType: 'loop',
-  curActionType: 'block',
+  curActionType: 'hideTool',
   // Last rule list fetched from the server (serialized RuleSpec[]). Cached so a
   // deep-link to #/rules/{id} can open the editor instantly without a round trip.
   rules: [],
@@ -48,5 +48,14 @@ export const state = {
   timeRange: { mode: 'all' },
   // Per-row raw data for intervention log rows (li -> { ruleId, action, at, detail,
   // sessionKey }), used by drill-down and export; kept in sync with the DOM.
-  interventionRowData: new Map()
+  interventionRowData: new Map(),
+  // Render-dedup only: sessionKey -> the single <li> row currently shown for that
+  // session in the intervention log. A repeated policy.intervention event for an
+  // already-seen sessionKey updates that row IN PLACE (no new <li> is created); a
+  // new sessionKey gets a new row. Empty/absent sessionKeys keep the per-event
+  // behavior (no entry is stored). Trimmed rows are dropped (see live-view.mjs
+  // trimCallData) and clearOnScreenHistory clears the map. Unlike
+  // interventionsBySession (which appends EVERY event for drill-down + the
+  // 'intervention' status filter), this map holds one row per session for display.
+  interventionRowBySession: new Map()
 };

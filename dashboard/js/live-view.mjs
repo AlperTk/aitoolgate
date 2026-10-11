@@ -303,23 +303,24 @@ export function renderRowDetail(rs) {
   bindPolicySection(rs, detailEl);
 }
 
-// Wire the policy quick-action buttons built by buildPolicySection. Called by
-// renderRowDetail after the detail innerHTML is (re)built, so each fresh DOM has
-// fresh listeners. Re-enables a clicked button once the action settles so rapid
-// double-clicks do not stack requests.
+// Wire the policy quick-action buttons built by buildPolicySection: the Policy
+// section's Hide / Override / New controls. Called by renderRowDetail
+// after the detail innerHTML is (re)built, so each fresh DOM has fresh
+// listeners. Every button is bound by its data-policy attribute wherever it
+// appears in the detail panel. Re-enables a clicked button once the action
+// settles so rapid double-clicks do not stack requests.
 function bindPolicySection(rs, detailEl) {
   var ev = rs.callEv || rs.resultEv;
   var name = ev && typeof ev.toolName === 'string' ? ev.toolName : '';
   if (!name) return;
-  var section = detailEl.querySelector('.policy-section');
-  if (!section) return;
-  section.querySelectorAll('button[data-policy]').forEach(function (btn) {
+  var description = ev && typeof ev.description === 'string' ? ev.description : '';
+  detailEl.querySelectorAll('button[data-policy]').forEach(function (btn) {
     var action = btn.getAttribute('data-policy');
     btn.addEventListener('click', function (e) {
       e.stopPropagation();
       if (btn.disabled) return;
       btn.disabled = true;
-      var p = handlePolicyAction(action, name);
+      var p = handlePolicyAction(action, name, description);
       if (p && typeof p.then === 'function') {
         p.then(function () { btn.disabled = false; }, function () { btn.disabled = false; });
       } else {
@@ -337,10 +338,25 @@ function buildArgsPanel(rs) {
   return '<div class="muted small">No arguments.</div>';
 }
 
+// Build the "Description" section for a row's detail panel: the tool.call
+// event's request-provided description (or a '—' placeholder when absent,
+// mirroring the stream table's Description column). Text-only — the "Override"
+// quick-action now lives in the Policy section's action row (buildPolicySection).
+// All text is escaped.
+export function buildDescriptionSection(rs) {
+  var ev = rs.callEv || rs.resultEv;
+  var desc = ev && typeof ev.description === 'string' ? ev.description : '';
+  var html = '<div class="rd-section description-section" role="group" aria-label="Description">';
+  html += '<div class="rd-label">Description</div>';
+  html += '<div class="rd-value">' + (desc !== '' ? esc(desc) : '\u2014') + '</div>';
+  html += '</div>';
+  return html;
+}
+
 // Build the compact "Policy" quick-actions section for a row. Returns an HTML
 // string when the row has a non-empty tool name, otherwise '' (name-less orphan
 // rows show no policy controls). The three controls map to data-policy:
-// block | hide | new. All text is escaped; the arrow is U+2192.
+// hide | addDescription | new. All text is escaped; the arrow is U+2192.
 export function buildPolicySection(rs) {
   var ev = rs.callEv || rs.resultEv;
   var name = ev && typeof ev.toolName === 'string' ? ev.toolName : '';
@@ -349,23 +365,18 @@ export function buildPolicySection(rs) {
   return '<div class="rd-section policy-section" role="group" aria-label="' + esc(label) + '">'
     + '<div class="rd-label">Policy</div>'
     + '<div class="policy-actions">'
-    + '<button type="button" class="btn btn-primary policy-btn" data-policy="block" aria-label="Block tool ' + esc(name) + '">Block</button>'
     + '<button type="button" class="btn btn-primary policy-btn" data-policy="hide" aria-label="Hide tool ' + esc(name) + '">Hide</button>'
+    + '<button type="button" class="btn policy-btn policy-add-desc" data-policy="addDescription" aria-label="Override description for tool ' + esc(name) + '">Override</button>'
     + '<button type="button" class="btn policy-btn policy-new" data-policy="new" aria-label="Create new policy rule for tool ' + esc(name) + '">New policy \u2192</button>'
     + '</div>'
     + '</div>';
 }
-// Dispatch a policy quick-action by `action` ('block' | 'hide' | 'new') for the
-// given tool `name`. Block/Hide POST an enabled rule immediately; 'new' navigates
-// to the pre-filled editor (synchronous) and returns a resolved promise.
-export function handlePolicyAction(action, name) {
-  if (action === 'block') {
-    return createPolicyRule(name, {
-      enabled: true,
-      matcher: { type: 'toolName', toolName: name },
-      action: { type: 'block', message: 'Blocked: ' + name }
-    });
-  }
+// Dispatch a policy quick-action by `action` ('hide' | 'new' |
+// 'addDescription') for the given tool `name` (plus the row's description for
+// 'addDescription'). Hide POSTs an enabled rule immediately; 'new' and
+// 'addDescription' navigate to the pre-filled editor (synchronous) and return a
+// resolved promise.
+export function handlePolicyAction(action, name, description) {
   if (action === 'hide') {
     return createPolicyRule(name, {
       enabled: true,
@@ -377,8 +388,12 @@ export function handlePolicyAction(action, name) {
     prefillNewRule({
       enabled: true,
       matcher: { type: 'toolName', toolName: name },
-      action: { type: 'block' } // default action; the user changes it in the editor
+      action: { type: 'hideTool', toolNames: [name] } // default action; the user changes it in the editor
     });
+    return Promise.resolve();
+  }
+  if (action === 'addDescription') {
+    prefillNewRule(name, typeof description === 'string' ? description : '');
     return Promise.resolve();
   }
   return Promise.resolve();
@@ -393,7 +408,7 @@ export async function createPolicyRule(name, spec) {
   var actionType = spec.action && spec.action.type;
   var dup = findDuplicatePolicyRule(state.rules, name, actionType);
   if (dup && dup.enabled === true) {
-    showNotice(name + ' is already ' + (actionType === 'block' ? 'blocked' : 'hidden') + ' by an existing policy rule');
+    showNotice(name + ' is already hidden by an existing policy rule');
     return;
   }
   try {
@@ -405,11 +420,14 @@ export async function createPolicyRule(name, spec) {
   }
 }
 
-// Build the Details tab panel content: result metadata + session + interventions.
-function buildDetailsPanel(rs) {
+// Build the Details tab panel content: description + result metadata + session
+// + interventions + the Policy quick-actions. The Description section leads — it
+// is the most fundamental detail of a tool call — so the details tab is never
+// empty.
+export function buildDetailsPanel(rs) {
   var ev = rs.callEv || rs.resultEv;
   var res = rs.resultEv;
-  var html = '';
+  var html = buildDescriptionSection(rs);
   if (res) {
     html += '<div class="rd-section"><div class="rd-label">Result</div>';
     html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
@@ -516,6 +534,10 @@ export function trimCallData() {
   state.interventionRowData.forEach(function (_d, li) {
     if (li.parentNode !== ivList) state.interventionRowData.delete(li);
   });
+  // Render-dedup map: drop sessions whose single row has been trimmed out of the list.
+  state.interventionRowBySession.forEach(function (li, sk) {
+    if (li.parentNode !== ivList) state.interventionRowBySession.delete(sk);
+  });
 }
 
 /* ---- client-side filters ------------------------------------------ */
@@ -617,30 +639,77 @@ export function bindFilterEvents() {
 // Append a policy.intervention row to the intervention log as distinct cells:
 // Time | Rule id | Action (type badge) | Detail (message). Reuses the
 // InterventionEvent fields (at, ruleId, action, detail?). Built via DOM so
-// untrusted text is escaped automatically.
+// untrusted text is escaped automatically. DEDUP: an already-seen sessionKey
+// updates that session's EXISTING row IN PLACE (to the latest event, keeping the
+// row in its current position — no re-prepend) instead of adding a new <li>; a
+// new sessionKey gets a new row. Empty/absent sessionKeys keep the per-event
+// behavior (every such event still gets its own row). The render-dedup map
+// (state.interventionRowBySession) is trimmed in trimCallData() and cleared in
+// clearOnScreenHistory(); it does NOT touch state.interventionsBySession
+// (drill-down / the 'intervention' status filter), which still appends every
+// event.
 export function addInterventionRow(ev) {
-  var li = el('li', 'stream-row intervention-row');
+  var sk = typeof ev.sessionKey === 'string' ? ev.sessionKey : '';
+  var li = sk ? state.interventionRowBySession.get(sk) : undefined;
+  if (li) {
+    // A row for this session already exists: refresh its 4 cells + dataset in
+    // place to the latest event. The row keeps its current position (no re-prepend).
+    setInterventionRowCells(li, ev);
+  } else {
+    li = el('li', 'stream-row intervention-row');
+    setInterventionRowCells(li, ev);
+    if (sk) state.interventionRowBySession.set(sk, li);
+    prependTrim($('intervention-list'), li, MAX_LIST_ITEMS);
+    trimCallData();
+  }
+  state.interventionRowData.set(li, { ruleId: ev.ruleId || '', action: ev.action || '', at: ev.at, detail: ev.detail || '', sessionKey: sk });
+  $('intervention-empty').hidden = true;
+}
+
+// Build (on creation) or refresh (on update) the four fixed-order intervention
+// cells (Time | Rule id | Action | Detail) on a row so it reflects the given
+// event. On creation the cells are absent and are appended in fixed order; on
+// update the existing cells are located by class and refreshed IN PLACE so the
+// same <li> (and its position) is preserved across repeated sessionKey events.
+function setInterventionRowCells(li, ev) {
   li.dataset.at = ev.at;
   li.dataset.session = ev.sessionKey || '';
   var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
 
-  var timeEl = el('time', 'iv-time', fmtTime(ev.at));
+  var timeEl = childByClass(li, 'iv-time') || el('time', 'iv-time');
+  timeEl.textContent = fmtTime(ev.at);
   if (when) timeEl.title = when;
-  li.appendChild(timeEl);
 
-  var ruleEl = el('span', 'iv-rule muted', ev.ruleId || '');
+  var ruleEl = childByClass(li, 'iv-rule') || el('span', 'iv-rule muted');
+  ruleEl.textContent = ev.ruleId || '';
   if (ev.ruleId) ruleEl.title = 'Rule id: ' + ev.ruleId;
-  li.appendChild(ruleEl);
 
-  li.appendChild(el('span', 'badge badge-interv iv-action', ev.action || 'intervention'));
+  var actionEl = childByClass(li, 'iv-action') || el('span', 'badge badge-interv iv-action');
+  actionEl.textContent = ev.action || 'intervention';
 
-  var detailEl = el('span', 'iv-detail', ev.detail || '');
+  var detailEl = childByClass(li, 'iv-detail') || el('span', 'iv-detail');
+  detailEl.textContent = ev.detail || '';
   if (ev.detail) detailEl.title = ev.detail;
-  li.appendChild(detailEl);
 
-  state.interventionRowData.set(li, { ruleId: ev.ruleId || '', action: ev.action || '', at: ev.at, detail: ev.detail || '', sessionKey: ev.sessionKey || '' });
-  prependTrim($('intervention-list'), li, MAX_LIST_ITEMS);
-  $('intervention-empty').hidden = true;
+  // Append only on creation (a fresh <li> has no children); on update the cells
+  // already exist in place and keep their current positions (no reordering).
+  if (!li.children.length) {
+    li.appendChild(timeEl);
+    li.appendChild(ruleEl);
+    li.appendChild(actionEl);
+    li.appendChild(detailEl);
+  }
+}
+
+// Locate a direct child of `li` by class name (works on the real DOM and the test
+// stub, whose querySelector is a no-op). Returns null when no child has the class.
+function childByClass(li, cls) {
+  var kids = li.children;
+  for (var i = 0; i < kids.length; i++) {
+    var c = kids[i];
+    if (c.classList && c.classList.contains(cls)) return c;
+  }
+  return null;
 }
 
 // Refresh the "this session" per-type counters driven by WS events.

@@ -17,7 +17,7 @@ function mkRule(id: string, matcher: PolicyMatcher = always): PolicyRule {
     id,
     enabled: true,
     matcher,
-    action: { name: `act:${id}`, apply: () => ({ type: 'block', message: id }) },
+    action: { name: `act:${id}`, apply: () => ({ type: 'hideTool', toolNames: [id] }) },
   };
 }
 

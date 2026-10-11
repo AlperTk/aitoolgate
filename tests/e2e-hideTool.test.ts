@@ -4,6 +4,7 @@ import http from 'node:http';
 import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import { createHideToolAction } from '../src/policy/actions';
+import { createToolNameMatcher } from '../src/policy/matchers';
 import { oaiCanned } from './helpers';
 
 /**
@@ -159,6 +160,95 @@ test('e2e hideTool (OpenAI, JSON): the hidden tool is stripped from the forwarde
     assert.equal(res.status, 200);
     await res.json();
 
+    assertHiddenFromForwarded(fakeModel.requests[0]);
+  } finally {
+    if (proxy) await proxy.server.close();
+    await fakeModel.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OpenAI client → upstream (JSON) — REAL toolName matcher, tool only OFFERED in raw.tools
+// ---------------------------------------------------------------------------
+
+test('e2e hideTool (OpenAI, real toolName matcher): a tool merely OFFERED in raw.tools is stripped from the forwarded request', async () => {
+  const fakeModel = await createFakeModel(OAI_CANNED);
+  let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
+  try {
+    const rule: PolicyRule = {
+      id: 'oai-offered-hide',
+      enabled: true,
+      description: `hide ${HIDDEN} (offered, never called)`,
+      // A REAL toolName matcher: it fires because HIDDEN is OFFERED in raw.tools (no prior call).
+      matcher: createToolNameMatcher({ toolName: HIDDEN }),
+      action: createHideToolAction({ toolNames: [HIDDEN] }) as PolicyAction,
+    };
+    proxy = await startProxy({
+      upstream: { baseUrl: `http://127.0.0.1:${fakeModel.port}/v1`, model: 'gpt-4o-mini', protocol: 'openai' },
+      policy: { rules: [rule] },
+    });
+
+    // Fresh history (NO prior call): the tool is only OFFERED via the tools array.
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Do the thing.' }],
+        tools: [
+          { type: 'function', function: { name: HIDDEN, parameters: { type: 'object' } } },
+          { type: 'function', function: { name: KEPT, parameters: { type: 'object' } } },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+    await res.json();
+
+    assertHiddenFromForwarded(fakeModel.requests[0]);
+  } finally {
+    if (proxy) await proxy.server.close();
+    await fakeModel.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Anthropic client → Anthropic upstream (JSON) — REAL toolName matcher, tool only OFFERED
+// ---------------------------------------------------------------------------
+
+test('e2e hideTool (Anthropic, real toolName matcher): a tool merely OFFERED in raw.tools (Anthropic shape) is stripped', async () => {
+  const fakeModel = await createFakeModel(ANTH_CANNED);
+  let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
+  try {
+    const rule: PolicyRule = {
+      id: 'anth-offered-hide',
+      enabled: true,
+      description: `hide ${HIDDEN} (offered, never called)`,
+      matcher: createToolNameMatcher({ toolName: HIDDEN }),
+      action: createHideToolAction({ toolNames: [HIDDEN] }) as PolicyAction,
+    };
+    proxy = await startProxy({
+      upstream: { baseUrl: `http://127.0.0.1:${fakeModel.port}`, model: 'claude-x', protocol: 'anthropic' },
+      policy: { rules: [rule] },
+    });
+
+    // Fresh history (NO prior call): the tool is only OFFERED via the tools array (Anthropic shape).
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'sk-test' },
+      body: JSON.stringify({
+        model: 'claude-x',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Do the thing.' }],
+        tools: [
+          { name: HIDDEN, input_schema: { type: 'object' } },
+          { name: KEPT, input_schema: { type: 'object' } },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+    await res.json();
+
+    // Same-protocol (Anthropic upstream): the forwarded Anthropic body must not carry the hidden tool.
     assertHiddenFromForwarded(fakeModel.requests[0]);
   } finally {
     if (proxy) await proxy.server.close();

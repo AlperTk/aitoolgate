@@ -31,7 +31,7 @@ const spec = (id: string, enabled: boolean): any => ({
   enabled,
   description: 'Rule ' + id,
   matcher: { type: 'loop' },
-  action: { type: 'block' },
+  action: { type: 'hideTool', toolNames: [] },
 });
 
 test('D1 empty state is HIDDEN when at least one rule exists', () => {

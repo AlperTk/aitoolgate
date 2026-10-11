@@ -93,7 +93,7 @@ export type ToolResultEvent = {
 
 /**
  * The discriminator values shared by every policy {@link ActionEffect}
- * (`'block' | 'hideTool' | 'rewriteArgs' | 'injectMessage'`), so a telemetry
+ * (`'hideTool' | 'rewriteArgs' | 'injectMessage' | 'addDescription'`), so a telemetry
  * {@link InterventionEvent} always names a real, implemented action effect.
  */
 export type InterventionAction = ActionEffect['type'];

@@ -72,7 +72,7 @@ function addIvRow(session: string, at: number): void {
   li.dataset.session = session;
   li.dataset.at = String(at);
   IV.children.push(li);
-  M.state.interventionRowData.set(li, { ruleId: 'rule-1', action: 'block', at, detail: 'stopped', sessionKey: session });
+  M.state.interventionRowData.set(li, { ruleId: 'rule-1', action: 'hideTool', at, detail: 'stopped', sessionKey: session });
 }
 const lastBlob = (): any => S.blobs[S.blobs.length - 1];
 const lastAnchor = (): FakeEl => S.anchors[S.anchors.length - 1];

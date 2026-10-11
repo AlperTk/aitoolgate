@@ -106,7 +106,7 @@ export interface PolicyMatcher {
 
 /**
  * The discriminator values of the policy {@link ActionEffect} union
- * (`'block' | 'hideTool' | 'rewriteArgs' | 'injectMessage'`). Derived from the
+ * (`'hideTool' | 'rewriteArgs' | 'injectMessage' | 'addDescription'`). Derived from the
  * union (not hand-listed), so a newly-added action kind is picked up
  * automatically — a core part of the Open/Closed design.
  */

@@ -1,5 +1,5 @@
 import type { Action, PolicyContext, ActionStrategy, SessionKey } from '../types';
-import type { ActionEffect } from './block';
+import type { ActionEffect } from './index';
 import type { RequestContext, ResponseContext } from '../../ports';
 import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';

@@ -174,25 +174,39 @@ export function onTimeRangeChange() {
 }
 
 /* ---- clear on-screen history ---------------------------------------- */
-// Clear the client-side buffered events and visible lists only. The dedup set is
-// intentionally KEPT so already-seen events are not re-rendered by polling; new
-// events still stream in. Server aggregates (stats panel) are NOT touched.
-export function clearOnScreenHistory() {
-  state.callRows.clear();
-  state.orphanResultEntries.length = 0;
+// Clear ONLY the intervention log: its rendered rows plus the client-side state
+// that backs them (per-session drill-down data, per-row records, the render-
+// dedup map) and the intervention counter. The tool-call stream (call rows,
+// orphan results, call/result counters) is intentionally NOT touched. The dedup
+// set is KEPT (as in clearOnScreenHistory) so already-seen events are not
+// re-rendered by polling; new intervention events still stream in. Server
+// aggregates (stats panel, incl. "Interventions retained") are NOT touched.
+export function clearInterventionLog() {
   state.interventionsBySession.clear();
   state.interventionRowData.clear();
-  state.localCounts.calls = 0; state.localCounts.results = 0; state.localCounts.interventions = 0;
-  var sl = $('stream-list'); if (sl) sl.textContent = '';
+  state.interventionRowBySession.clear();
+  state.localCounts.interventions = 0;
   var il = $('intervention-list'); if (il) il.textContent = '';
-  var se = $('stream-empty'); if (se) se.hidden = false;
   var ie = $('intervention-empty'); if (ie) ie.hidden = false;
   updateLiveCounters();
   applyFilters();
 }
+// Clear the client-side buffered events and visible lists only (both the tool-
+// call stream AND the intervention log). The dedup set is intentionally KEPT so
+// already-seen events are not re-rendered by polling; new events still stream
+// in. Server aggregates (stats panel) are NOT touched.
+export function clearOnScreenHistory() {
+  state.callRows.clear();
+  state.orphanResultEntries.length = 0;
+  state.localCounts.calls = 0; state.localCounts.results = 0;
+  var sl = $('stream-list'); if (sl) sl.textContent = '';
+  var se = $('stream-empty'); if (se) se.hidden = false;
+  clearInterventionLog(); // also resets the intervention counter + re-renders
+}
 
 /* ---- wiring --------------------------------------------------------- */
-// Wire the global controls (time range, clear on-screen history, export).
+// Wire the global controls (time range, clear on-screen history, the
+// section-scoped intervention-log clear, export).
 export function bindControlEvents() {
   var ft = $('filter-time');
   if (ft) ft.addEventListener('change', onTimeRangeChange);
@@ -202,6 +216,8 @@ export function bindControlEvents() {
   if (tt) tt.addEventListener('change', applyCustomTimeRange);
   var bc = $('btn-clear-history');
   if (bc) bc.addEventListener('click', clearOnScreenHistory);
+  var bic = $('btn-clear-interventions');
+  if (bic) bic.addEventListener('click', clearInterventionLog);
   var cej = $('btn-export-calls-json');
   if (cej) cej.addEventListener('click', function () { exportJson(getVisibleCalls(), 'calls'); });
   var cec = $('btn-export-calls-csv');

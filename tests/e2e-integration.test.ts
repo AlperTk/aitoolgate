@@ -219,7 +219,7 @@ function connectAndHandshake(port: number): Promise<WsClient> {
 // --- Test 1: request -> proxy -> policy -> telemetry -> stats --------------
 test('full pipeline: request → proxy → policy → telemetry → stats', async () => {
   // Non-destructive intervention action: search_web stays in the response while the rule
-  // still fires an intervention (a block would drop the tool call itself).
+  // still fires an intervention (a hideTool would drop the tool from the model's set).
   const RULE_ID = 'e2e-inject-search-web';
   const rule: PolicyRule = {
     id: RULE_ID,

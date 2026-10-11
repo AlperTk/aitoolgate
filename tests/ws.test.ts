@@ -254,7 +254,7 @@ test('broadcasts a telemetry event from the bus to connected clients', async () 
   const h = await connectAndHandshake(port);
   try {
     assert.equal(ws?.size ?? -1, 1, 'the handshaked socket should count as an open client');
-    await bus.emit({ type: 'policy.intervention', sessionKey: 's', ruleId: 'r', action: 'block', at: Date.now() });
+    await bus.emit({ type: 'policy.intervention', sessionKey: 's', ruleId: 'r', action: 'hideTool', at: Date.now() });
     const frame = await readTextFrame(h.socket, h.leftover);
     const parsed = JSON.parse(frame.payload) as { type?: string; ruleId?: string; sessionKey?: string };
     assert.equal(parsed.type, 'policy.intervention');

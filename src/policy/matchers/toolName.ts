@@ -15,9 +15,16 @@ export interface ToolNameMatcherConfig {
 }
 
 /**
- * Create a {@link PolicyMatcher} that fires when ANY tool call in the context
- * has a name in the configured set. Returns a rich `Match` describing which
- * tool name(s) matched, or `null` when none match (or when no name is
+ * Create a {@link PolicyMatcher} that fires when a configured tool name is
+ * PRESENT in the context. A name is present when it names an actual tool call
+ * (a response's `toolCalls`, or an assistant `tool_calls` entry in a request's
+ * message history) OR — additively — when it names a tool definition the
+ * request offers (`ctx.raw.tools`, in either provider shape). This lets a rule
+ * fire on the request itself (when a tool is merely OFFERED in the outgoing
+ * tool set, not only when it is actually called), so `hideTool` /
+ * `addDescription` can act directly on the request's `tools` array. Returns a
+ * rich `Match` describing which tool name(s) matched (from either source), or
+ * `null` when none match (or when no name is
  * configured).
  */
 export function createToolNameMatcher(config: ToolNameMatcherConfig): PolicyMatcher {
@@ -32,11 +39,21 @@ export function createToolNameMatcher(config: ToolNameMatcherConfig): PolicyMatc
       for (const call of extractToolCalls(ctx)) {
         if (names.has(call.name)) matchedNames.add(call.name);
       }
+      // Additively: also match on the tool definitions the request offers
+      // (ctx.raw.tools). A rule now fires when a tool is PRESENT in the
+      // outgoing request's tool set even if it was never actually called, so
+      // hideTool / addDescription can act on the request itself. On a response
+      // (whose raw is a response body) this yields nothing, so the matcher's
+      // call-driven behavior is unchanged there; a non-record raw or a
+      // non-array tools is a safe no-op.
+      for (const name of toolNamesFromRaw(ctx)) {
+        if (names.has(name)) matchedNames.add(name);
+      }
       if (matchedNames.size === 0) return null;
       const list = [...matchedNames];
       return {
         matched: true,
-        reason: `Tool call matched: ${list.join(', ')}`,
+        reason: `Tool matched: ${list.join(', ')}`,
         details: { matchedToolNames: list },
       };
     },
@@ -108,6 +125,37 @@ function extractToolCalls(ctx: PolicyContext): ExtractedCall[] {
     }
   }
   return calls;
+}
+
+/**
+ * Extract the names of the tool definitions a request offers, read from
+ * `ctx.raw.tools`, understanding BOTH provider wire shapes by value:
+ *   - OpenAI:    `tools[i].function.name`
+ *   - Anthropic: `tools[i].name`
+ * Best-effort: a non-record `raw` or a non-array `tools` yields an empty list
+ * (never throws). On a response — whose `raw` is a response body, not a
+ * request — `raw.tools` is not a tools array, so this is a natural no-op and
+ * the matcher's call-driven behavior is unchanged there.
+ */
+function toolNamesFromRaw(ctx: PolicyContext): string[] {
+  const names: string[] = [];
+  const raw = ctx.raw;
+  if (!isRecord(raw)) return names;
+  const tools = raw.tools;
+  if (!Array.isArray(tools)) return names;
+  for (const tool of tools) {
+    const name = toolNameOf(tool);
+    if (name !== undefined) names.push(name);
+  }
+  return names;
+}
+
+/** Extract a tool definition's name from either the OpenAI or Anthropic shape. */
+function toolNameOf(tool: unknown): string | undefined {
+  if (!isRecord(tool)) return undefined;
+  const fn = isRecord(tool.function) ? tool.function : undefined;
+  if (typeof fn?.name === 'string') return fn.name;
+  return typeof tool.name === 'string' ? tool.name : undefined;
 }
 
 /** Type guard: is the value a non-null, non-array object. */

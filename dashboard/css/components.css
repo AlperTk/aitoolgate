@@ -171,7 +171,7 @@
 .rd-err { color: var(--red); font-size: var(--fs-sm); }
 
 /* ---- policy quick-actions (row-detail "Details" tab) ------------------- */
-/* Compact, visually subordinate to the main detail content. Block/Hide reuse the
+/* Compact, visually subordinate to the main detail content. Hide reuses the
    primary accent button but tightened; "New policy →" is a transparent ghost
    pushed to the trailing edge, signalling it navigates to the policy editor.
    Token-first: geometry from .btn, tone from var(--accent)/var(--border). */

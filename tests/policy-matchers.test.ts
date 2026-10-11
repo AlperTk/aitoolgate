@@ -36,6 +36,11 @@ function makeRequest(messages: Message[]): RequestContext {
   return { client: CLIENT, model: MODEL, sessionKey: SESSION_KEY, messages, raw: null };
 }
 
+/** A request context whose `raw` is the given provider body (for raw.tools matching). */
+function makeRawRequest(raw: unknown): RequestContext {
+  return { client: CLIENT, model: MODEL, sessionKey: SESSION_KEY, messages: [...prefix()], raw };
+}
+
 /** An assistant message with a single OpenAI-style tool call (arguments as a JSON string). */
 function assistantCall(id: string, name: string, argumentsJson: string): Message {
   return { role: 'assistant', tool_calls: [{ id, function: { name, arguments: argumentsJson } }] };
@@ -107,6 +112,42 @@ test('toolName: { toolNames: ["bash","curl"] } matches a bash call', () => {
   );
   assert.equal(match.matched, true);
   assert.deepEqual(match.details?.matchedToolNames, ['bash']);
+});
+
+test('toolName: matches a request that offers the tool in raw.tools with NO tool call (OpenAI shape)', () => {
+  const raw = { tools: [{ type: 'function', function: { name: 'bash', parameters: { type: 'object' } } }] };
+  const match = expectMatch(
+    createToolNameMatcher({ toolName: 'bash' }).matches(makeRawRequest(raw)),
+    'raw.tools offered (OpenAI)',
+  );
+  assert.equal(match.matched, true);
+  assert.ok((match.details?.matchedToolNames as string[]).includes('bash'), 'the offered tool name is carried on the match');
+});
+
+test('toolName: matches a request that offers the tool in raw.tools (Anthropic shape), no tool call', () => {
+  const raw = { tools: [{ name: 'bash', input_schema: { type: 'object' } }] };
+  const match = expectMatch(
+    createToolNameMatcher({ toolName: 'bash' }).matches(makeRawRequest(raw)),
+    'raw.tools offered (Anthropic)',
+  );
+  assert.equal(match.matched, true);
+  assert.ok((match.details?.matchedToolNames as string[]).includes('bash'), 'the offered tool name is carried on the match');
+});
+
+test('toolName: matchedToolNames carries only the matched offered tool (not unrelated offered tools)', () => {
+  const raw = {
+    tools: [
+      { type: 'function', function: { name: 'bash', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'other', parameters: { type: 'object' } } },
+    ],
+  };
+  const match = expectMatch(createToolNameMatcher({ toolName: 'bash' }).matches(makeRawRequest(raw)), 'only matched offered');
+  assert.deepEqual(match.details?.matchedToolNames, ['bash']);
+});
+
+test('toolName: a request whose raw.tools lacks the target tool (and no call) → null', () => {
+  const raw = { tools: [{ type: 'function', function: { name: 'other', parameters: { type: 'object' } } }] };
+  assert.strictEqual(createToolNameMatcher({ toolName: 'bash' }).matches(makeRawRequest(raw)), null);
 });
 
 // --- argPattern -------------------------------------------------------------

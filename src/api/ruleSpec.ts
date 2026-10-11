@@ -10,8 +10,9 @@
  *   `createArgPatternMatcher` (ArgPatternMatcherConfig) /
  *   `createLoopDetector` (LoopDetectorOptions) — all return a `PolicyMatcher`
  *   directly (no `toPortMatcher` needed; `PolicyRule.matcher` is a `PolicyMatcher`).
- * - actions: `createBlockAction` / `createHideToolAction` /
- *   `createRewriteArgsAction` / `createInjectMessageAction` — all return a port
+ * - actions: `createHideToolAction` /
+ *   `createRewriteArgsAction` / `createInjectMessageAction` /
+ *   `createAddDescriptionAction` — all return a port
  *   `Action`, cast to the concrete effect-returning `PolicyAction`.
  *
  * The inverse, {@link describeRule}, is best-effort display-only: matchers and
@@ -72,16 +73,6 @@ export type MatcherSpec =
 /** JSON-serializable action descriptor, discriminated by `type`. */
 export type ActionSpec =
   | {
-      /** Block the matched tool call(s), returning a (never-silent) message. */
-      type: 'block';
-      /** Reason substituted for `{reason}` in the message. */
-      reason?: string;
-      /** Message emitted verbatim (takes precedence over `template`). */
-      message?: string;
-      /** Message template with `{tool}` / `{reason}` placeholders. */
-      template?: string;
-    }
-  | {
       /** Hide the named tools from the model's available tool set. */
       type: 'hideTool';
       /** Names of the tools to hide. */
@@ -106,6 +97,12 @@ export type ActionSpec =
       role?: 'user' | 'system';
       /** Message content to inject into the stream. */
       content: string;
+  }
+  | {
+      /** Set the matched tool(s)' description on their definition in the outgoing request. */
+      type: 'addDescription';
+      /** Description text set on the matched tool(s). */
+      description: string;
   };
 
 /** A JSON-serializable rule, mirroring the scalar fields of {@link PolicyRule}. */
@@ -211,12 +208,12 @@ export function buildRuleFromSpec(spec: RuleSpec): PolicyRule {
 /** Best-effort action descriptor derived from the closure's readable `name`. */
 function describeAction(rule: PolicyRule): ActionSpec {
   switch (rule.action.name) {
-    case 'block':
-      return { type: 'block' };
     case 'hideTool':
       return { type: 'hideTool', toolNames: [] };
     case 'rewriteArgs':
       return { type: 'rewriteArgs', arguments: {} };
+    case 'addDescription':
+      return { type: 'addDescription', description: rule.description ?? '' };
     default:
       return { type: 'injectMessage', content: rule.description ?? '(unrecoverable action)' };
   }

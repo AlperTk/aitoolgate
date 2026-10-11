@@ -4,15 +4,13 @@ import http from 'node:http';
 import { createProxyHandler } from '../src/proxy/index';
 import { flagshipLoopRule, type PolicyAction, type PolicyRule } from '../src/policy/ruleEngine';
 import { createToolNameMatcher } from '../src/policy/matchers/index';
-import { createBlockAction } from '../src/policy/actions/index';
+import { createHideToolAction } from '../src/policy/actions/index';
 import { createEventBus } from '../src/telemetry/event-bus';
 import { createCollector } from '../src/telemetry/collector';
 import { closeHttpServer } from './helpers';
 /** The corrective message injected by the default flagship loop rule. */
 const LOOP_CORRECTION =
   'You appear to be stuck repeating the same tool call. Stop repeating identical calls and change your approach to make progress.';
-/** The block feedback message queued for the next same-session request. */
-const BLOCK_FEEDBACK = "Tool call 'bash' was blocked: forbidden";
 /** Fixed client session token shared across a session's requests. */
 const SESSION_TOKEN = 'sess-e2e-block-s2';
 
@@ -228,71 +226,6 @@ test('e2e policy: flagship loop rule injects a corrective message that reaches t
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 2: response-out block + per-session feedback drained into the next request
-// ---------------------------------------------------------------------------
-
-test('e2e policy: block rule drops the bash call from the response and queues feedback into the next same-session request', async () => {
-  const blockRule: PolicyRule = {
-    id: 'block-bash',
-    enabled: true,
-    description: 'Block any bash tool call.',
-    matcher: createToolNameMatcher({ toolName: 'bash' }),
-    action: createBlockAction({ reason: 'forbidden' }) as PolicyAction,
-  };
-
-  const fakeModel = await createFakeModel(bashCompletion());
-  let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
-  try {
-    proxy = await startProxy({
-      upstream: {
-        baseUrl: `http://127.0.0.1:${fakeModel.port}/v1`,
-        model: 'gpt-4o-mini',
-        protocol: 'openai',
-      },
-      policy: { rules: [blockRule], sessionIdHeader: 'x-session-id' },
-    });
-
-    const post = (messages: Msg[]): Promise<Response> =>
-      fetch(`http://127.0.0.1:${proxy!.port}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-session-id': SESSION_TOKEN },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages }),
-      });
-
-    // --- Request #1: model emits a bash tool call; the response must have it dropped. ---
-    const res1 = await post(freshMessages());
-    assert.equal(res1.status, 200);
-    const body1 = (await res1.json()) as { choices?: { message?: Msg }[] };
-    const msg1 = body1?.choices?.[0]?.message;
-    assert.ok(msg1 !== undefined, 'response must carry an assistant message');
-    const toolCalls = ((msg1! as Msg).tool_calls ?? []) as { function?: { name?: string } }[];
-    const toolCallNames = toolCalls.map((tc) => tc.function?.name);
-    assert.ok(!toolCallNames.includes('bash'), 'the bash tool call must be dropped from the response');
-    assert.equal(toolCallNames.length, 0, 'no tool calls should remain in the response');
-
-    // From here on the model returns a plain text turn for this session.
-    fakeModel.setCanned(plainCompletion());
-
-    // --- Request #2: same session; the queued block feedback must be injected into the forwarded request. ---
-    const req2Messages = freshMessages();
-    const res2 = await post(req2Messages);
-    assert.equal(res2.status, 200);
-    await res2.json();
-
-    const forwardedReq2 = (fakeModel.requests[1] ?? {}) as { messages?: unknown[] };
-    assert.ok(Array.isArray(forwardedReq2.messages), 'second forwarded request must carry a messages array');
-    const originalKeys2 = new Set(req2Messages.map(messageKey));
-    const extras2 = forwardedReq2.messages!.filter((message) => !originalKeys2.has(messageKey(message)));
-    assert.equal(extras2.length, 1, 'the drained block feedback was injected into the next same-session request');
-    assert.equal(messageRole(extras2[0]), 'user');
-    assert.equal(messageContent(extras2[0]), BLOCK_FEEDBACK);
-  } finally {
-    if (proxy) await closeHttpServer(proxy.server);
-    await fakeModel.close();
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Scenario 3: cross-request tool-call/result pairing through an ACTIVE policy stage
 // ---------------------------------------------------------------------------
 
@@ -306,7 +239,7 @@ test(
       enabled: true,
       description: 'Matches nothing.',
       matcher: createToolNameMatcher({ toolName: '__never_called__' }),
-      action: createBlockAction({ reason: 'unused' }) as PolicyAction,
+      action: createHideToolAction({ toolNames: ['__never_called__'] }) as PolicyAction,
     };
 
     // Upstream emits ONE tool call (id bash-1) with token usage on the first turn, then a

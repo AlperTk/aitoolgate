@@ -5,7 +5,6 @@ import { createRuleEngine, flagshipLoopRule } from '../src/policy/ruleEngine';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import type { Action, PolicyMatcher } from '../src/policy/types';
 import {
-  createBlockAction,
   createHideToolAction,
   createInjectMessageAction,
 } from '../src/policy/actions';
@@ -221,63 +220,6 @@ test('injectMessage (loop): a corrective message is injected into the request', 
   // The original (caller-provided) array is not mutated; a new list is returned.
   assert.equal(processed.messages.length, original.length + 1);
   assert.ok(!hasMessageMatching(original, /stuck|repeating/i), 'the caller-provided array stays unchanged');
-});
-
-// --- block -------------------------------------------------------------------
-
-test('block: drops the offending tool call and queues feedback for the next request', async () => {
-  const feedback = new SessionFeedbackStore();
-  const stage = createPolicyStage({
-    engine: createRuleEngine([
-      ruleOf('block-bash', createBlockAction({ reason: 'forbidden' }), createToolNameMatcher({ toolName: 'bash' })),
-    ]),
-    feedback,
-  });
-  // A resolvable session key (non-empty fingerprint) so the response resolves its
-  // own key rather than falling back to a prior request.
-  const key: SessionKey = { fingerprint: 'fp-block-session' };
-  const calls: ToolCall[] = [{ id: 'c1', name: 'bash', arguments: { cmd: 'rm -rf /' } }];
-  const ctx = makeResponse(calls, key);
-
-  const processed = await stage.onResponse!(ctx);
-  assert.deepEqual(processed.toolCalls, [], 'the offending tool call should be dropped from the response');
-
-  const drained = feedback.drain(key);
-  assert.equal(drained.length, 1, 'one block-feedback message should be queued');
-  assert.equal(drained[0].role, 'user', 'block feedback is delivered as a user message');
-  assert.ok(/forbidden|blocked/i.test(drained[0].content), 'block feedback carries the reason');
-  assert.equal(feedback.size(), 0, 'the queue is empty after draining');
-});
-
-// --- cross-request -----------------------------------------------------------
-
-test('cross-request: a response-side block queues feedback that the next request drains', async () => {
-  const feedback = new SessionFeedbackStore();
-  const stage = createPolicyStage({
-    engine: createRuleEngine([
-      ruleOf('block-bash', createBlockAction({ reason: 'forbidden' }), createToolNameMatcher({ toolName: 'bash' })),
-    ]),
-    feedback,
-  });
-
-  // Request A establishes the session (content-fingerprint of the shared prefix).
-  const prefix = [SYSTEM, USER];
-  await stage.onRequest!(makeRequest([...prefix], { model: 'gpt-test' }));
-  assert.equal(feedback.size(), 0, 'nothing queued after a plain request');
-
-  // Response for the SAME session, but with an empty-fingerprint sessionKey so the
-  // stage must fall back to the request-phase derived key. Only the offending call.
-  await stage.onResponse!(makeResponse([{ id: 'c1', name: 'bash', arguments: { cmd: 'rm -rf /' } }]));
-  assert.equal(feedback.size(), 1, 'the block should queue exactly one feedback message');
-
-  // Request B for the SAME session drains the queued feedback into its messages.
-  const requestB = makeRequest([...prefix, assistantCall('c2', 'bash', '{"cmd":"ls"}')], { model: 'gpt-test' });
-  const processedB = await stage.onRequest!(requestB);
-  assert.ok(
-    hasMessageMatching(processedB.messages, /forbidden|blocked/i),
-    'the queued block feedback should be drained into the next request',
-  );
-  assert.equal(feedback.size(), 0, 'the queued feedback is consumed once drained');
 });
 
 // --- no match ----------------------------------------------------------------

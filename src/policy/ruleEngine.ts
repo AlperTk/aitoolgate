@@ -8,7 +8,7 @@ import type { LoopDetectorOptions } from './matchers';
  * The CONCRETE action shape consumed by the policy rule engine.
  *
  * This is a policy-level refinement of the port `Action` (see `src/ports`). Every
- * built-in action factory (`createBlockAction`, `createHideToolAction`,
+ * built-in action factory (`createHideToolAction`,
  * `createRewriteArgsAction`, `createInjectMessageAction`) returns an object whose
  * `apply` yields an {@link ActionEffect} (or `null`), which is a SUBTYPE of the
  * port `Action` (`apply(ctx): void`) — so any `PolicyAction` is also a valid

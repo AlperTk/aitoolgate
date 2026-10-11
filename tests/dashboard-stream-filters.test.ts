@@ -58,7 +58,7 @@ function addIvRow(p: { session?: string; at: number }): FakeEl {
   li.dataset.session = p.session || '';
   li.dataset.at = String(p.at);
   IV.children.push(li);
-  M.state.interventionRowData.set(li, { ruleId: 'r1', action: 'block', at: p.at, detail: '', sessionKey: p.session || '' });
+  M.state.interventionRowData.set(li, { ruleId: 'r1', action: 'hideTool', at: p.at, detail: '', sessionKey: p.session || '' });
   return li;
 }
 function visibleRows(): FakeEl[] {
@@ -111,7 +111,7 @@ test('D2 status filter over pending/ok/error + unmatched/orphan + intervention',
   addRow({ tool: 'A', status: 'ok', session: 's1', at: 1000 });
   const err = addRow({ tool: 'B', status: 'error', session: 's2', at: 2000 });
   const orphan = addRow({ tool: 'C', status: 'ok', session: 's3', at: 3000, cls: 'orphan-row' });
-  M.state.interventionsBySession.set('s4', [{ ruleId: 'r9', action: 'block' }]);
+  M.state.interventionsBySession.set('s4', [{ ruleId: 'r9', action: 'hideTool' }]);
   const interv = addRow({ tool: 'D', status: 'ok', session: 's4', at: 4000 });
   // ok
   FS.value = 'ok'; fire('filter-status', 'change');
