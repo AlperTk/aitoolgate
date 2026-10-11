@@ -104,7 +104,7 @@ test('D3 calls JSON export builds a non-empty Blob of type application/json and 
   assert.equal(rows.length, 2, 'both visible call rows are exported');
   assert.deepEqual(new Set(rows.map((r: any) => r.toolName)), new Set(['ReadFile', 'WriteFile']));
   const a = lastAnchor();
-  assert.match(a.download, /^mcp-manager-calls-.*\.json$/);
+  assert.match(a.download, /^aitoolgate-calls-.*\.json$/);
   assert.equal(a.clicked, true, 'the anchor click() was triggered programmatically');
 });
 
@@ -125,7 +125,7 @@ test('D3 calls CSV export is RFC-4180 text/csv with a header even for the empty 
   assert.match(text, /ReadFile/, 'includes the call row');
   assert.match(text, /Search/, 'includes the orphan result row');
   assert.equal(text.split('\r\n').length, 3, 'header + 2 data rows');
-  assert.match(lastAnchor().download, /^mcp-manager-calls-.*\.csv$/);
+  assert.match(lastAnchor().download, /^aitoolgate-calls-.*\.csv$/);
 });
 
 test('D3 interventions JSON/CSV export builds correct-type non-empty Blobs from visible intervention rows', async () => {
@@ -136,7 +136,7 @@ test('D3 interventions JSON/CSV export builds correct-type non-empty Blobs from 
   const iv = JSON.parse(await lastBlob().text());
   assert.equal(iv.length, 2);
   assert.deepEqual(new Set(iv.map((r: any) => r.ruleId)), new Set(['rule-1']));
-  assert.match(lastAnchor().download, /^mcp-manager-interventions-.*\.json$/);
+  assert.match(lastAnchor().download, /^aitoolgate-interventions-.*\.json$/);
 
   S.blobs.length = 0;
   ICCSV.click();
@@ -144,7 +144,7 @@ test('D3 interventions JSON/CSV export builds correct-type non-empty Blobs from 
   const csv = await lastBlob().text();
   assert.match(csv, /rule-1/);
   assert.match(csv, /^type,at,time,ruleId,action,detail,sessionKey/);
-  assert.match(lastAnchor().download, /^mcp-manager-interventions-.*\.csv$/);
+  assert.match(lastAnchor().download, /^aitoolgate-interventions-.*\.csv$/);
 });
 
 test('D3 export reflects ONLY the currently-visible (filtered) rows', async () => {

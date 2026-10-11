@@ -17,7 +17,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startMcmServer, closeMcmServer } from './helpers';
+import { startAtgServer, closeAtgServer } from './helpers';
 import type { FetchLike, UpstreamClient, UpstreamResult } from '../src/proxy/upstream';
 import { resolveAndEmitToolResults, runThroughPipeline } from '../src/proxy/context';
 import type { Pipeline, PipelineStage, RequestContext, ResponseContext, ResultContext } from '../src/ports/pipeline';
@@ -92,12 +92,12 @@ test('D-A: batched same-turn calls resolved across interleaved follow-ups get pe
   };
   const baseMsgs = [{ role: 'user', content: 'Do three things.' }];
   const SESS = 'sess-da';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     // Req1: the model issues all three calls in ONE turn.
     await (await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS })).text();
@@ -140,17 +140,17 @@ test('D-A: batched same-turn calls resolved across interleaved follow-ups get pe
     );
 
     // The collector aggregates follow the per-call attribution exactly.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.equal(summary.totalDurationMs, dC + 2 * dA, 'global total duration equals the sum of the three per-call spans');
     const statFor = (name: string) => summary.topTools.find((tt) => tt.toolName === name);
     assert.equal(statFor('tool_c')?.avgDurationMs, dC, 'tool_c aggregate reflects its own earlier span');
     assert.equal(statFor('tool_a')?.avgDurationMs, dA, 'tool_a aggregate reflects its own later span');
     assert.equal(statFor('tool_b')?.avgDurationMs, dA, 'tool_b matches tool_a (equal parallel co-arrival)');
 
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending after the final follow-up');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending after the final follow-up');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 

@@ -1,5 +1,5 @@
 /**
- * End-to-end integration test for the fully-wired mcp-manager HTTP server: it
+ * End-to-end integration test for the fully-wired aitoolgate HTTP server: it
  * mounts the REST API, the built-in WebSocket server, and the dashboard static
  * files onto the SAME server as the proxy routes, all sharing ONE telemetry bus
  * + collector. Uses raw `node:net` sockets for the RFC6455 WebSocket upgrade
@@ -11,12 +11,12 @@ import assert from 'node:assert/strict';
 import * as net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from '../src/server/index';
-import type { McmServer, McmServerHandle } from '../src/server/index';
+import type { AtgServer, AtgServerHandle } from '../src/server/index';
 import { flagshipLoopRule } from '../src/policy/ruleEngine';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-let server: McmServer | undefined;
+let server: AtgServer | undefined;
 const sockets = new Set<net.Socket>();
 
 function track(socket: net.Socket): void {
@@ -24,8 +24,8 @@ function track(socket: net.Socket): void {
   socket.on('error', () => {}); // swallow error noise during teardown
 }
 
-/** Boot the wired server on an ephemeral port; returns the port + the `.mcm` handle. */
-async function start(): Promise<{ port: number; mcm: McmServerHandle }> {
+/** Boot the wired server on an ephemeral port; returns the port + the `.atg` handle. */
+async function start(): Promise<{ port: number; atg: AtgServerHandle }> {
   // createServer(0) auto-listens internally (preserving existing behavior), so we
   // await the 'listening' event rather than calling listen(0) a second time.
   const srv = createServer(0);
@@ -36,9 +36,9 @@ async function start(): Promise<{ port: number; mcm: McmServerHandle }> {
   });
   const addr = srv.address();
   if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('the server.mcm test handle was not attached');
-  return { port: addr.port, mcm };
+  const atg = srv.atg;
+  if (atg === undefined) throw new Error('the server.atg test handle was not attached');
+  return { port: addr.port, atg };
 }
 
 async function teardown(): Promise<void> {
@@ -211,7 +211,7 @@ test('serves the dashboard index at GET / (text/html with an app marker)', async
   assert.match(res.headers.get('content-type') ?? '', /text\/html/);
   const body = await res.text();
   assert.ok(body.includes('<html'), 'index should contain an HTML document');
-  assert.ok(body.includes('mcp-manager'), 'index should contain the app marker');
+  assert.ok(body.includes('aitoolgate'), 'index should contain the app marker');
 });
 
 test('serves the dashboard assets /app.js and /styles.css', async () => {
@@ -251,10 +251,10 @@ test('regression: GET /health returns 200 {status:"ok"}', async () => {
 });
 
 test('GET /api/stats reads the SHARED collector bus as JSON (numeric totals + topTools)', async () => {
-  const { port, mcm } = await start();
+  const { port, atg } = await start();
   // Feed events on the SAME bus the proxy uses; the API's stats must reflect them.
-  await mcm.bus.emit({ type: 'tool.call', sessionKey: 's1', toolName: 'bash', at: Date.now() });
-  await mcm.bus.emit({ type: 'tool.result', sessionKey: 's1', toolName: 'bash', at: Date.now() });
+  await atg.bus.emit({ type: 'tool.call', sessionKey: 's1', toolName: 'bash', at: Date.now() });
+  await atg.bus.emit({ type: 'tool.result', sessionKey: 's1', toolName: 'bash', at: Date.now() });
   const res = await fetch(`http://127.0.0.1:${port}/api/stats`);
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type') ?? '', /json/);
@@ -277,8 +277,8 @@ test('GET /api/stats reads the SHARED collector bus as JSON (numeric totals + to
 });
 
 test('seeding a rule is reflected by GET /api/rules', async () => {
-  const { port, mcm } = await start();
-  const stored = mcm.ruleStore.add(flagshipLoopRule());
+  const { port, atg } = await start();
+  const stored = atg.ruleStore.add(flagshipLoopRule());
   assert.equal(stored.id, 'flagship-loop-rule');
   const res = await fetch(`http://127.0.0.1:${port}/api/rules`);
   assert.equal(res.status, 200);
@@ -290,12 +290,12 @@ test('seeding a rule is reflected by GET /api/rules', async () => {
 });
 
 test('a WS client receives frames for events emitted on the SHARED bus (same bus as the proxy)', async () => {
-  const { port, mcm } = await start();
+  const { port, atg } = await start();
   const h = await connectAndHandshake(port);
   try {
-    assert.equal(mcm.ws.size, 1, 'the handshaked socket should count as an open client');
+    assert.equal(atg.ws.size, 1, 'the handshaked socket should count as an open client');
     // Emit on the SAME shared bus the proxy handler feeds; the WS must broadcast it.
-    await mcm.bus.emit({
+    await atg.bus.emit({
       type: 'policy.intervention',
       sessionKey: 's',
       ruleId: 'r',

@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — dynamic rule-form field schemas.
+ * aitoolgate dashboard — dynamic rule-form field schemas.
  *
  * Each dynamic form control is described here by `kind`. Feature modules
  * (`readField` and `makeField`) interpret `kind`, and `clientValidate`

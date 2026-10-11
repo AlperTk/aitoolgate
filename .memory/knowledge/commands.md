@@ -1,6 +1,6 @@
 ---
 name: commands
-description: Build, run, test, and typecheck commands plus environment variables and local-service requirements for mcp-manager. Read when you need to build, run, test, or configure the project.
+description: Build, run, test, and typecheck commands plus environment variables and local-service requirements for aitoolgate. Read when you need to build, run, test, or configure the project.
 ---
 
 # Commands

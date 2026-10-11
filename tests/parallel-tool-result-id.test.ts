@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startMcmServer, closeMcmServer } from './helpers';
+import { startAtgServer, closeAtgServer } from './helpers';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
 
@@ -78,12 +78,12 @@ test('N parallel same-name same-turn tool calls pair into N distinct stable-id t
     { role: 'system', content: 'You are a helpful assistant.' },
     { role: 'user', content: `Read ${N} files in parallel.` },
   ];
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     // Req1: the model issues N same-name tool calls in ONE turn.
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
@@ -122,9 +122,9 @@ test('N parallel same-name same-turn tool calls pair into N distinct stable-id t
     assert.ok(results.every((r) => typeof r.toolName === 'string' && r.toolName !== ''), 'every result carries a real toolName');
 
     // No issued call remains stuck pending after the single follow-up.
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending after the single follow-up');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending after the single follow-up');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });

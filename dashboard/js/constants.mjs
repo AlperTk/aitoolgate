@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — tunable / config constants.
+ * aitoolgate dashboard — tunable / config constants.
  *
  * Module-level tunables and pure constants shared across the foundation and
  * feature modules. Zero dependencies; safe to import anywhere. No imports.

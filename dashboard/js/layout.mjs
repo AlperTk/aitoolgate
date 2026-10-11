@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — layout composition.
+ * aitoolgate dashboard — layout composition.
  *
  * Leaf module (imports nothing). The shell (index.html) holds only placeholder
  * slots; this fetches the external HTML fragments that make up the page body

@@ -1,4 +1,4 @@
-/* mcp-manager dashboard css — settings: the Settings popup/modal (js/settings.mjs).
+/* aitoolgate dashboard css — settings: the Settings popup/modal (js/settings.mjs).
    Loaded LAST among the dashboard stylesheets (see index.html): new rules here win
    ties against earlier aggregated files at equal specificity. Reuses existing base
    classes (.btn/.btn-primary/.badge/.field*/.form-error/.empty/.muted/.small); this

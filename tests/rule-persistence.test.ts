@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../config/config';
 import { createServer } from '../src/server/index';
-import type { McmServer, McmServerHandle } from '../src/server/index';
+import type { AtgServer, AtgServerHandle } from '../src/server/index';
 import { flagshipLoopRule } from '../src/policy/ruleEngine';
 import type { RuleSpec } from '../src/api/ruleSpec';
 
@@ -44,7 +44,7 @@ function restoreRulesEnv(): void {
 
 // --- lifecycle helpers --------------------------------------------------------
 
-let pendingServers: McmServer[] = [];
+let pendingServers: AtgServer[] = [];
 let tempDirs: string[] = [];
 let originalCwd: string | undefined;
 
@@ -54,7 +54,7 @@ function uniqueDbPath(): { dir: string; dbPath: string } {
   return { dir, dbPath: path.join(dir, `${randomBytes(6).toString('hex')}.db`) };
 }
 
-async function startServer(): Promise<McmServer> {
+async function startServer(): Promise<AtgServer> {
   const srv = createServer(0); // auto-listens on an ephemeral port
   pendingServers.push(srv);
   await new Promise<void>((resolve) => {
@@ -63,25 +63,25 @@ async function startServer(): Promise<McmServer> {
   });
   const addr = srv.address();
   if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  if (srv.mcm === undefined) throw new Error('the server.mcm test handle was not attached');
+  if (srv.atg === undefined) throw new Error('the server.atg test handle was not attached');
   return srv;
 }
 
-function portOf(srv: McmServer): number {
+function portOf(srv: AtgServer): number {
   const addr = srv.address();
   if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
   return addr.port;
 }
 
 /** The non-undefined test handle attached to a started server. */
-function handle(srv: McmServer): McmServerHandle {
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('the server.mcm test handle was not attached');
-  return mcm;
+function handle(srv: AtgServer): AtgServerHandle {
+  const atg = srv.atg;
+  if (atg === undefined) throw new Error('the server.atg test handle was not attached');
+  return atg;
 }
 
 /** Idempotent + error-tolerant close so a server can be closed by both the test and afterEach. */
-async function closeServer(srv?: McmServer): Promise<void> {
+async function closeServer(srv?: AtgServer): Promise<void> {
   if (srv === undefined) return;
   try {
     srv.closeAllConnections();

@@ -82,7 +82,7 @@ export function createPersistentRuleStore(options: PersistentRuleStoreOptions): 
         specs?.set(built.id, { ...spec, id: built.id });
       }
     } catch (err) {
-      console.warn('mcp-manager: could not load persisted rules:', err);
+      console.warn('aitoolgate: could not load persisted rules:', err);
     } finally {
       db?.close();
     }
@@ -96,7 +96,7 @@ export function createPersistentRuleStore(options: PersistentRuleStoreOptions): 
     const spec = specs?.get(id) ?? describeRule(current);
     const toStore: RuleSpec = { ...spec, id: current.id };
     void storage.saveRule(toStore as unknown as Rule).catch((err) => {
-      console.warn(`mcp-manager: could not persist rule ${id}:`, err);
+      console.warn(`aitoolgate: could not persist rule ${id}:`, err);
     });
   };
 

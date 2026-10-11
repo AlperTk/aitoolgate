@@ -41,7 +41,7 @@ export interface MountOptions {
 }
 
 /** Test-facing handle describing what {@link createServer} wired together. */
-export interface McmServerHandle {
+export interface AtgServerHandle {
   /** The single shared telemetry event bus (feeds the proxy AND read by the API/WS). */
   bus: TelemetryEventBus;
   /** Live aggregation view subscribed to the shared bus (backs `/api/stats`). */
@@ -62,8 +62,8 @@ export interface McmServerHandle {
   ws: WsServer;
 }
 
-/** An HTTP server carrying an optional non-enumerable `.mcm` test-facing handle. */
-export type McmServer = http.Server & { readonly mcm?: McmServerHandle };
+/** An HTTP server carrying an optional non-enumerable `.atg` test-facing handle. */
+export type AtgServer = http.Server & { readonly atg?: AtgServerHandle };
 
 /**
  * Content types for the dashboard asset extensions the server is allowed to serve.
@@ -201,7 +201,7 @@ function openPersistentRuleStore(
     const base = createRuleStore(baseOptions);
     return createPersistentRuleStore({ base, storage, dbFile: dbPath ?? ':memory:', specs });
   } catch (err) {
-    console.warn('mcp-manager: rule persistence disabled (could not open the rules database):', err);
+    console.warn('aitoolgate: rule persistence disabled (could not open the rules database):', err);
     return createRuleStore(baseOptions);
   }
 }
@@ -219,13 +219,13 @@ function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
     ensureRulesDbParentDir(dbFile);
     return createPersistentProviderStore({ dbFile: dbFile ?? ':memory:' });
   } catch (err) {
-    console.warn('mcp-manager: API-provider persistence disabled (could not open the provider database):', err);
+    console.warn('aitoolgate: API-provider persistence disabled (could not open the provider database):', err);
     return createApiProviderStore();
   }
 }
 
 /**
- * Create the mcp-manager HTTP server, mounting the model-proxy routes alongside
+ * Create the aitoolgate HTTP server, mounting the model-proxy routes alongside
  * a REST API (`/api/*`), a built-in WebSocket server (the `/ws` upgrade), and
  * the dashboard static files. A single shared telemetry bus + collector feeds
  * BOTH the proxy handler and the API/WS layers so every consumer observes the
@@ -236,9 +236,9 @@ function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
  * Defaults to the configured upstream using the global `fetch`.
  * @param mount Optional configuration for the API/WS/dashboard mount (defaults:
  * fresh empty rule store, no initial rules, WebSocket enabled, dashboard auto-resolved).
- * @returns the listening HTTP server, carrying a non-enumerable `.mcm` handle.
+ * @returns the listening HTTP server, carrying a non-enumerable `.atg` handle.
  */
-export function createServer(port?: number, options?: ProxyOptions, mount?: MountOptions): McmServer {
+export function createServer(port?: number, options?: ProxyOptions, mount?: MountOptions): AtgServer {
   const config = loadConfig();
   const listenPort = port ?? config.port;
 
@@ -437,7 +437,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'not_found' }));
       } catch (err) {
-        console.error('mcp-manager request error:', err);
+        console.error('aitoolgate request error:', err);
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
         }
@@ -465,7 +465,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
 
   // Expose a test-facing handle as a NON-enumerable property without changing how
   // the server is invoked (existing callers/tests keep working unchanged).
-  Object.defineProperty(server, 'mcm', {
+  Object.defineProperty(server, 'atg', {
     value: {
       bus,
       collector,
@@ -485,7 +485,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   server.listen(listenPort, () => {
     const addr = server.address();
     const actualPort = typeof addr === 'object' && addr !== null ? addr.port : listenPort;
-    console.log(`mcp-manager listening on http://localhost:${actualPort}`);
+    console.log(`aitoolgate listening on http://localhost:${actualPort}`);
   });
 
   return server;

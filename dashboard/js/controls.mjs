@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — global toolbar controls (time / clear / export).
+ * aitoolgate dashboard — global toolbar controls (time / clear / export).
  *
  * Wires the top-bar controls and serializes the currently-visible stream +
  * intervention rows to CSV / JSON downloads. Pure time-window logic is
@@ -139,11 +139,11 @@ export function buildInterventionsCsv(rows) {
 }
 // Download `records` as pretty-printed JSON under a timestamped filename.
 export function exportJson(records, name) {
-  downloadFile('mcp-manager-' + name + '-' + stamp() + '.json', JSON.stringify(records, null, 2), 'application/json');
+  downloadFile('aitoolgate-' + name + '-' + stamp() + '.json', JSON.stringify(records, null, 2), 'application/json');
 }
 // Download pre-built CSV text under a timestamped filename.
 export function exportCsv(text, name) {
-  downloadFile('mcp-manager-' + name + '-' + stamp() + '.csv', text, 'text/csv;charset=utf-8');
+  downloadFile('aitoolgate-' + name + '-' + stamp() + '.csv', text, 'text/csv;charset=utf-8');
 }
 
 /* ---- time range ---------------------------------------------------- */

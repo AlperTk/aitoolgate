@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
-import { startMcmServer, closeMcmServer } from './helpers';
+import { startAtgServer, closeAtgServer } from './helpers';
 import { createRuleStore } from '../src/api/ruleStore';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
@@ -228,12 +228,12 @@ test('full pipeline: request → proxy → policy → telemetry → stats', asyn
     matcher: createToolNameMatcher({ toolName: 'search_web' }),
     action: createInjectMessageAction({ role: 'user', content: 'Please stop repeating searches.' }) as PolicyAction,
   };
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: upstream(jsonFetch(CANNED_COMPLETION)), policy: { rules: [rule] } },
     { ruleStore: createRuleStore(), ws: true },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => {
+  const unsub = atg.bus.subscribe((ev) => {
     events.push(ev);
   });
   try {
@@ -262,16 +262,16 @@ test('full pipeline: request → proxy → policy → telemetry → stats', asyn
     assert.ok(s.interventions.length >= 1, 'stats should reflect the recorded intervention');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
 // --- Test 2: WebSocket broadcasts live telemetry ---------------------------
 test('WebSocket receives live telemetry events broadcast from the shared bus', async () => {
-  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) }, { ws: true });
+  const { port, srv, atg } = await startAtgServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) }, { ws: true });
   const client = await connectAndHandshake(port);
   try {
-    assert.ok(mcm.ws.size >= 1, 'the handshaked socket counts as an open WS client');
+    assert.ok(atg.ws.size >= 1, 'the handshaked socket counts as an open WS client');
     // Non-streaming request -> proxy emits tool.call + tool.result onto the shared bus.
     const res = await post(port, chatBody());
     assert.equal(res.status, 200);
@@ -293,15 +293,15 @@ test('WebSocket receives live telemetry events broadcast from the shared bus', a
     } catch {
       /* ignore */
     }
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
 // --- Test 3: streaming SSE pass-through emits tool-call telemetry --------
 test('streaming request emits tool-call telemetry via the SSE extractor', async () => {
-  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(sseFetch(sseText())) }, { ws: false });
+  const { port, srv, atg } = await startAtgServer({ upstream: upstream(sseFetch(sseText())) }, { ws: false });
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => {
+  const unsub = atg.bus.subscribe((ev) => {
     events.push(ev);
   });
   try {
@@ -317,7 +317,7 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
     // later (via the tracker) when the client resends with a matching role:'tool' message.
     assert.ok(!events.some(isToolResult), 'no synthetic tool.result is emitted by a lone streaming request');
     // The extracted call (carrying its SSE id) was recorded into the shared tracker for later pairing.
-    assert.ok(mcm.tracker.pendingCount() >= 1, 'the streamed tool call was recorded into the shared tracker');
+    assert.ok(atg.tracker.pendingCount() >= 1, 'the streamed tool call was recorded into the shared tracker');
 
     // Stats reflect the streaming call too.
     const s = await stats(port);
@@ -325,7 +325,7 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
     assert.ok(s.topTools.some((t) => t.toolName === 'search_web'), 'topTools should include search_web');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -333,7 +333,7 @@ test('streaming request emits tool-call telemetry via the SSE extractor', async 
 test('GET /api/events via the default server returns the tool.call emitted by a proxied request', async () => {
   // Default server options: only the upstream is pointed at a fake model that returns a single
   // tool_call; every other mount option (rule store, ws) stays at its default.
-  const { port, srv } = await startMcmServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) });
+  const { port, srv } = await startAtgServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) });
   try {
     const res = await post(port, { ...chatBody(), stream: false });
     assert.equal(res.status, 200, 'the proxied response must be HTTP 200');
@@ -347,7 +347,7 @@ test('GET /api/events via the default server returns the tool.call emitted by a 
     assert.ok(toolCall !== undefined, 'GET /api/events must include the tool.call emitted by the proxied request');
     assert.equal(toolCall.toolName, 'search_web');
   } finally {
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -377,9 +377,9 @@ test('two successive same-session requests produce a real tool.result paired fro
   // One server → one shared bus/collector/tracker. Request N makes the model issue a tool call
   // (stable id + upstream usage); request N+1 (same session) feeds back the matching role:'tool'
   // result, which is paired against the recorded issue into a REAL tool.result.
-  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(turnFetch([CALL_BODY, FINAL_BODY])) }, { ws: false });
+  const { port, srv, atg } = await startAtgServer({ upstream: upstream(turnFetch([CALL_BODY, FINAL_BODY])) }, { ws: false });
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => {
+  const unsub = atg.bus.subscribe((ev) => {
     events.push(ev);
   });
   try {
@@ -417,7 +417,7 @@ test('two successive same-session requests produce a real tool.result paired fro
     assert.ok(result.chars !== undefined && result.chars === TOOL_RESULT_CONTENT.length, 'chars reflects the result payload size');
 
     // The shared collector aggregates non-zero duration and token totals.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector summary reports non-zero totalDurationMs');
     assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'collector summary reports non-zero token totals');
     // Per-tool response-token fields reflect the resolved result's payload size (est = round(chars/4)).
@@ -427,7 +427,7 @@ test('two successive same-session requests produce a real tool.result paired fro
     assert.equal(topSW.totalResponseTokens, Math.round(TOOL_RESULT_CONTENT.length / 4), 'totalResponseTokens = round(chars/4) for the resolved result');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -441,12 +441,12 @@ const STREAM_TOOL_RESULT = '<web-search-results-stream>';
 
 test('two successive same-session STREAMING requests produce a real tool.result paired from the streamed tool.call', async () => {
   // Request N → SSE with one tool call + usage; request N+1 → SSE final answer (no calls).
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: upstream(sseTurnFetch([sseCallWithUsage(), sseFinalAnswer()])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => {
+  const unsub = atg.bus.subscribe((ev) => {
     events.push(ev);
   });
   try {
@@ -493,7 +493,7 @@ test('two successive same-session STREAMING requests produce a real tool.result 
     assert.ok(result.chars !== undefined && result.chars === STREAM_TOOL_RESULT.length, 'chars reflects the result payload size');
 
     // The shared collector now exposes non-zero duration AND token totals for the streaming session.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'collector reports non-zero totalDurationMs');
     assert.ok(summary.avgDurationMs !== undefined && summary.avgDurationMs > 0, 'collector reports non-zero avgDurationMs');
     assert.ok(summary.totalInputTokens !== undefined && summary.totalInputTokens > 0, 'collector reports non-zero totalInputTokens');
@@ -508,7 +508,7 @@ test('two successive same-session STREAMING requests produce a real tool.result 
     assert.equal(top.totalResponseTokens, Math.round(STREAM_TOOL_RESULT.length / 4), 'totalResponseTokens = round(chars/4) for the streaming result');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -517,12 +517,12 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
   // Two tool calls in ONE streamed response share one turn-level `at`; even though the usage chunk
   // arrives after the first call is finalized, the shared `at` makes the collector count the turn's
   // usage exactly once. Request N+1 feeds back BOTH results so both resolve into real tool.results.
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: upstream(sseTurnFetch([sseTwoCallsWithUsage(), sseFinalAnswer()])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => {
+  const unsub = atg.bus.subscribe((ev) => {
     events.push(ev);
   });
   try {
@@ -562,7 +562,7 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
     assert.ok(events.every((e) => !isToolResult(e) || (typeof e.durationMs === 'number' && e.durationMs > 0)), 'every result carries a positive durationMs');
 
     // The turn's tokens are counted exactly once despite two tool.call events sharing one `at`.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.equal(summary.totalCalls, 2, 'collector observed both streamed tool calls');
     assert.equal(summary.totalTokens, 19, 'the multi-call turn contributes its token usage exactly once (no over-count)');
     assert.equal(summary.totalInputTokens, 12, 'input tokens counted once for the whole turn');
@@ -578,7 +578,7 @@ test('a streamed turn with multiple tool calls is counted as ONE token turn (no 
     assert.equal(top.totalResponseTokens, Math.round('<result-a>'.length / 4) + Math.round('<result-b>'.length / 4), 'totalResponseTokens = sum of estimated tokens for both results');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -595,12 +595,12 @@ test('a turn whose response has no upstream usage emits a token-less tool.call b
   };
   const SESS = 'sess-no-usage';
   const RESULT_CONTENT = '<no-usage-results>';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: upstream(turnFetch([NO_USAGE_CALL, NO_USAGE_FINAL])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     const resN = await post(port, { ...chatBody(), stream: false }, { 'x-session-id': SESS });
     assert.equal(resN.status, 200, 'request N must be HTTP 200');
@@ -637,7 +637,7 @@ test('a turn whose response has no upstream usage emits a token-less tool.call b
     assert.equal(result.chars, RESULT_CONTENT.length, 'chars reflects the result payload size even when the turn had no tokens');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -654,9 +654,9 @@ test('a streamed OpenAI turn requests upstream token usage (stream_options.inclu
     }
     return baseFetch(url, init);
   };
-  const { port, srv, mcm } = await startMcmServer({ upstream: upstream(recordingFetch) }, { ws: false });
+  const { port, srv, atg } = await startAtgServer({ upstream: upstream(recordingFetch) }, { ws: false });
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     const res = await post(port, { ...chatBody(), stream: true }, { 'x-session-id': 'sess-usage-req' });
     assert.equal(res.status, 200, 'the streaming request must be HTTP 200');
@@ -679,7 +679,7 @@ test('a streamed OpenAI turn requests upstream token usage (stream_options.inclu
     );
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -710,12 +710,12 @@ test('two distinct tools with different payload sizes yield correct per-tool res
   const expectedShortTokens = Math.round(SHORT_RESULT.length / 4);   // 2
   const expectedLongTokens = Math.round(LONG_RESULT.length / 4);     // 5
 
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: upstream(turnFetch([CALL_BODY_10, FINAL_BODY_10])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     const resN = await post(port, { ...chatBody(), stream: false }, { 'x-session-id': SESS_10 });
     assert.equal(resN.status, 200, 'request N must be HTTP 200');
@@ -750,7 +750,7 @@ test('two distinct tools with different payload sizes yield correct per-tool res
     const results = events.filter(isToolResult);
     assert.equal(results.length, 2, 'both tool calls resolved into real tool.results');
 
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     const topSW = summary.topTools.find((t) => t.toolName === 'search_web');
     assert.ok(topSW, 'topTools includes search_web');
     assert.equal(topSW.resolvedCount, 1, 'search_web resolvedCount is 1');
@@ -765,6 +765,6 @@ test('two distinct tools with different payload sizes yield correct per-tool res
     assert.ok(summary.totalTokens !== undefined && summary.totalTokens > 0, 'totalTokens from call-turn is still present in the summary');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });

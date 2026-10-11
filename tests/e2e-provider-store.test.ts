@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createServer, type McmServer } from '../src/server/index';
+import { createServer, type AtgServer } from '../src/server/index';
 import { createRuleStore } from '../src/api/ruleStore';
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ function waitPort(srv: http.Server): Promise<number> {
   });
 }
 
-async function stopServer(srv?: McmServer): Promise<void> {
+async function stopServer(srv?: AtgServer): Promise<void> {
   if (!srv) return;
   try { (srv as unknown as http.Server).closeAllConnections(); } catch {}
   await new Promise<void>((resolve, reject) => { (srv as unknown as http.Server).close(err => err ? reject(err) : resolve()); });
@@ -90,7 +90,7 @@ test('e2e API Providers REST: full CRUD + single-active invariant + hot-apply ro
   // activating B causes all subsequent proxy traffic to re-route there without restart.
   const upA = await createMockUpstream('upstream-a');
   const upB = await createMockUpstream('upstream-b');
-  let srv: McmServer | undefined;
+  let srv: AtgServer | undefined;
 
   try {
     // Start with upstream A as the baseline config feeding the auto-seeded default row.

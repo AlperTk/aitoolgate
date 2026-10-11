@@ -1,4 +1,4 @@
-/* mcp-manager dashboard css — responsive: @media breakpoints (max-width 960px/560px + min-width 961px viewport-fit cap) */
+/* aitoolgate dashboard css — responsive: @media breakpoints (max-width 960px/560px + min-width 961px viewport-fit cap) */
 /* ------------------------------- responsive ------------------------ */
 @media (max-width: 960px) {
   .dash-grid { grid-template-columns: 1fr; }

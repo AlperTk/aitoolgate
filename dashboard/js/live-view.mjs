@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — live event stream / intervention list rendering.
+ * aitoolgate dashboard — live event stream / intervention list rendering.
  *
  * Builds and manages the per-row DOM for tool calls, tool results, and policy
  * interventions in the "stream" and "intervention log" panels. One row per

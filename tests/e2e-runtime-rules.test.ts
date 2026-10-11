@@ -19,9 +19,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createServer, type McmServer } from '../src/server/index';
+import { createServer, type AtgServer } from '../src/server/index';
 import { createRuleStore } from '../src/api/ruleStore';
-import { closeMcmServer, oaiCanned } from './helpers';
+import { closeAtgServer, oaiCanned } from './helpers';
 
 const HIDDEN = 'task';
 const KEPT = 'web_search';
@@ -55,7 +55,7 @@ function forwardedToolNames(forwarded: unknown): string[] {
 async function startServer(
   opts: Parameters<typeof createServer>[1],
   mount?: Parameters<typeof createServer>[2],
-): Promise<{ port: number; srv: McmServer }> {
+): Promise<{ port: number; srv: AtgServer }> {
   // createServer(0) auto-listens internally (preserving existing behavior).
   const srv = createServer(0, opts, mount);
   await new Promise<void>((resolve, reject) => {
@@ -100,7 +100,7 @@ test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart',
   if (upAddr === null || typeof upAddr === 'string') throw new Error('mock upstream did not bind a port');
   const upPort = upAddr.port;
 
-  let srv: McmServer | undefined;
+  let srv: AtgServer | undefined;
   try {
     // NOTE: NO `policy` is passed in the proxy options. The composition root must
     // wire the mounted rule store into the engine itself — this is exactly what
@@ -152,7 +152,7 @@ test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart',
     assert.ok(!names.includes(HIDDEN), `'${HIDDEN}' must be excluded from the forwarded tools by the runtime-added rule`);
     assert.ok(names.includes(KEPT), `'${KEPT}' should still be present in the forwarded tools`);
   } finally {
-    if (srv) await closeMcmServer(srv);
+    if (srv) await closeAtgServer(srv);
     try {
       upstream.closeAllConnections();
     } catch {

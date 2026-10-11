@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — generic, dependency-free data-table component.
+ * aitoolgate dashboard — generic, dependency-free data-table component.
  *
  * Builds a self-contained widget inside a caller-provided (empty) container:
  * an optional filter toolbar (text filter + visible/total count) and a table

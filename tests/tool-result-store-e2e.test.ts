@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startMcmServer, closeMcmServer } from './helpers';
+import { startAtgServer, closeAtgServer } from './helpers';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
 import { MAX_TOOL_RESULT_CONTENT_CHARS } from '../src/proxy/context';
@@ -73,12 +73,12 @@ test('a processed tool result is retrievable over GET /api/tool-results/:id and 
     { role: 'user', content: 'Run two commands.' },
   ];
 
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(finalJson)])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     // Req1: the model issues two tool calls in one turn.
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
@@ -95,14 +95,14 @@ test('a processed tool result is retrievable over GET /api/tool-results/:id and 
     await sleep(25);
 
     // Both results were resolved into the SHARED store (full chain: proxy -> tracker -> store).
-    assert.equal(mcm.toolResultStore.size(), 2, 'the shared store holds both processed results');
-    const shortStored = mcm.toolResultStore.get(ids[0]);
+    assert.equal(atg.toolResultStore.size(), 2, 'the shared store holds both processed results');
+    const shortStored = atg.toolResultStore.get(ids[0]);
     assert.ok(shortStored !== undefined, 'short result is stored under its stable id');
     assert.equal(shortStored!.id, ids[0]);
     assert.equal(shortStored!.content, SHORT, 'short result content round-trips fully');
     assert.equal(shortStored!.chars, SHORT.length, 'chars reflects the full payload length');
 
-    const longStored = mcm.toolResultStore.get(ids[1]);
+    const longStored = atg.toolResultStore.get(ids[1]);
     assert.ok(longStored !== undefined, 'long result is stored under its stable id');
     assert.equal(longStored!.content.length, MAX_TOOL_RESULT_CONTENT_CHARS, 'long content is capped to the configured bound');
     assert.equal(longStored!.content, LONG.slice(0, MAX_TOOL_RESULT_CONTENT_CHARS));
@@ -141,6 +141,6 @@ test('a processed tool result is retrievable over GET /api/tool-results/:id and 
     }
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });

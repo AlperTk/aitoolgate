@@ -1,5 +1,5 @@
 {
-  "name": "mcp-manager",
+  "name": "aitoolgate",
   "version": "0.1.0",
   "private": true,
   "description": "A local, LiteLLM-style model proxy with a programmable tool-monitoring and interception layer over the LLM request/response stream.",

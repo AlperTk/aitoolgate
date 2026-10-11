@@ -23,8 +23,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createServer, type McmServer } from '../src/server/index';
-import { closeMcmServer } from './helpers';
+import { createServer, type AtgServer } from '../src/server/index';
+import { closeAtgServer } from './helpers';
 import { createRuleStore } from '../src/api/ruleStore';
 
 type ServerOpts = Parameters<typeof createServer>[1];
@@ -97,7 +97,7 @@ async function createMockUpstream(name: string): Promise<MockUpstream> {
 }
 
 // --- server lifecycle --------------------------------------------------------
-async function startServer(opts: ServerOpts, mount?: MountOpts): Promise<{ port: number; srv: McmServer }> {
+async function startServer(opts: ServerOpts, mount?: MountOpts): Promise<{ port: number; srv: AtgServer }> {
   const srv = createServer(0, opts, mount); // auto-listens on an ephemeral port
   await new Promise<void>((resolve, reject) => {
     if (srv.listening) resolve();
@@ -183,7 +183,7 @@ test('api-providers: all five /api/api-providers/* endpoints return their real s
     // (a) POST a degenerate body (missing required fields) → 400.
     assert.equal((await post(port, '', { name: '' })).status, 400, 'POST with a degenerate body must be 400');
   } finally {
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -226,7 +226,7 @@ test('api-providers: the single-active invariant holds across sequential real re
     assert.equal(afterPatch.providers.find((p) => p.id === boot.providers[0].id)?.isActive, false, 'the old (seeded) row is now inactive');
     assert.equal(afterPatch.activeId, created.id, 'activeId points at the newly activated id');
   } finally {
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -268,7 +268,7 @@ test('api-providers: deleting the active row auto-promotes the lowest-id remaini
     assert.equal(activeRows[0].id, lowestId, 'the promoted row is the lexicographically-lowest remaining id');
     assert.equal(after.activeId, lowestId, 'activeId points at the promoted lowest-id row');
   } finally {
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -325,7 +325,7 @@ test('api-providers: live-apply without restart — mockA → mockB via the publ
       assert.equal(mockA.requests.length, 1, 'mockA still has only its single earlier request (no re-route back, no restart)');
       assert.ok(!mockA.requests[0].body.includes('hello-from-client-to-B'), 'the second request did NOT route to mockA');
     } finally {
-      await closeMcmServer(srv);
+      await closeAtgServer(srv);
     }
   } finally {
     await mockA.close();
@@ -375,7 +375,7 @@ test('api-providers: an empty-model provider passes through the incoming request
       const capturedModel = (JSON.parse(mock.requests[0].body) as { model?: string }).model;
       assert.equal(capturedModel, 'client-request-model', 'the empty-model provider passed through the incoming request model');
     } finally {
-      await closeMcmServer(srv);
+      await closeAtgServer(srv);
     }
   } finally {
     await mock.close();

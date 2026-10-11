@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — Settings popup/modal (master–detail).
+ * aitoolgate dashboard — Settings popup/modal (master–detail).
  *
  * A full-viewport overlay opened from the header's gear icon (#open-settings,
  * see html/header.html). LEFT rail = vertical category menu built from the

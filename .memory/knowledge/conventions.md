@@ -1,6 +1,6 @@
 ---
 name: conventions
-description: Coding patterns, naming, where new code goes, error-handling and testing conventions, and config/observability guidelines for mcp-manager. Read before adding or modifying code.
+description: Coding patterns, naming, where new code goes, error-handling and testing conventions, and config/observability guidelines for aitoolgate. Read before adding or modifying code.
 ---
 
 # Conventions
@@ -29,7 +29,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 - Node built-in **`node:test`** + `node:assert/strict`; tests run against **compiled `dist/`** — you MUST `npm run build` before `npm test`.
 - Naming: unit/integration = `*.test.ts` (integration often `*-integration.test.ts`); end-to-end = `e2e-*.test.ts`; a backend/API e2e suite may use the `.e2e.test.ts` suffix (e.g. `api-providers-live-apply.e2e.test.ts`). Use `describe`/`it`.
 - E2E drives **real client→server round-trips** but the upstream is **canned** (mock `fetch` / inline mock upstream, incl. canned SSE strings) — never a real provider. Servers start on **ephemeral port 0** (read back via `address().port`).
-- **Shared test helpers:** `tests/helpers.ts` provides `startMcmServer`, `closeMcmServer`, `closeHttpServer`, `makeMockFetch`, `oaiCanned`. Domain-specific fakes (e.g. `FakeWebSocket`, `createFakeModel`) stay local per file. `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) is the sole shared module for loading dashboard `.mjs` under Node. Dashboard unit/DOM tests use an injected `fetchImpl` + microtask-flush (no timers/sleeps), one process per file, and a non-literal dynamic import to cache the module graph.
+- **Shared test helpers:** `tests/helpers.ts` provides `startAtgServer`, `closeAtgServer`, `closeHttpServer`, `makeMockFetch`, `oaiCanned`. Domain-specific fakes (e.g. `FakeWebSocket`, `createFakeModel`) stay local per file. `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) is the sole shared module for loading dashboard `.mjs` under Node. Dashboard unit/DOM tests use an injected `fetchImpl` + microtask-flush (no timers/sleeps), one process per file, and a non-literal dynamic import to cache the module graph.
 
 ## Naming
 - camelCase for functions/factories, PascalCase for types/classes, `createXxx()` prefix for constructors. Two tsconfigs (dev `noEmit` vs build → `dist/`).

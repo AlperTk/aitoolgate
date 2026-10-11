@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — policy-rule authoring UI.
+ * aitoolgate dashboard — policy-rule authoring UI.
  *
  * The rule list / CRUD controls and the dynamic rule authoring form are one
  * tightly-coupled unit: the list's Edit button loads a serialized RuleSpec

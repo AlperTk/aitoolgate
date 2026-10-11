@@ -2,7 +2,7 @@
  * WS-URL derivation for dashboard/js/transport.mjs — the core of the "point the
  * dashboard at a WebSocket target" fix. Resolution precedence (documented in the
  * module): an explicit ?ws= query param (if present) beats a truthy
- * window.MCM_WS_URL global, which beats the same-origin /ws default. Only an
+ * window.ATG_WS_URL global, which beats the same-origin /ws default. Only an
  * absolute ws:/wss: URL with a valid host is honored as an override; anything
  * empty/malformed/wrong-scheme falls back to the same-origin default without
  * throwing. A valid override also bypasses the same-origin gate inside connectWS
@@ -94,13 +94,13 @@ test('D2: no override on https origin derives wss://host/ws', async () => {
 /* ---- core derivation: base-path-aware default ------------------------------ */
 test('D7: sub-path with .html filename derives the in-directory ws target', async () => {
   const { resolveWsUrl } = await loadDashboard();
-  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/mcp-manager/index.html', search: '' });
-  assert.equal(resolveWsUrl(), 'ws://host:8787/mcp-manager/ws');
+  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/aitoolgate/index.html', search: '' });
+  assert.equal(resolveWsUrl(), 'ws://host:8787/aitoolgate/ws');
 });
 test('D8: sub-path with trailing slash derives the in-directory ws target', async () => {
   const { resolveWsUrl } = await loadDashboard();
-  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/mcp-manager/', search: '' });
-  assert.equal(resolveWsUrl(), 'ws://host:8787/mcp-manager/ws');
+  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/aitoolgate/', search: '' });
+  assert.equal(resolveWsUrl(), 'ws://host:8787/aitoolgate/ws');
 });
 test('D9: root /index.html still derives /ws (root unchanged)', async () => {
   const { resolveWsUrl } = await loadDashboard();
@@ -109,7 +109,7 @@ test('D9: root /index.html still derives /ws (root unchanged)', async () => {
 });
 test('D10: explicit ?ws= override wins over the base-path-aware default (regression guard)', async () => {
   const { resolveWsUrl } = await loadDashboard();
-  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/mcp-manager/index.html', search: '?ws=ws://custom:9999/my-ws' });
+  setLocation({ protocol: 'http:', hostname: 'host', port: '8787', host: 'host:8787', pathname: '/aitoolgate/index.html', search: '?ws=ws://custom:9999/my-ws' });
   assert.equal(resolveWsUrl(), 'ws://custom:9999/my-ws');
 });
 
@@ -125,17 +125,17 @@ test('D4: ?ws= absolute wss override wins over the default', async () => {
   assert.equal(resolveWsUrl(), 'wss://remote.example/gateway');
 });
 
-/* ---- core derivation: window.MCM_WS_URL wins when no param ------------ */
-test('D5: window.MCM_WS_URL wins over the default when no ?ws param is present', async () => {
+/* ---- core derivation: window.ATG_WS_URL wins when no param ------------ */
+test('D5: window.ATG_WS_URL wins over the default when no ?ws param is present', async () => {
   const { resolveWsUrl } = await loadDashboard();
   setLocation({ protocol: 'http:', host: 'host:8787', search: '' });
-  (globalThis as unknown as Record<string, unknown>).window = { MCM_WS_URL: 'ws://override-host:1234/proxy' };
+  (globalThis as unknown as Record<string, unknown>).window = { ATG_WS_URL: 'ws://override-host:1234/proxy' };
   assert.equal(resolveWsUrl(), 'ws://override-host:1234/proxy');
 });
-test('D6: ?ws= param beats window.MCM_WS_URL when both are present', async () => {
+test('D6: ?ws= param beats window.ATG_WS_URL when both are present', async () => {
   const { resolveWsUrl } = await loadDashboard();
   setLocation({ protocol: 'http:', host: 'host:8787', search: '?ws=ws://from-param:5/a' });
-  (globalThis as unknown as Record<string, unknown>).window = { MCM_WS_URL: 'ws://from-global:6/b' };
+  (globalThis as unknown as Record<string, unknown>).window = { ATG_WS_URL: 'ws://from-global:6/b' };
   assert.equal(resolveWsUrl(), 'ws://from-param:5/a');
 });
 
@@ -155,12 +155,12 @@ test('F1: malformed / wrong-scheme / empty overrides fall back to the same-origi
     assert.equal(resolveWsUrl(), 'ws://host:8787/ws', `expected default for search="${search}"`);
   }
 });
-test('F2: invalid window.MCM_WS_URL falls back to the same-origin default', async () => {
+test('F2: invalid window.ATG_WS_URL falls back to the same-origin default', async () => {
   const { resolveWsUrl } = await loadDashboard();
   setLocation({ protocol: 'http:', host: 'host:8787', search: '' });
   for (const bad of ['http://x:1/y', 'garbage not a url', '', 'foo']) {
-    (globalThis as unknown as Record<string, unknown>).window = { MCM_WS_URL: bad };
-    assert.equal(resolveWsUrl(), 'ws://host:8787/ws', `expected default for MCM_WS_URL=${JSON.stringify(bad)}`);
+    (globalThis as unknown as Record<string, unknown>).window = { ATG_WS_URL: bad };
+    assert.equal(resolveWsUrl(), 'ws://host:8787/ws', `expected default for ATG_WS_URL=${JSON.stringify(bad)}`);
   }
 });
 

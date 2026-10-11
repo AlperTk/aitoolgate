@@ -181,7 +181,7 @@ function modelListResponse(model: string): OpenAIModelListResponse {
         id: model,
         object: 'model',
         created: Math.floor(Date.now() / 1000),
-        owned_by: 'mcp-manager',
+        owned_by: 'aitoolgate',
       },
     ],
   };

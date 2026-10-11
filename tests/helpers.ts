@@ -6,17 +6,17 @@
  * intentionally left local to each test file.
  */
 import type http from 'node:http';
-import { createServer, type McmServer } from '../src/server/index';
+import { createServer, type AtgServer } from '../src/server/index';
 import type { FetchLike } from '../src/proxy/upstream';
 
 type ServerOpts = Parameters<typeof createServer>[1];
 type MountOpts = Parameters<typeof createServer>[2];
 
-/** Boot a full MCP server on an ephemeral port; resolves with the port, server, and mcm test handle. */
-export async function startMcmServer(
+/** Boot a full MCP server on an ephemeral port; resolves with the port, server, and atg test handle. */
+export async function startAtgServer(
   opts: ServerOpts,
   mount?: MountOpts,
-): Promise<{ port: number; srv: McmServer; mcm: NonNullable<McmServer['mcm']> }> {
+): Promise<{ port: number; srv: AtgServer; atg: NonNullable<AtgServer['atg']> }> {
   const srv = createServer(0, opts, mount); // auto-listens on an ephemeral port
   await new Promise<void>((resolve, reject) => {
     if (srv.listening) resolve();
@@ -27,13 +27,13 @@ export async function startMcmServer(
   });
   const addr = srv.address();
   if (addr === null || typeof addr !== 'object') throw new Error('server did not bind a TCP port');
-  const mcm = srv.mcm;
-  if (mcm === undefined) throw new Error('server.mcm test handle is missing');
-  return { port: addr.port, srv, mcm };
+  const atg = srv.atg;
+  if (atg === undefined) throw new Error('server.atg test handle is missing');
+  return { port: addr.port, srv, atg };
 }
 
 /** Idempotent, error-tolerant close for an MCP server. */
-export async function closeMcmServer(srv: McmServer): Promise<void> {
+export async function closeAtgServer(srv: AtgServer): Promise<void> {
   try {
     srv.closeAllConnections();
   } catch {

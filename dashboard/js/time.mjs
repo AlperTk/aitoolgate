@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — shared time-window helpers (leaf module).
+ * aitoolgate dashboard — shared time-window helpers (leaf module).
  *
  * Pure, framework-free time logic shared by the live view (client-side row
  * filtering) and the global controls (time-range presets + export file names).

@@ -1,6 +1,6 @@
 ---
 name: domain
-description: Domain vocabulary, core entities and their relationships, business rules that are easy to violate, invariants/state, and end-to-end workflows in mcp-manager. Read before changing policy, session, or telemetry behavior.
+description: Domain vocabulary, core entities and their relationships, business rules that are easy to violate, invariants/state, and end-to-end workflows in aitoolgate. Read before changing policy, session, or telemetry behavior.
 ---
 
 # Domain

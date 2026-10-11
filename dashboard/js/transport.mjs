@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — WebSocket lifecycle + polling fallback.
+ * aitoolgate dashboard — WebSocket lifecycle + polling fallback.
  *
  * The WebSocket is the low-latency primary source of live tool-call events; a
  * GET /api/events poll is the fallback so rows still populate when the browser
@@ -48,7 +48,7 @@ export function syncConnectivity() { setConnected(wsIsOpen()); }
 // "disconnected" reveals where the dashboard tried to connect. Does not alter
 // class or label semantics (those are handled by setConnected / syncConnectivity).
 function wsFailureDiagnostic(url, reason) {
-  console.warn('[mcm-dashboard] websocket not connected', { url: url, error: reason });
+  console.warn('[atg-dashboard] websocket not connected', { url: url, error: reason });
   var badge = $('conn-status');
   if (badge) {
     badge.title = url;
@@ -71,7 +71,7 @@ export function isValidSameOriginWsUrl(url) {
 // The same-origin /ws default target: derived from this page's protocol + host +
 // base directory. The base directory is taken from location.pathname (stripping a
 // trailing filename if present) so sub-path-mounted deployments (e.g.
-// /mcp-manager/index.html) derive the correct in-directory /ws endpoint.
+// /aitoolgate/index.html) derive the correct in-directory /ws endpoint.
 function defaultWsUrl() {
   var path = location.pathname || '/';
   var seg = path.slice(path.lastIndexOf('/') + 1);
@@ -82,7 +82,7 @@ function defaultWsUrl() {
 
 // Read an explicit WebSocket override, highest-precedence source first:
 //   1. a ?ws= query param, if present (even when it's an empty string), else
-//   2. a truthy window.MCM_WS_URL global (an operator-set absolute ws/wss URL).
+//   2. a truthy window.ATG_WS_URL global (an operator-set absolute ws/wss URL).
 // Returns the raw candidate string, or undefined when neither source is present.
 // Never throws: an unreadable location or a missing window simply yields undefined.
 function readWsOverride() {
@@ -91,12 +91,12 @@ function readWsOverride() {
     if (q != null) return q; // ?ws= present wins outright (valid or not)
   } catch (_e) { /* location unavailable — fall through */ }
   var w = typeof window !== 'undefined' ? window : globalThis;
-  var m = w ? w.MCM_WS_URL : undefined;
+  var m = w ? w.ATG_WS_URL : undefined;
   return typeof m === 'string' && m !== '' ? m : undefined;
 }
 
 // True only for a well-formed *absolute* ws:/wss: URL with a valid host. Used to
-// validate an explicit ?ws=/MCM_WS_URL override before it is honored: cross-origin
+// validate an explicit ?ws=/ATG_WS_URL override before it is honored: cross-origin
 // overrides are allowed, but only if they parse to a real absolute ws endpoint.
 function isAbsoluteWs(url) {
   try {
@@ -106,7 +106,7 @@ function isAbsoluteWs(url) {
 }
 
 // Resolve the WebSocket target URL. Precedence (single documented rule): an
-// explicit ?ws= query param (if present) beats a truthy window.MCM_WS_URL global,
+// explicit ?ws= query param (if present) beats a truthy window.ATG_WS_URL global,
 // which beats the same-origin /ws default. Only an absolute ws:/wss: URL with a
 // valid host is honored as an override; an empty/malformed/wrong-scheme override
 // (e.g. "http://..." typed by mistake, or "not-a-url") falls back to the same
@@ -118,7 +118,7 @@ export function resolveWsUrl() {
   return def;
 }
 
-// Open (or re-open) the resolved /ws socket. An explicit, VALID ?ws=/MCM_WS_URL
+// Open (or re-open) the resolved /ws socket. An explicit, VALID ?ws=/ATG_WS_URL
 // override bypasses the same-origin gate entirely (it may be cross-origin, or
 // used from a non-http origin such as file:); only the derived same-origin
 // *default* (no override) is still gated exactly as before. Wires keepalive +

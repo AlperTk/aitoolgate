@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — DOM / format / notice helpers.
+ * aitoolgate dashboard — DOM / format / notice helpers.
  *
  * Pure, framework-free helpers: by-id DOM access, element construction,
  * untrusted-text escaping, time/number formatting, and notice + form-error

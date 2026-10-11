@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — shared runtime state container.
+ * aitoolgate dashboard — shared runtime state container.
  *
  * A single mutable `state` object that centralizes every piece of shared
  * runtime state previously held in the app.js closure. Feature modules import

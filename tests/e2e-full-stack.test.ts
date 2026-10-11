@@ -18,8 +18,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import * as net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
-import type { McmServer } from '../src/server/index';
-import { startMcmServer, closeMcmServer } from './helpers';
+import type { AtgServer } from '../src/server/index';
+import { startAtgServer, closeAtgServer } from './helpers';
 import { createRuleStore } from '../src/api/ruleStore';
 import type { TelemetryEvent } from '../src/telemetry/events';
 import type { PolicyRule } from '../src/policy/ruleEngine';
@@ -189,13 +189,13 @@ test('e2e full stack: health + OpenAI + Anthropic SSE + policy + tool-results + 
   // Shared rule store: REST writes here, the proxy's policy engine reads from it live.
   const ruleStore = createRuleStore();
   const upstream = await createMockUpstream(ANTHROPIC_TOOL_CALL_RESPONSE);
-  let srv: McmServer | undefined;
+  let srv: AtgServer | undefined;
   let wsClient: WsClient | undefined;
   const events: TelemetryEvent[] = [];
 
   try {
     // Start the real server: protocol 'anthropic' so both OpenAI (translated) and Anthropic paths work.
-    const { port, srv: startedSrv, mcm } = await startMcmServer(
+    const { port, srv: startedSrv, atg } = await startAtgServer(
       {
         upstream: { baseUrl: `http://127.0.0.1:${upstream.port}/v1`, model: 'claude-3-opus', protocol: 'anthropic' },
         // Dynamic rules getter: re-evaluated on every request so REST-created rules fire live.
@@ -204,7 +204,7 @@ test('e2e full stack: health + OpenAI + Anthropic SSE + policy + tool-results + 
       { ruleStore, ws: true },
     );
     srv = startedSrv;
-    const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+    const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
 
     // Connect the WebSocket client BEFORE any traffic is generated.
     wsClient = await connectAndHandshake(port);
@@ -510,7 +510,7 @@ test('e2e full stack: health + OpenAI + Anthropic SSE + policy + tool-results + 
     unsub();
   } finally {
     try { wsClient?.socket.destroy(); } catch { /* ignore */ }
-    if (srv) await closeMcmServer(srv);
+    if (srv) await closeAtgServer(srv);
     await upstream.close();
   }
 });

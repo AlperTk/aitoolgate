@@ -1,4 +1,4 @@
-# mcp-manager
+# aitoolgate
 
 A local, LiteLLM-style model proxy that sits in the agentic loop as the single
 man-in-the-middle over the LLM request/response stream. Its core is a

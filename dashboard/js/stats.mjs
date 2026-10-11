@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — stats / top tools panel.
+ * aitoolgate dashboard — stats / top tools panel.
  *
  * Renders the aggregate stat tiles and the ranked top-tools table from a
  * GET /api/stats response. Fetched on load and every STATS_POLL_MS so the

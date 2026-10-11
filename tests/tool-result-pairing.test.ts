@@ -15,7 +15,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startMcmServer, closeMcmServer } from './helpers';
+import { startAtgServer, closeAtgServer } from './helpers';
 import type { FetchLike, UpstreamClient } from '../src/proxy/upstream';
 import type { TelemetryEvent } from '../src/telemetry/events';
 
@@ -96,7 +96,7 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     { role: 'user', content: 'Do three different things.' },
   ];
   const SESS = 'sess-multi';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     {
       upstream: openaiUpstream(seqFetch([
         jsonRes(callBody), // Req1 (non-stream) -> issues sb_1..sb_3
@@ -108,7 +108,7 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     // Req1 (non-stream): the model issues three tool calls in ONE turn.
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
@@ -164,10 +164,10 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     assert.ok(results.every((r) => typeof r.toolName === 'string' && r.toolName !== ''), 'every result carries a real toolName (M4)');
 
     // No issued call remains stuck pending after the final request.
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending after the final follow-up');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending after the final follow-up');
 
     // The collector aggregates non-zero global duration AND per-tool duration stats for EVERY involved tool.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'summary.totalDurationMs > 0');
     assert.ok(summary.avgDurationMs !== undefined && summary.avgDurationMs > 0, 'summary.avgDurationMs > 0');
     for (const name of ['tool_a', 'tool_b', 'tool_c']) {
@@ -178,7 +178,7 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     }
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -208,7 +208,7 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
   ];
   const SESS = 'sess-stream-c';
   // Req1 (streamed): native Anthropic frames above. Req2 (non-stream): resolves all three via tool_result blocks.
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     {
       upstream: anthropicUpstream(seqFetch([
         sseRes(anthropicSse(frames)),
@@ -218,7 +218,7 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     const resN = await post(port, '/v1/messages', { model: 'claude-3-opus', messages: baseMsgs, stream: true }, { 'x-session-id': SESS });
     assert.equal(resN.status, 200, 'the streamed Anthropic request must be HTTP 200');
@@ -266,10 +266,10 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
     assert.equal(results.length, 3, 'three tool.result events resolved from the streamed issue');
     assert.ok(results.every((r) => typeof r.durationMs === 'number' && r.durationMs > 0), 'every result has a positive durationMs');
     assert.ok(results.every((r) => typeof r.toolName === 'string' && r.toolName !== ''), 'every result carries a real toolName (M4)');
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending after the follow-up');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending after the follow-up');
 
     // The turn's tokens are counted EXACTLY ONCE despite three tool.call events sharing one `at`.
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.equal(summary.totalInputTokens, 30, 'input tokens counted once for the whole turn');
     assert.equal(summary.totalOutputTokens, 60, 'output tokens counted once for the whole turn');
     assert.equal(summary.totalTokens, 90, 'turn tokens counted exactly once (no over-count)');
@@ -282,7 +282,7 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
     }
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -309,7 +309,7 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     { role: 'user', content: 'Do three different things.' },
   ];
   const ISSUE_SESSION = 'X'; // the issuing request's session key
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     {
       upstream: openaiUpstream(seqFetch([
         jsonRes(callBody), // Req1 (non-stream, session X) -> issues sd_1..sd_3 under session X
@@ -320,7 +320,7 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     // Req1 issues all three under session 'X'.
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': ISSUE_SESSION });
@@ -351,9 +351,9 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     assert.equal(results.length, 3, 'all three results resolved despite the diverging/absent session key');
     assert.ok(results.every((r) => typeof r.durationMs === 'number' && r.durationMs > 0), 'every result has a positive durationMs');
     assert.ok(results.every((r) => typeof r.toolName === 'string' && r.toolName !== ''), 'every result carries a real toolName (M4)');
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no call stranded by a diverging or absent session key');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no call stranded by a diverging or absent session key');
 
-    const summary = mcm.collector.summary();
+    const summary = atg.collector.summary();
     assert.ok(summary.totalDurationMs !== undefined && summary.totalDurationMs > 0, 'summary.totalDurationMs > 0');
     assert.ok(summary.avgDurationMs !== undefined && summary.avgDurationMs > 0, 'summary.avgDurationMs > 0');
     for (const name of ['tool_d1', 'tool_d2', 'tool_d3']) {
@@ -364,7 +364,7 @@ test('S-D: diverging or absent x-session-id cannot strand an issued call (cross-
     }
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -380,12 +380,12 @@ test('S-E (openai non-stream): issue + result pairing is unchanged', async () =>
     { role: 'user', content: 'Look it up, please.' },
   ];
   const SESS = 'sess-sea';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
     await sleep(25);
@@ -400,10 +400,10 @@ test('S-E (openai non-stream): issue + result pairing is unchanged', async () =>
     assert.equal(results.length, 1, 'the follow-up resolved into one real tool.result');
     assert.ok(results[0] && typeof results[0].durationMs === 'number' && results[0].durationMs > 0, 'durationMs is measured and positive');
     assert.ok(results[0] && typeof results[0].toolName === 'string' && results[0].toolName === 'search_web', 'toolName present on the result');
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -423,12 +423,12 @@ test('S-E (anthropic non-stream): issue + result pairing is unchanged', async ()
     { role: 'user', content: 'Check the weather and search for x.' },
   ];
   const SESS = 'sess-seb';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: anthropicUpstream(seqFetch([jsonRes(callBody), jsonRes({ id: 'msg_seb_done', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] })])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     await post(port, '/v1/messages', { model: 'claude-3-opus', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
     await sleep(25);
@@ -457,10 +457,10 @@ test('S-E (anthropic non-stream): issue + result pairing is unchanged', async ()
     assert.equal(results.length, 2, 'the follow-up resolved into two real tool.results');
     assert.ok(results.every((r) => typeof r.durationMs === 'number' && r.durationMs > 0), 'every result has a positive durationMs');
     assert.ok(results.every((r) => typeof r.toolName === 'string' && r.toolName !== ''), 'every result carries a real toolName (M4)');
-    assert.equal(mcm.tracker.pendingCount(), 0, 'no row left pending');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending');
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });
 
@@ -487,12 +487,12 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
     usage: { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11 },
   };
   const SESS = 'sess-sf';
-  const { port, srv, mcm } = await startMcmServer(
+  const { port, srv, atg } = await startAtgServer(
     { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
     { ws: false },
   );
   const events: TelemetryEvent[] = [];
-  const unsub = mcm.bus.subscribe((ev) => { events.push(ev); });
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
   try {
     await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Do three things.' }], stream: false }, { 'x-session-id': SESS });
 
@@ -516,6 +516,6 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
     );
   } finally {
     unsub();
-    await closeMcmServer(srv);
+    await closeAtgServer(srv);
   }
 });

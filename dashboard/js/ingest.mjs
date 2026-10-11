@@ -1,5 +1,5 @@
 /* ==========================================================================
- * mcp-manager dashboard — dual-source event ingest.
+ * aitoolgate dashboard — dual-source event ingest.
  *
  * A single deduped render path for BOTH the WebSocket primary source and the
  * /api/events polling fallback. Each inbound telemetry event is turned into a

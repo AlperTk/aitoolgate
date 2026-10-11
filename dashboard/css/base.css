@@ -1,4 +1,4 @@
-/* mcp-manager dashboard css — base: typography and generic utilities (headings, .muted, .small, .empty) */
+/* aitoolgate dashboard css — base: typography and generic utilities (headings, .muted, .small, .empty) */
 h1, h2, h3 { font-weight: 600; margin: 0; }
 .muted { color: var(--muted); }
 .small { font-size: 0.8em; }

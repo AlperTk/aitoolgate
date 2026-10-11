@@ -188,7 +188,7 @@ export function createPersistentStore<T extends { id: string }, B extends Persis
       db = openDbHandle();
       db.prepare(`DELETE FROM ${config.table} WHERE id = ?`).run(id);
     } catch (err) {
-      console.warn(`mcp-manager: could not delete persisted ${config.entity ?? 'row'} ${id}:`, err);
+      console.warn(`aitoolgate: could not delete persisted ${config.entity ?? 'row'} ${id}:`, err);
     } finally {
       db?.close();
     }

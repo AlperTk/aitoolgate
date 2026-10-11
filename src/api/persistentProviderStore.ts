@@ -138,7 +138,7 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
     try {
       upsertRecord(dbFile, current);
     } catch (err) {
-      console.warn(`mcp-manager: could not persist provider ${id}:`, err);
+      console.warn(`aitoolgate: could not persist provider ${id}:`, err);
     }
   };
 

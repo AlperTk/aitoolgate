@@ -1,6 +1,6 @@
 ---
 name: constraints
-description: MUST / MUST NOT rules, architectural restrictions, infrastructure limits, and external-system constraints that constrain future work in mcp-manager. Read before making cross-cutting changes or adding dependencies.
+description: MUST / MUST NOT rules, architectural restrictions, infrastructure limits, and external-system constraints that constrain future work in aitoolgate. Read before making cross-cutting changes or adding dependencies.
 ---
 
 # Constraints

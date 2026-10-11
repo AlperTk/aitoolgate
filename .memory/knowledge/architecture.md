@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: Module responsibilities, request/event/tool-result data flows, external systems, entry points, and key architectural decisions in mcp-manager. Read when you need to understand how components fit together or where a change belongs.
+description: Module responsibilities, request/event/tool-result data flows, external systems, entry points, and key architectural decisions in aitoolgate. Read when you need to understand how components fit together or where a change belongs.
 ---
 
 # Architecture
@@ -8,7 +8,7 @@ description: Module responsibilities, request/event/tool-result data flows, exte
 ## Style
 Layered **hexagonal / ports-and-adapters** monolith. Framework-agnostic contracts live in `src/ports/` (`domain`, `pipeline`, `strategy`, `telemetry`). Implementation modules depend on those ports (not on each other), and `createXxx(...)` composition factories wire everything together in the single server entry point. The server is the **only composition root**; the proxy receives its policy stage + telemetry deps via injected port interfaces (typed in `src/ports/telemetry.ts`, concrete defaults in `src/composition.ts`) — it never imports a concrete factory.
 ## Modules (one-line responsibility)
-- `src/server/index.ts` — **composition root**: `createServer()` boots config→telemetry→proxy→rule-store→REST→static dashboard→WS; returns an `http.Server` with a non-enumerable `.mcm` handle (`bus, collector, tracker, storage?, ruleStore, toolResultStore, toolResultPersister?, apiHandler, ws`). Auto-starts only when run as main.
+- `src/server/index.ts` — **composition root**: `createServer()` boots config→telemetry→proxy→rule-store→REST→static dashboard→WS; returns an `http.Server` with a non-enumerable `.atg` handle (`bus, collector, tracker, storage?, ruleStore, toolResultStore, toolResultPersister?, apiHandler, ws`). Auto-starts only when run as main.
 - `src/proxy/` — forwarding + protocol translation. `index.ts` = `createProxyHandler()` (protocol router + `SessionTokenPipeline`; receives policy stage + telemetry via injected port interfaces, defaults from `src/composition.ts`); `openai.ts`/`anthropic.ts` = per-protocol route handlers; `context.ts` = `buildRequestContext()`, `runThroughPipeline()`, `emitResponseTelemetry()` (per-call `tool.call` + whole-turn `turn.usage`), tool-result pairing; `translate.ts` = centralized OpenAI↔Anthropic conversion + response rehydration; `upstream.ts` = forwards to the single upstream (JSON/SSE).
 - `src/policy/` — rule engine + matchers + actions + feedback. `ruleEngine.ts` (`createRuleEngine`, `PolicyRule`/`PolicyAction`, built-in `flagshipLoopRule`); `types.ts` (`ActionStrategy`, `ActionEffectKind`, `PolicyMatcher`, `Match`, `RuleContext`); `policyStage.ts` (`createPolicyStage` mounts the engine as a pipeline stage; dispatches effects via the `ActionStrategy` registry); `matchers/` (toolName, argPattern, loopDetector, always + `normalize.ts`); `actions/` (block, hideTool, injectMessage, rewriteArgs + `index.ts` exporting the `ACTION_STRATEGIES` registry); `feedbackStore.ts` (`SessionFeedbackStore`).
 - `src/ports/telemetry.ts` — port interfaces the proxy depends on: `TelemetryEventBus`, `Collector`, `ToolMetricsTracker`, `TelemetryStorage`, `TelemetryHelpers`, `SseExtractorFactory`, `FeedbackStore`, `ProxyDefaults`.

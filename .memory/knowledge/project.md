@@ -1,12 +1,12 @@
 ---
 name: project
-description: What mcp-manager is, who it serves, its scope, core use cases, and technology stack. Read first to orient on the project before diving into architecture or domain.
+description: What aitoolgate is, who it serves, its scope, core use cases, and technology stack. Read first to orient on the project before diving into architecture or domain.
 ---
 
 # Project
 
 ## Purpose
-`mcp-manager` is a **local, zero-runtime-dependency TypeScript model proxy** on Node that sits in the agentic loop as a **man-in-the-middle over the LLM request/response stream** (LiteLLM-style). Its core value is a **programmable tool-monitoring / interception layer**: declarative *policy pipelines* inspect and optionally rewrite the message stream while transparently forwarding traffic to one configured upstream model.
+`aitoolgate` is a **local, zero-runtime-dependency TypeScript model proxy** on Node that sits in the agentic loop as a **man-in-the-middle over the LLM request/response stream** (LiteLLM-style). Its core value is a **programmable tool-monitoring / interception layer**: declarative *policy pipelines* inspect and optionally rewrite the message stream while transparently forwarding traffic to one configured upstream model.
 
 ## Scope
 - **In:** proxying LLM chat traffic; policy-based inspection & rewriting of tool calls; OpenAI↔Anthropic protocol translation (request, response, and SSE streams); rule CRUD REST API; real-time WebSocket telemetry feed; opt-in SQLite persistence; local dashboard.
@@ -39,7 +39,7 @@ description: What mcp-manager is, who it serves, its scope, core use cases, and 
 
 ## High-level overview
 ```
-AI client ──▶ mcp-manager (proxy + policy engine + telemetry) ──▶ one *active* upstream LLM (provider-switchable)
+AI client ──▶ aitoolgate (proxy + policy engine + telemetry) ──▶ one *active* upstream LLM (provider-switchable)
    │               node:http  (OpenAI + Anthropic endpoints)
    │               REST  /api/{rules,stats,events,tool-results,api-providers}
    │               WS    /ws  (live TelemetryEvent feed)
