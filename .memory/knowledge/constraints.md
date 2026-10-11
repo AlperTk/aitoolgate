@@ -27,6 +27,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 
 ## Architectural restrictions
 - Framework-agnostic contracts live in `src/ports/`; impls depend on ports, not each other. Put new abstractions in `ports/`; impls consume them.
+- **Single composition root:** `server/index.ts` builds and injects all subsystems; the proxy depends on injected port interfaces (`src/ports/telemetry.ts`), never on concrete factories (DIP). See architecture.md.
 - Two tsconfigs: `tsconfig.json` (dev, `noEmit`, Bundler resolution) and `tsconfig.build.json` (build → `dist/`, node16). Don't emit from the dev tsconfig.
 - Dashboard CSS is **token-first** (`css/tokens.css`); don't hardcode values. `styles.css` `@import` order matters — later sheets win at equal specificity.
 

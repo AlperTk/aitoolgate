@@ -10,6 +10,8 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 ## Dependency injection & structure
 - Composition over constructor DI: build objects via **`createXxx(...)` factory functions** that receive injected deps/options (`createServer`, `createProxyHandler(deps)`, `createRuleEngine`, `createPolicyStage`, `createCollector`, …). The server entry point is the **single composition root**.
 - **Ports & adapters (hexagonal):** contracts live in `src/ports/`; impl modules depend on ports, not on each other. Keep new abstractions in `ports/`.
+- **Shared store base:** `src/api/crudStore.ts` provides `createCrudStore<T>` (in-memory) and `createPersistentStore<T>` (write-through SQLite). The rule and provider stores are thin domain-specific wrappers over these bases; domain logic (validation, invariants, skip-flagship) stays in the caller, not the base.
+- **Shared protocol helpers:** `src/telemetry/protocol-common.ts` provides `parseArgs`, `stableCallId`, `normalizeUsage`, and the `NormalizedUsage` type; reused by the proxy (`context.ts`, `translate.ts`) and telemetry (`stream-extract.ts`). Don't duplicate these.
 
 ## Error handling
 - Domain/proxy ops are **non-throwing** (return `null`/`undefined` for not-found/no-match). Only `readJSONBody` throws on invalid API input. REST errors are JSON `{ error: string }` with the right HTTP status.
@@ -27,7 +29,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 - Node built-in **`node:test`** + `node:assert/strict`; tests run against **compiled `dist/`** — you MUST `npm run build` before `npm test`.
 - Naming: unit/integration = `*.test.ts` (integration often `*-integration.test.ts`); end-to-end = `e2e-*.test.ts`; a backend/API e2e suite may use the `.e2e.test.ts` suffix (e.g. `api-providers-live-apply.e2e.test.ts`). Use `describe`/`it`.
 - E2E drives **real client→server round-trips** but the upstream is **canned** (mock `fetch` / inline mock upstream, incl. canned SSE strings) — never a real provider. Servers start on **ephemeral port 0** (read back via `address().port`).
-- **Only one shared test module:** `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) to load dashboard `.mjs` under Node. Dashboard unit/DOM tests use an injected `fetchImpl` + microtask-flush (no timers/sleeps), one process per file, and a non-literal dynamic import to cache the module graph. All other helpers (`startServer`/`closeServer`, `OAI_CANNED`, `postRule`, `makeMockFetch`, local `FakeWebSocket`) are **local per-file** boilerplate.
+- **Shared test helpers:** `tests/helpers.ts` provides `startMcmServer`, `closeMcmServer`, `closeHttpServer`, `makeMockFetch`, `oaiCanned`. Domain-specific fakes (e.g. `FakeWebSocket`, `createFakeModel`) stay local per file. `tests/dom-stub.ts` (`FakeEl`, `createDomStub()`/`DomStub`) is the sole shared module for loading dashboard `.mjs` under Node. Dashboard unit/DOM tests use an injected `fetchImpl` + microtask-flush (no timers/sleeps), one process per file, and a non-literal dynamic import to cache the module graph.
 
 ## Naming
 - camelCase for functions/factories, PascalCase for types/classes, `createXxx()` prefix for constructors. Two tsconfigs (dev `noEmit` vs build → `dist/`).
@@ -43,7 +45,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 | Add | Put it in | Also touch |
 |---|---|---|
 | New matcher | `src/policy/matchers/<name>.ts` + `matchers/index.ts` | `ruleSpec.ts` (`buildMatcher`+`validateSpec`), `dashboard/js/rule-schema.mjs` |
-| New action | `src/policy/actions/<name>.ts` + `actions/index.ts` | `ruleSpec.ts` (`buildAction`+`validateSpec`), `dashboard/js/rule-schema.mjs` |
+| New action | `src/policy/actions/<name>.ts` (contributing an `ActionStrategy`) + one entry in `actions/index.ts` `ACTION_STRATEGIES` | `dashboard/js/rule-schema.mjs` (ruleSpec is registry-driven; no per-kind switch to edit) |
 | New pipeline stage | `src/policy/` or `src/proxy/` | mount via `.use()` in the composition root |
 | New port/contract | `src/ports/<name>.ts` | impl consumes it; no cross-impl imports |
 | New REST route | `src/api/http.ts` (+ wiring via API options) | dashboard consumer if UI-visible |
@@ -53,7 +55,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 
 ## Checklist — add a rule type end-to-end
 1. Implement the matcher/action factory in `src/policy/{matchers,actions}/`.
-2. Register it in `ruleSpec.ts` (`buildMatcher`/`buildAction` + `validateSpec` known-type + required fields).
+2. For actions: contribute an `ActionStrategy` in the action file + add one entry to `ACTION_STRATEGIES` in `actions/index.ts` (the policy stage and ruleSpec dispatch by `effect.type` via the registry — no per-kind switch to edit). For matchers: register in `ruleSpec.ts` (`buildMatcher` + `validateSpec` known-type + required fields).
 3. Sync the dashboard form schema in `dashboard/js/rule-schema.mjs`.
 4. Add a unit test + an `e2e-*` test; run `npm run build && npm test`.
 

@@ -36,7 +36,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 ## Business rules (easy to violate)
 - **Rule selection is ALL-match, not first-match.** Only `enabled` rules fire, evaluated in ascending `priority` (missing = last; ties by array index). Multiple rules can apply in one pass.
 - Matchers return `Match | null`; only `always` never returns `null`. The others may legitimately produce `null` (no match).
-- The **flagship loop rule is STATELESS**; per-session cooldown is laddered in the **policy stage** (which owns per-session feedback state). Don't put per-session state into a rule.
+- The **flagship loop rule is ACTIVE by default**: it is wired into the default rule set at composition time (priority 0, evaluated first), is **never persisted** (the rule store stays clean), and is re-added on restart without a DB seed. It is STATELESS; per-session cooldown is laddered in the **policy stage** (which owns per-session feedback state). Don't put per-session state into a rule.
 - `hideTool` strips tools from `raw.tools` **and** removes references from messages. `block` on a response drops the tool calls **and** queues user feedback for the next request — it is never silent.
 - `injectMessage` on a response is **queued for the next request**, not spliced into the current response.
 - `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
@@ -73,5 +73,5 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 
 ## End-to-end workflows
 - **Request:** client → route → `buildRequestContext` (derive SessionKey) → pipeline [session-token stage drains+splices feedback; policy stage evaluates+applies effects+emits Intervention] → translate → forward upstream → response stages → rehydrate → emit tool-call/result telemetry (centralized) → send.
-- **Add a rule at runtime:** `POST /api/rules` → `validateSpec` → `buildRuleFromSpec` (assigns `id` if absent) → `RuleStore.add` + write-through `saveRule` → the policy stage's live getter sees it on the next evaluate (**no restart**). The built-in flagship rule is skipped from persistence.
+- **Add a rule at runtime:** `POST /api/rules` → `validateSpec` → `buildRuleFromSpec` (assigns `id` if absent) → `RuleStore.add` + write-through `saveRule` → the policy stage's live getter sees it on the next evaluate (**no restart**). The built-in flagship rule is wired in at composition time (never added to the store), so it is never persisted and is re-added on restart.
 - **Drill into a tool result:** `resolveAndEmitToolResults` captures the raw value into the in-memory store (key = tool-call id) → dashboard calls `GET /api/tool-results/:id` (memory-first, then DB fallback); optional async SQLite drain when enabled.
