@@ -19,8 +19,10 @@
          and <main>, so it is not mounted from a fragment file. -->
     <div id="notice" class="notice" hidden></div>
 
-    <!-- Global controls: time-range filter + clear on-screen history + export.
-         Static markup kept in this thin shell (lives between the header and <main>). -->
+    <!-- Global controls: time-range filter + export.
+         Static markup kept in this thin shell (lives between the header and <main>).
+         The "Clear" button now lives in the #stream-panel .stream-filters row (below),
+         so the top bar keeps only the time-range and export controls. -->
     <div id="dash-controls" class="dash-controls">
       <div class="ctl-group" role="group" aria-label="Time range">
         <span class="ctl-label">Time</span>
@@ -33,12 +35,6 @@
         </select>
         <input id="filter-time-from" type="datetime-local" class="time-custom" hidden aria-label="Time from" />
         <input id="filter-time-to" type="datetime-local" class="time-custom" hidden aria-label="Time to" />
-      </div>
-      <div class="ctl-group" role="group" aria-label="Clear history">
-        <button type="button" id="btn-clear-history" class="btn btn-danger"
-                title="Removes buffered events currently shown in this dashboard (client-side only). Server aggregates in the stats panel are not affected.">
-          Clear on-screen history
-        </button>
       </div>
       <div class="ctl-group" role="group" aria-label="Export">
         <span class="ctl-label">Export</span>
@@ -74,6 +70,8 @@
           </select>
           <input id="filter-session" type="text" placeholder="Session key…" />
           <span id="stream-count" class="muted small"></span>
+          <button type="button" id="btn-clear-history" class="btn btn-danger"
+                  title="Clears tool calls currently shown in this dashboard (client-side only)">Clear</button>
         </div>
         <div class="list-wrap">
           <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
@@ -96,7 +94,10 @@
 
       <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->
       <section id="stats-panel" class="card">
-        <h2>Counts &amp; top tools</h2>
+        <div class="card-head">
+          <h2>Counts &amp; top tools</h2>
+          <button type="button" class="btn btn-danger" id="btn-clear-stats" title="Clears all server-side stats (counts + top tools)">Clear</button>
+        </div>
         <div class="stat-row">
           <div class="stat"><span id="total-calls" class="num">0</span><label>calls</label></div>
           <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>

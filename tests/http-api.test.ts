@@ -112,6 +112,59 @@ test('GET /api/stats returns a summary-shaped object with numeric totals and arr
   assert.equal(filled.interventions[0].ruleId, 'flagship-loop-rule');
 });
 
+test('POST /api/stats/reset clears all aggregates (200) and a subsequent GET /api/stats is zero/empty', async () => {
+  const bus = createEventBus();
+  const collector = createCollector({ bus }); // standalone, driven by our own bus
+  const ruleStore = createRuleStore();
+  const baseUrl = await startServer(ruleStore, collector);
+
+  // Seed non-zero aggregates: tool calls, a result, an intervention, and turn token usage.
+  await bus.emit({ type: 'tool.call', sessionKey: 'k', toolName: 'bash', at: Date.now() });
+  await bus.emit({ type: 'tool.call', sessionKey: 'k', toolName: 'bash', at: Date.now() });
+  await bus.emit({ type: 'tool.result', sessionKey: 'k', toolName: 'bash', ok: true, at: Date.now() });
+  await bus.emit({ type: 'policy.intervention', sessionKey: 'k', ruleId: 'flagship-loop-rule', action: 'injectMessage', at: Date.now() });
+  await bus.emit({ type: 'tool.call', sessionKey: 'k', toolName: 'bash', at: Date.now(), tokens: { input: 10, output: 20, total: 30 } });
+
+  // Confirm the aggregates are non-zero before the reset.
+  const before = (await (await fetch(`${baseUrl}/api/stats`)).json()) as {
+    totalCalls: number;
+    totalResults: number;
+    topTools: { toolName: string; count: number }[];
+    interventions: unknown[];
+  };
+  assert.equal(before.totalCalls, 3);
+  assert.equal(before.totalResults, 1);
+  assert.equal(before.topTools.length, 1);
+  assert.equal(before.interventions.length, 1);
+
+  // Issue the reset: 200, JSON, and the POST-RESET summary is already zero/empty.
+  const resetRes = await fetch(`${baseUrl}/api/stats/reset`, { method: 'POST' });
+  assert.equal(resetRes.status, 200);
+  assert.match(resetRes.headers.get('content-type') ?? '', /application\/json/);
+  const resetSummary = (await resetRes.json()) as {
+    totalCalls: number;
+    totalResults: number;
+    topTools: unknown[];
+    interventions: unknown[];
+    totalTokens?: number;
+  };
+  assert.equal(resetSummary.totalCalls, 0);
+  assert.equal(resetSummary.totalResults, 0);
+  assert.deepEqual(resetSummary.topTools, []);
+  assert.equal(resetSummary.interventions.length, 0);
+  assert.equal(resetSummary.totalTokens, undefined); // token totals cleared too
+
+  // A subsequent GET /api/stats agrees: zero/empty aggregates.
+  const after = (await (await fetch(`${baseUrl}/api/stats`)).json()) as {
+    totalCalls: number;
+    totalResults: number;
+    topTools: { toolName: string; count: number }[];
+  };
+  assert.equal(after.totalCalls, 0);
+  assert.equal(after.totalResults, 0);
+  assert.deepEqual(after.topTools, []);
+});
+
 test('POST /api/rules creates a rule (201) with an id; GET /api/rules lists it (fidelity)', async () => {
   const baseUrl = await startServer(createRuleStore(), createCollector());
 

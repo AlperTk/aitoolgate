@@ -74,3 +74,25 @@ export async function refreshStats() {
     showNotice('Stats unavailable: ' + errMsg(e));
   }
 }
+
+/* ---- clear (reset) server aggregates --------------------------------- */
+// POST /api/stats/reset to wipe server-side aggregates, then refresh the panel
+// so the cleared state shows. Reuses refreshStats() (no duplicated value logic);
+// a refresh success clears the notice, so the error path is the only showNotice.
+export async function clearStats() {
+  try {
+    var res = await fetch('api/stats/reset', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    await refreshStats();
+  } catch (e) {
+    showNotice('Stats clear failed: ' + errMsg(e));
+  }
+}
+
+// Wire the stats panel's Clear button -> clearStats(). Guarded: attaches only
+// when the button exists (matches the module's init* guard style).
+export function initClearStats() {
+  var btn = $('btn-clear-stats');
+  if (!btn) return;
+  btn.addEventListener('click', function () { clearStats(); });
+}

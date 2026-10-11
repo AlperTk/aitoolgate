@@ -2,7 +2,7 @@
 // initial startup wiring. Loaded as an ES module (see index.html <script type="module">).
 import { STATS_POLL_MS } from './js/constants.mjs';
 import { state } from './js/state.mjs';
-import { refreshStats, initTopTools } from './js/stats.mjs';
+import { refreshStats, initTopTools, initClearStats } from './js/stats.mjs';
 import { bindFormEvents, renderMatcherFields, renderActionFields, updateFormMode, refreshRules } from './js/rules.mjs';
 import { bindFilterEvents, normalizeStreamHead } from './js/live-view.mjs';
 import { connectWS, syncConnectivity, startEventsPolling } from './js/transport.mjs';
@@ -23,6 +23,7 @@ function init() {
   updateFormMode();
   refreshStats();          // initial load: stats + rules in parallel
   initTopTools();          // build the top-tools data table (filter + sortable headers)
+  initClearStats();        // wire the stats panel's Clear button (guarded)
   refreshRules();
   connectWS();             // low-latency primary source (self-heals on close/dead)
   syncConnectivity();      // honest baseline: polling/fallback until the WS actually opens

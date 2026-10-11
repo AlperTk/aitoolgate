@@ -119,3 +119,12 @@
   color: var(--text);
   margin-bottom: 0.9rem;
 }
+/* Card header row: heading on the left + optional right-aligned action button(s)
+   on the right (e.g. the stats panel's Clear button). Flex space-between keeps
+   the heading and the action from overlapping; the shared .card h2 keeps spacing. */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
