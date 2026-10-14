@@ -23,6 +23,8 @@ export interface Config {
   };
   toolResults: ToolResultsConfig;
   rules: RulesConfig;
+  /** Optional case-insensitive regex patterns (`TOOL_ERROR_PATTERNS`) that mark a tool result as a failure; additive to the built-in heuristic. */
+  toolErrorPatterns: string[];
 }
 
 const DEFAULTS: Config = {
@@ -43,6 +45,7 @@ const DEFAULTS: Config = {
     enabled: true,
     dbPath: 'data/rules.db',
   },
+  toolErrorPatterns: [],
 };
 
 /** Build a Config from environment variables, falling back to DEFAULTS for anything unset. */
@@ -72,6 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       enabled: parseBool(env.RULES_ENABLED) ?? DEFAULTS.rules.enabled,
       dbPath: env.RULES_DB_PATH ?? DEFAULTS.rules.dbPath,
     },
+    toolErrorPatterns: parseStringList(env.TOOL_ERROR_PATTERNS),
   };
 }
 
@@ -91,4 +95,10 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   if (value === undefined || value === '') return undefined;
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** Parse a comma-separated env value into a trimmed, non-empty string list (`[]` when unset/blank). */
+function parseStringList(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === '') return [];
+  return value.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
 }

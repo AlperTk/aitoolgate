@@ -20,6 +20,7 @@ const S: DomStub = createDomStub();
 const SL = S.el('stream-list', 'ul');
 const IV = S.el('intervention-list', 'ul');
 S.el('stream-count', 'span');
+S.el('stream-empty', 'div');
 const FT = S.el('filter-tool', 'input');
 const FS = S.el('filter-status', 'select');
 const FSE = S.el('filter-session', 'input');
@@ -86,7 +87,7 @@ beforeEach(() => {
 
 test('D2 baseline: no active filter shows every row and clears the count', () => {
   addRow({ tool: 'ReadFile', status: 'ok', session: 's1', at: 1000 });
-  addRow({ tool: 'WriteFile', status: 'error', session: 's2', at: 2000 });
+  addRow({ tool: 'WriteFile', status: 'fail', session: 's2', at: 2000 });
   M.lv.applyFilters();
   assert.equal(visibleRows().length, 2);
   assert.equal(S.byId('stream-count')!.textContent, '');
@@ -94,7 +95,7 @@ test('D2 baseline: no active filter shows every row and clears the count', () =>
 
 test('D2 tool-name filter (case-insensitive substring) + clean reset', () => {
   const a = addRow({ tool: 'ReadFile', status: 'ok', session: 's1', at: 1000 });
-  addRow({ tool: 'WriteFile', status: 'error', session: 's2', at: 2000 });
+  addRow({ tool: 'WriteFile', status: 'fail', session: 's2', at: 2000 });
   const c = addRow({ tool: 'READFILE', status: 'pending', session: 's3', at: 3000 });
   setF('filter-tool', 'read'); fire('filter-tool', 'input');
   assert.equal(visibleRows().length, 2, 'only Read* rows show');
@@ -107,9 +108,9 @@ test('D2 tool-name filter (case-insensitive substring) + clean reset', () => {
   assert.equal(S.byId('stream-count')!.textContent, '');
 });
 
-test('D2 status filter over pending/ok/error + unmatched/orphan + intervention', () => {
+test('D2 status filter over pending/ok/fail + unmatched/orphan + intervention', () => {
   addRow({ tool: 'A', status: 'ok', session: 's1', at: 1000 });
-  const err = addRow({ tool: 'B', status: 'error', session: 's2', at: 2000 });
+  const err = addRow({ tool: 'B', status: 'fail', session: 's2', at: 2000 });
   const orphan = addRow({ tool: 'C', status: 'ok', session: 's3', at: 3000, cls: 'orphan-row' });
   M.state.interventionsBySession.set('s4', [{ ruleId: 'r9', action: 'hideTool' }]);
   const interv = addRow({ tool: 'D', status: 'ok', session: 's4', at: 4000 });
@@ -117,7 +118,7 @@ test('D2 status filter over pending/ok/error + unmatched/orphan + intervention',
   FS.value = 'ok'; fire('filter-status', 'change');
   assert.equal(visibleRows().length, 2, 'two ok rows');
   // error -> only the errored row
-  FS.value = 'error'; fire('filter-status', 'change');
+  FS.value = 'fail'; fire('filter-status', 'change');
   assert.deepEqual(visibleRows(), [err]);
   // unmatched -> only orphan rows
   FS.value = 'unmatched'; fire('filter-status', 'change');
@@ -142,12 +143,12 @@ test('D2 session-key filter (substring, case-insensitive) + clean reset', () => 
 
 test('D2 filters COMBINE as AND across tool + status + session', () => {
   addRow({ tool: 'ReadFile', status: 'ok', session: 's1', at: 1000 });
-  const hit = addRow({ tool: 'ReadFile', status: 'error', session: 'session-target', at: 2000 });
-  addRow({ tool: 'WriteFile', status: 'error', session: 's3', at: 3000 });
-  addRow({ tool: 'ReadFile', status: 'error', session: 's4', at: 4000 }); // matches tool+status but not session -> hidden
+  const hit = addRow({ tool: 'ReadFile', status: 'fail', session: 'session-target', at: 2000 });
+  addRow({ tool: 'WriteFile', status: 'fail', session: 's3', at: 3000 });
+  addRow({ tool: 'ReadFile', status: 'fail', session: 's4', at: 4000 }); // matches tool+status but not session -> hidden
   const alt = addRow({ tool: 'ReadFile', status: 'ok', session: 'session-target', at: 5000 }); // matches tool+session but not status
   setF('filter-tool', 'read'); fire('filter-tool', 'input');
-  FS.value = 'error'; fire('filter-status', 'change');
+  FS.value = 'fail'; fire('filter-status', 'change');
   setF('filter-session', 'target'); fire('filter-session', 'input');
   assert.deepEqual(visibleRows(), [hit], 'only the row passing all three shows; s4 is hidden by the session filter even though it matches tool+status');
   assert.match(S.byId('stream-count')!.textContent, /^showing 1 of 5$/);
@@ -227,8 +228,8 @@ test('D2 readStreamFilters normalizes controls; rowPassesFilters ANDs all constr
   FS.value = 'ok';
   assert.deepEqual(M.lv.readStreamFilters(), { tool: 'read', status: 'ok', session: '' });
   assert.equal(M.lv.rowPassesFilters(hit, M.lv.readStreamFilters()), true);
-  FS.value = 'error';
-  assert.equal(M.lv.rowPassesFilters(hit, M.lv.readStreamFilters()), false, 'status=error fails an ok row');
+  FS.value = 'fail';
+  assert.equal(M.lv.rowPassesFilters(hit, M.lv.readStreamFilters()), false, 'status=fail fails an ok row');
   FS.value = '';
   assert.equal(M.lv.rowPassesFilters(hit, M.lv.readStreamFilters()), true, 'empty status imposes no constraint');
 });
@@ -252,4 +253,20 @@ test('D2 tool filter AND time-range combine; clearing one does not reset the oth
   setF('filter-tool', ''); fire('filter-tool', 'input');
   assert.equal(M.state.timeRange.mode, 'preset', 'time filter survives a tool reset');
   assert.deepEqual(visibleRows(), [recent, recentOther], 'only recent rows remain');
+});
+
+test('D2 rendered fail status (ok:false) sets dataset.status; fail filter matches non-orphan fail rows', () => {
+  // createOrphanResultRow sets dataset.status from the event's ok field (not directly),
+  // proving the rendering path produces status === 'fail' for ok:false.
+  M.lv.createOrphanResultRow({ ok: false, toolName: 'X', sessionKey: 's1', at: 1000 });
+  assert.equal(SL.children.length, 1);
+  assert.equal(SL.children[0].dataset.status, 'fail', 'rendered orphan row has dataset.status === "fail"');
+  // The fail filter matches a non-orphan row with dataset.status === 'fail'
+  // (orphan rows are excluded from concrete status filters by design).
+  const failRow = addRow({ tool: 'Y', status: 'fail', session: 's2', at: 2000 });
+  FS.value = 'fail'; fire('filter-status', 'change');
+  assert.deepEqual(visibleRows(), [failRow], 'fail filter matches the non-orphan fail row (orphan rows excluded from concrete status filters)');
+  // Reset shows both rows.
+  FS.value = ''; fire('filter-status', 'change');
+  assert.equal(visibleRows().length, 2);
 });

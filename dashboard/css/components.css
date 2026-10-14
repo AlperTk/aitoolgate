@@ -232,7 +232,7 @@
 }
 .badge-pending { background: rgba(139, 188, 255, 0.14); color: var(--c-st-pending); border-color: rgba(139, 188, 255, 0.3); }
 .badge-ok { background: rgba(126, 212, 145, 0.14); color: var(--c-st-ok); border-color: rgba(126, 212, 145, 0.3); }
-.badge-err { background: rgba(255, 155, 148, 0.14); color: var(--c-st-error); border-color: rgba(255, 155, 148, 0.3); }
+.badge-fail { background: rgba(255, 122, 92, 0.14); color: var(--c-st-fail); border-color: rgba(255, 122, 92, 0.3); }
 .badge-interv { background: rgba(243, 208, 138, 0.14); color: var(--c-st-amber); border-color: rgba(243, 208, 138, 0.3); }
 
 /* Stream rows (call / orphan + intervention) render tonal status/action pills: a soft

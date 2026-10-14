@@ -729,3 +729,223 @@ test('STREAMED Anthropic: tool.call carries the request-provided description; un
     await closeAtgServer(srv);
   }
 });
+
+// --- S-G: ok field reflects is_error in BOTH emission paths (streamed + buffered) --
+test('S-G: tool.result ok field reflects is_error in both streamed and buffered emission paths', async () => {
+  // Req1 (buffered) issues two tool calls.
+  const callBody = {
+    id: 'msg_sga', type: 'message', role: 'assistant', model: 'claude-3-opus',
+    content: [
+      { type: 'text', text: 'Running tools.' },
+      { type: 'tool_use', id: 'sga_1', name: 'test_tool', input: {} },
+      { type: 'tool_use', id: 'sga_2', name: 'test_tool2', input: {} },
+    ],
+    stop_reason: 'tool_use',
+  };
+  // Text-only Anthropic SSE (no tool calls) for the streamed follow-up.
+  const textOnlyFrames: Array<{ event: string; data: Record<string, unknown> }> = [
+    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_sga_2', type: 'message', role: 'assistant', content: [], model: 'claude-3-opus', usage: { input_tokens: 10 } } } },
+    { event: 'content_block_start', data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { event: 'content_block_delta', data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'done' } } },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+    { event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } },
+    { event: 'message_stop', data: { type: 'message_stop' } },
+  ];
+  const baseMsgs = [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Test the tools.' },
+  ];
+  const asstMsg = {
+    role: 'assistant', content: [
+      { type: 'text', text: 'Running tools.' },
+      { type: 'tool_use', id: 'sga_1', name: 'test_tool', input: {} },
+      { type: 'tool_use', id: 'sga_2', name: 'test_tool2', input: {} },
+    ],
+  };
+  const SESS = 'sess-sga';
+  const { port, srv, atg } = await startAtgServer(
+    {
+      upstream: anthropicUpstream(seqFetch([
+        jsonRes(callBody),
+        sseRes(anthropicSse(textOnlyFrames)),
+        jsonRes({ id: 'msg_sga_3', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] }),
+      ])),
+    },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    // Req1 (buffered): issues two tool calls.
+    await post(port, '/v1/messages', { model: 'claude-3-opus', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    // Req2 (STREAMED follow-up): feeds back is_error result for sga_1.
+    const res2 = await post(port, '/v1/messages', {
+      model: 'claude-3-opus', stream: true,
+      messages: [
+        ...baseMsgs, asstMsg,
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'sga_1', content: 'Error: something went wrong', is_error: true }] },
+      ],
+    }, { 'x-session-id': SESS });
+    await res2.text();
+    await sleep(25);
+
+    // Req3 (BUFFERED follow-up): feeds back normal result for sga_2.
+    await post(port, '/v1/messages', {
+      model: 'claude-3-opus', stream: false,
+      messages: [
+        ...baseMsgs, asstMsg,
+        { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: 'sga_1', content: 'Error: something went wrong', is_error: true },
+          { type: 'tool_result', tool_use_id: 'sga_2', content: 'Success: all good' },
+        ] },
+      ],
+    }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    // Two tool.call events (both issued in Req1).
+    const calls = events.filter(isToolCall);
+    assert.equal(calls.length, 2, 'two tool.call events observed');
+
+    // Two tool.result events: one per resolved call.
+    const results = events.filter(isToolResult);
+    assert.equal(results.length, 2, 'two tool.result events observed');
+
+    // The is_error result (emitted via the STREAMED path) has ok === false.
+    const failResult = results.find((r) => r.toolCallId === 'sga_1');
+    assert.ok(failResult, 'sga_1 result present');
+    assert.equal(failResult?.ok, false, 'is_error result has ok === false (emitted via streamed path)');
+
+    // The normal result (emitted via the BUFFERED path) has ok === true.
+    const okResult = results.find((r) => r.toolCallId === 'sga_2');
+    assert.ok(okResult, 'sga_2 result present');
+    assert.equal(okResult?.ok, true, 'normal result has ok === true (emitted via buffered path)');
+
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});
+
+// --- S-H: the OpenAI wire has NO native error flag — content alone indicates the failure -------
+// A `role:'tool'` message whose content leads with an error marker (and carries no other flag)
+// must emit a tool.result with ok:false, while a normal sibling result in the same turn stays
+// ok:true.
+const OAI_FAIL_CONTENT = "Error executing tool activate_project: ProjectNotFoundError: Project 'nonexistent-project-xyz' not found: Not a valid project name or directory. Existing project names: ['opencode-sandbox']";
+
+test('S-H: an OpenAI role:"tool" result with a leading error marker yields ok:false; a normal sibling yields ok:true', async () => {
+  const callBody = {
+    id: 'chatcmpl-sha', object: 'chat.completion', created: 1700000000, model: 'gpt-4o-mini',
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant', content: null,
+        tool_calls: [
+          { id: 'sha_1', type: 'function', function: { name: 'activate_project', arguments: '{}' } },
+          { id: 'sha_2', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+        ],
+      },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: 6, completion_tokens: 12, total_tokens: 18 },
+  };
+  const baseMsgs = [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Activate the project, then read the file.' },
+  ];
+  const SESS = 'sess-sha';
+  const { port, srv, atg } = await startAtgServer(
+    { upstream: openaiUpstream(seqFetch([jsonRes(callBody), jsonRes(FINAL_OPENAI_JSON)])) },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    await post(port, '/v1/chat/completions', { model: 'gpt-4o-mini', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    // Req2 feeds back BOTH results: a failing one (only the content indicates the failure) and a normal one.
+    await post(port, '/v1/chat/completions', {
+      model: 'gpt-4o-mini', stream: false,
+      messages: [
+        ...baseMsgs,
+        asstCall('sha_1', 'activate_project'), toolRes('sha_1', 'activate_project', OAI_FAIL_CONTENT),
+        asstCall('sha_2', 'read_file'), toolRes('sha_2', 'read_file', 'file contents here'),
+      ],
+    }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    assert.equal(events.filter(isToolCall).length, 2, 'two tool.call events observed');
+    const results = events.filter(isToolResult);
+    assert.equal(results.length, 2, 'two tool.result events observed');
+
+    const failResult = results.find((r) => r.toolCallId === 'sha_1');
+    assert.ok(failResult, 'the failing result is present');
+    assert.equal(failResult?.ok, false, 'an OpenAI result whose content leads with an error marker has ok === false');
+    assert.equal(failResult?.toolName, 'activate_project', 'the failing result carries the real toolName');
+
+    const okResult = results.find((r) => r.toolCallId === 'sha_2');
+    assert.ok(okResult, 'the normal result is present');
+    assert.equal(okResult?.ok, true, 'a normal OpenAI result has ok === true');
+
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});
+
+// --- S-H2: an UNFLAGGED Anthropic tool_result whose content leads with an error marker ---------
+// `is_error` is absent, but the content alone indicates the failure → still ok:false.
+test('S-H2: an unflagged Anthropic tool_result with a leading error marker yields ok:false', async () => {
+  const callBody = {
+    id: 'msg_shb', type: 'message', role: 'assistant', model: 'claude-3-opus',
+    content: [
+      { type: 'text', text: 'Running the tests.' },
+      { type: 'tool_use', id: 'shb_1', name: 'run_test', input: {} },
+    ],
+    stop_reason: 'tool_use',
+  };
+  const baseMsgs = [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Run the tests.' },
+  ];
+  const SESS = 'sess-shb';
+  const { port, srv, atg } = await startAtgServer(
+    {
+      upstream: anthropicUpstream(seqFetch([
+        jsonRes(callBody),
+        jsonRes({ id: 'msg_shb_done', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }] }),
+      ])),
+    },
+    { ws: false },
+  );
+  const events: TelemetryEvent[] = [];
+  const unsub = atg.bus.subscribe((ev) => { events.push(ev); });
+  try {
+    await post(port, '/v1/messages', { model: 'claude-3-opus', messages: baseMsgs, stream: false }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    // Req2 feeds back a tool_result with NO is_error flag; only the content indicates the failure.
+    await post(port, '/v1/messages', {
+      model: 'claude-3-opus', stream: false,
+      messages: [
+        ...baseMsgs,
+        { role: 'assistant', content: [{ type: 'text', text: 'Running the tests.' }, { type: 'tool_use', id: 'shb_1', name: 'run_test', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'shb_1', content: 'Error: assertion failed at line 42' }] },
+      ],
+    }, { 'x-session-id': SESS });
+    await sleep(25);
+
+    const results = events.filter(isToolResult);
+    assert.equal(results.length, 1, 'one tool.result event observed');
+    assert.equal(results[0]?.ok, false, 'an unflagged Anthropic result with a leading error marker has ok === false');
+    assert.equal(results[0]?.toolName, 'run_test', 'the result carries the real toolName');
+    assert.equal(atg.tracker.pendingCount(), 0, 'no row left pending');
+  } finally {
+    unsub();
+    await closeAtgServer(srv);
+  }
+});

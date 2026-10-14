@@ -21,12 +21,7 @@ import { createToolMetricsTracker, type ToolMetricsTracker } from '../telemetry/
 import { createSqliteStorage, type SqliteStorage } from '../storage/sqlite';
 import { flagshipLoopRule, type PolicyRule } from '../policy/ruleEngine';
 
-/**
- * Optional configuration for mounting the REST API, WebSocket server, and
- * dashboard static files onto the proxy HTTP server. Every field is optional;
- * defaults: a fresh empty rule store, no initial rules, WebSocket enabled, and
- * the dashboard resolved from disk (see {@link resolveDashboardDir}).
- */
+/** Optional configuration for mounting the REST API, WebSocket server, and dashboard static files; every field is optional (defaults: empty rule store, no initial rules, WS enabled, dashboard auto-resolved). */
 export interface MountOptions {
   /** Live rule registry backing the `/api/rules` CRUD routes (default: fresh empty store). */
   ruleStore?: RuleStore;
@@ -65,13 +60,7 @@ export interface AtgServerHandle {
 /** An HTTP server carrying an optional non-enumerable `.atg` test-facing handle. */
 export type AtgServer = http.Server & { readonly atg?: AtgServerHandle };
 
-/**
- * Content types for the dashboard asset extensions the server is allowed to serve.
- * Serving is now general: any GET path whose final segment has one of these
- * extensions — that stays inside the dashboard dir, contains no traversal, and
- * actually exists on disk — is served. Adding new module files (e.g. `/js/*.mjs`)
- * therefore needs no further change here.
- */
+/** Content types for the dashboard asset extensions the server is allowed to serve (serving is now general for any safe on-disk asset with one of these extensions). */
 const DASHBOARD_CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
@@ -79,13 +68,7 @@ const DASHBOARD_CONTENT_TYPES: Record<string, string> = {
   '.mjs': 'application/javascript',
 };
 
-/**
- * Resolve a GET request path to a safe dashboard asset ({ file, contentType }) or
- * null when the path is unsafe or not an allowed static-asset type. Rejects
- * traversal (`..`), absolute paths, null bytes, and any resolved path that escapes
- * `dir`; only serves `.html` / `.css` / `.js` / `.mjs` files; and verifies the
- * resolved file actually exists inside `dir`. The bare web root maps to `index.html`.
- */
+/** Resolve a GET request path to a safe dashboard asset ({ file, contentType }) or `null` when unsafe/not an allowed static-asset type (rejects traversal, escapes `dir`, and nonexistent files; bare root maps to `index.html`). */
 function resolveDashboardAsset(
   reqPath: string,
   dir: string | undefined,
@@ -124,13 +107,7 @@ function resolveDashboardAsset(
   return { file, contentType };
 }
 
-/**
- * Resolve the dashboard directory. Uses an explicit override if provided;
- * otherwise walks up from this module's directory (at most ~4 levels) and picks
- * the first parent that contains `dashboard/index.html`. This works both from
- * the compiled layout (`dist/src/server`) and from an in-source run. Returns
- * `undefined` when no candidate is found.
- */
+/** Resolve the dashboard directory (explicit override, else walk up at most ~4 levels for the first parent with `dashboard/index.html`); `undefined` when none found. */
 function resolveDashboardDir(override?: string): string | undefined {
   if (override !== undefined) return override;
   let dir = __dirname;
@@ -168,12 +145,7 @@ function serveStaticFile(
   res.end(body);
 }
 
-/**
- * Ensure the parent directory of the resolved rules DB file exists before it is
- * opened, so a fresh checkout with no `data/` directory still persists rules.
- * A bare filename (dirname `'.'` or empty) is skipped because its directory already
- * resolves; a throwing mkdir is caught by the caller and falls back to memory-only.
- */
+/** Ensure the parent directory of the resolved rules DB file exists before it is opened (skips bare filenames; a throwing mkdir is caught by the caller). */
 function ensureRulesDbParentDir(dbFile: string | undefined): void {
   if (typeof dbFile !== 'string' || dbFile.length === 0) return;
   const dir = path.dirname(dbFile);
@@ -181,14 +153,7 @@ function ensureRulesDbParentDir(dbFile: string | undefined): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/**
- * Build a write-through persistent {@link RuleStore} backed by SQLite when rule
- * persistence is enabled, or an in-memory store as a fallback. Opens the existing
- * `rules` table via the shared {@link createSqliteStorage} (no new tables or
- * migrations), seeds the base store from any persisted rules, and mirrors every
- * mutation back to disk. If opening the database fails, log a warning and return a
- * non-persistent in-memory store so the server still boots.
- */
+/** Build a write-through persistent `RuleStore` (SQLite when enabled, else in-memory), reusing the shared rules DB and falling back to memory-only if opening fails. */
 function openPersistentRuleStore(
   dbPath: string | undefined,
   initial: PolicyRule[] | undefined,
@@ -206,14 +171,7 @@ function openPersistentRuleStore(
   }
 }
 
-/**
- * Build a write-through persistent {@link ApiProviderStore} backed by SQLite when rule
- * persistence is enabled, else an in-memory store as a fallback. Reuses the shared rules DB
- * file path + parent-directory helper; if opening fails we fall back to a non-persistent
- * in-memory store so the server still boots. Seeding of the env-derived default row is
- * applied BY THE CALLER (see {@link createServer}) so it happens identically whether or not
- * persistence is available.
- */
+/** Build a write-through persistent `ApiProviderStore` (SQLite when enabled, else in-memory); the env-derived default row is seeded by the caller, so it applies whether or not persistence is available. */
 function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
   try {
     ensureRulesDbParentDir(dbFile);
@@ -224,20 +182,7 @@ function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
   }
 }
 
-/**
- * Create the aitoolgate HTTP server, mounting the model-proxy routes alongside
- * a REST API (`/api/*`), a built-in WebSocket server (the `/ws` upgrade), and
- * the dashboard static files. A single shared telemetry bus + collector feeds
- * BOTH the proxy handler and the API/WS layers so every consumer observes the
- * same event stream.
- *
- * @param port Optional port override; defaults to the configured port.
- * @param options Optional proxy options (upstream client + pipeline + policy).
- * Defaults to the configured upstream using the global `fetch`.
- * @param mount Optional configuration for the API/WS/dashboard mount (defaults:
- * fresh empty rule store, no initial rules, WebSocket enabled, dashboard auto-resolved).
- * @returns the listening HTTP server, carrying a non-enumerable `.atg` handle.
- */
+/** Create the aitoolgate HTTP server, mounting the model-proxy routes + REST API (`/api/*`) + WebSocket (`/ws`) + dashboard static files; a single shared bus + collector feeds the proxy AND the API/WS layers. */
 export function createServer(port?: number, options?: ProxyOptions, mount?: MountOptions): AtgServer {
   const config = loadConfig();
   const listenPort = port ?? config.port;
@@ -386,6 +331,9 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     // that share the configured bus so the live view always sees the stage's events.
     telemetry: { bus, collector, tracker, ...(storage !== undefined ? { storage } : {}) },
     toolResultStore,
+    // Thread the env-parsed user tool-error patterns into every request path so a result
+    // whose content matches any of them (additive to the built-in heuristic) is flagged.
+    toolErrorPatterns: config.toolErrorPatterns,
     // Explicitly inject the concrete defaults bundle (the SSE extractor factory + timing/
     // estimation helpers) so the server stays the single composition root for ALL telemetry
     // wiring; the proxy sources `makeSseExtractor` / `usage` from this injected port.

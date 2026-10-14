@@ -77,7 +77,7 @@ export type ToolResultEvent = {
   clientId?: string;
   /** Name of the tool that ran. */
   toolName: string;
-  /** Whether the call succeeded. */
+  /** Whether the call succeeded (always set on the emission path; `true` when the result's `is_error` flag is absent). */
   ok?: boolean;
   /** Id of the specific tool call whose result this is (links to {@link ToolCallEvent.id}); used for cross-request pairing. */
   toolCallId?: string;

@@ -1,22 +1,6 @@
-/**
- * Shared protocol-translation helpers used by BOTH the buffered tool-call emission
- * path (`proxy/context.ts`), the streamed tool-call extraction path
- * (`telemetry/stream-extract.ts`), and the centralized protocol translation
- * (`proxy/translate.ts`).
- *
- * Placed in the `telemetry/` layer (rather than `proxy/`) so that the proxy, which
- * already depends on telemetry (events / toolMetrics / tokenEstimate), reuses these
- * helpers WITHOUT introducing a new cross-impl dependency: the existing proxy→telemetry
- * direction is preserved, and no telemetry→proxy import is added. These helpers are
- * neutral, provider-agnostic building blocks shared across the tool-call emission and
- * protocol-translation code paths.
- */
+/** Provider-agnostic protocol-translation helpers shared by the buffered, streamed, and centralized tool-call emission paths. */
 
-/**
- * Normalized upstream token usage (provider-agnostic). `cacheHitInput` is the portion
- * of input tokens served from the provider cache (0 when there is none); `total` =
- * input + cacheHitInput + output.
- */
+/** Normalized upstream token usage (provider-agnostic); `total` = input + cacheHitInput + output. */
 export type NormalizedUsage = { input?: number; output?: number; total?: number; cacheHitInput?: number };
 
 /** True if `value` is a non-null, non-array object (a plain JSON-like record). */
@@ -29,11 +13,7 @@ function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-/**
- * Parse a JSON tool-call argument string into an object. Returns `undefined` when the
- * input is absent, empty, or not a JSON object (so callers can omit `args` rather than
- * fabricate an empty object).
- */
+/** Parse a JSON tool-call argument string into an object; `undefined` when absent, empty, or non-object. */
 export function parseArgs(args: unknown): Record<string, unknown> | undefined {
   if (typeof args !== 'string' || args.trim() === '') return undefined;
   try {
@@ -44,18 +24,7 @@ export function parseArgs(args: unknown): Record<string, unknown> | undefined {
   }
 }
 
-/**
- * Build a tool-name → description map from a request's `tools` array, understanding BOTH
- * provider wire shapes by value (no protocol switch):
- *   - OpenAI:    `tools[i].function.{ name, description }`
- *   - Anthropic: `tools[i].{ name, description }`
- * For each tool the top-level `name`/`description` win when present (the Anthropic shape),
- * falling back to the nested `function.*` fields (the OpenAI shape), so a tool carrying
- * either layout is resolved. Best-effort: `raw` absent or carrying no `tools` array yields
- * an EMPTY map (callers simply omit the description); a tool with a missing/empty name or a
- * non-string/empty description is skipped (never fabricated). Reused by the proxy so the
- * emitted `tool.call` event carries the request-provided description for the dashboard.
- */
+/** Build a tool-name → description map from a request's `tools` array, handling both OpenAI and Anthropic wire shapes (best-effort). */
 export function toolDescriptionMap(raw: unknown): Map<string, string> {
   const map = new Map<string, string>();
   if (!isRecord(raw)) return map;
@@ -81,16 +50,7 @@ export function toolDescriptionMap(raw: unknown): Map<string, string> {
   return map;
 }
 
-/**
- * Assign a stable, turn-unique id to one tool call. Prefers the upstream tool-call id
- * when present; otherwise synthesizes a deterministic `${sessionKey}#${at}#${index}` id.
- * A monotonic suffix (`~1`, `~2`, …) is appended whenever the computed id would still
- * collide with a sibling already seen in this same turn (e.g. two calls sharing one
- * upstream id), guaranteeing NO two sibling calls in a batch turn ever share an
- * identical id — the field the dashboard dedups on. Shared across the buffered
- * (`proxy/context.ts`) and streamed (`telemetry/stream-extract.ts`) emission paths so
- * both produce the same contract.
- */
+/** Assign a stable, turn-unique id to one tool call (preferring the upstream id; deterministic `${sessionKey}#${at}#${index}` fallback, suffixed on collision). */
 export function stableCallId(
   sessionKey: string,
   at: number,
@@ -109,29 +69,73 @@ export function stableCallId(
   return id;
 }
 
+/** Extract the best-effort string content from a tool-result payload (a string, or a record's first non-empty string value). */
+function extractResultText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content;
+  if (isRecord(content)) {
+    for (const value of Object.values(content)) {
+      if (typeof value === 'string' && value.trim() !== '') return value;
+    }
+  }
+  return undefined;
+}
+
+/** Conservative leading-marker heuristic: true only when trimmed tool-result content STARTS with an error marker. */
+export function isErrorResultContent(content: unknown): boolean {
+  const text = extractResultText(content);
+  if (text === undefined) return false;
+  const lower = text.trim().toLowerCase();
+  if (lower === '') return false;
+  return (
+    /^error\s*[:\-—–!?]/.test(lower) ||
+    /^error\s+(?:executing|occurred|happened|failed|while|when|during|in)\b/.test(lower) ||
+    /^tool execution failed\b/.test(lower) ||
+    /^internal server error\b/.test(lower)
+  );
+}
+
+/** Memoized, non-throwing compilation of tool-error patterns into case-insensitive regexes; a malformed entry is skipped with a one-time warning. */
+const compiledErrorPatternsCache = new Map<string, RegExp[]>();
+function compiledErrorPatterns(patterns: string[]): RegExp[] {
+  const key = patterns.join('\u0000');
+  const cached = compiledErrorPatternsCache.get(key);
+  if (cached !== undefined) return cached;
+  const compiled: RegExp[] = [];
+  for (const pattern of patterns) {
+    try {
+      compiled.push(new RegExp(pattern, 'i'));
+    } catch (err) {
+      console.warn(
+        `aitoolgate: skipping invalid TOOL_ERROR_PATTERNS entry ${JSON.stringify(pattern)}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+  compiledErrorPatternsCache.set(key, compiled);
+  return compiled;
+}
+
+/** True when tool-result content matches any user-supplied tool-error pattern (case-insensitive; never throws). */
+export function isErrorResultContentByPatterns(content: unknown, patterns: string[]): boolean {
+  if (patterns.length === 0) return false;
+  const text = extractResultText(content);
+  if (text === undefined) return false;
+  for (const regex of compiledErrorPatterns(patterns)) {
+    if (regex.test(text)) return true;
+  }
+  return false;
+}
+
 /** True when a normalized usage carries at least one numeric field. */
 function hasAnyValue(usage: NormalizedUsage): boolean {
   return usage.input !== undefined || usage.output !== undefined || usage.total !== undefined || usage.cacheHitInput !== undefined;
 }
 
-/**
- * Normalize upstream token usage from a usage object (the `usage` field of a native or
- * cross-protocol translated response body, or a streamed usage frame) into the
- * provider-agnostic `{ input?, output?, total?, cacheHitInput? }` shape. The protocol is
- * detected from which usage fields are present — OpenAI `usage.{prompt_tokens,
- * completion_tokens, total_tokens}` vs Anthropic `usage.{input_tokens, output_tokens}`
- * (total = input+cacheHitInput+output when absent) — so the real upstream numbers are
- * read regardless of translation. The whole input is split into BASE input (`input`, not
- * served from cache) and cache-hit input (`cacheHitInput`): OpenAI `prompt_tokens`
- * INCLUDES `prompt_tokens_details.cached_tokens` (so base = prompt − cached, cache-hit =
- * cached), whereas Anthropic `input_tokens` EXCLUDES cache tokens (so base = input_tokens
- * + cache_creation, cache-hit = cache_read). Best-effort: returns `undefined` when no
- * recognized usage field is present, so callers omit tokens rather than fabricate.
- */
+/** Normalize upstream token usage into the provider-agnostic `{ input?, output?, total?, cacheHitInput? }` shape; `undefined` when no recognized usage field is present. */
 export function normalizeUsage(usage: unknown): NormalizedUsage | undefined {
   if (!isRecord(usage)) return undefined;
-  // OpenAI shape: usage.{prompt_tokens, completion_tokens, total_tokens}. `prompt_tokens`
-  // includes cached tokens (a subset), so split it into base input + cache-hit input.
+  // OpenAI shape: prompt_tokens includes cached tokens, so split into base input + cache-hit input.
   if (isNumber(usage.prompt_tokens) || isNumber(usage.completion_tokens) || isNumber(usage.total_tokens)) {
     const out: NormalizedUsage = {};
     const prompt = isNumber(usage.prompt_tokens) ? usage.prompt_tokens : undefined;
@@ -147,15 +151,13 @@ export function normalizeUsage(usage: unknown): NormalizedUsage | undefined {
     }
     return hasAnyValue(out) ? out : undefined;
   }
-  // Anthropic shape: usage.{input_tokens, output_tokens}. `input_tokens` excludes cache
-  // tokens, so fold cache-creation into base input and carry cache-read as the cache hit.
+  // Anthropic shape: input_tokens excludes cache tokens, so fold cache-creation into base input and carry cache-read as the cache hit.
   if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
     const out: NormalizedUsage = {};
     const input = isNumber(usage.input_tokens) ? usage.input_tokens : undefined;
     const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : 0;
     const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
-    // base input and cacheHitInput are clamped >= 0 (mirrors the OpenAI clamp above) so a
-    // corrupt negative cache field can never leak a negative input/cacheHitInput/total.
+    // base input and cacheHitInput are clamped >= 0 so a negative cache field can never leak a negative total.
     out.cacheHitInput = Math.max(0, cacheRead);
     if (input !== undefined) out.input = Math.max(0, input + cacheCreation);
     if (isNumber(usage.output_tokens)) out.output = usage.output_tokens;

@@ -149,12 +149,12 @@ export function createCallRow(ev) {
 // Update an existing call row in place when its tool.result arrives.
 export function updateCallRowWithResult(rs, ev) {
   rs.resultEv = ev;
-  rs.status = ev.ok === false ? 'error' : 'ok';
+  rs.status = ev.ok === false ? 'fail' : 'ok';
   rs.li.dataset.status = rs.status;
   var badge = rs.li.querySelector('.badge');
   if (badge) {
-    badge.className = 'badge ' + (ev.ok === false ? 'badge-err' : 'badge-ok');
-    badge.textContent = ev.ok === false ? 'error' : 'ok';
+    badge.className = 'badge ' + (ev.ok === false ? 'badge-fail' : 'badge-ok');
+    badge.textContent = ev.ok === false ? 'fail' : 'ok';
   }
   var dur = rs.li.querySelector('.s-duration');
   if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
@@ -172,12 +172,12 @@ export function createOrphanResultRow(ev) {
   var li = el('li', 'stream-row orphan-row');
   li.dataset.tool = ev.toolName || '';
   li.dataset.session = ev.sessionKey || '';
-  li.dataset.status = ev.ok === false ? 'error' : 'ok';
+  li.dataset.status = ev.ok === false ? 'fail' : 'ok';
   li.dataset.at = ev.at;
 
   var isErr = ev.ok === false;
   var main = el('div', 'row-main');
-  main.appendChild(el('span', 'badge ' + (isErr ? 'badge-err' : 'badge-ok'), isErr ? 'error' : 'ok'));
+  main.appendChild(el('span', 'badge ' + (isErr ? 'badge-fail' : 'badge-ok'), isErr ? 'fail' : 'ok'));
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
@@ -202,7 +202,7 @@ export function createOrphanResultRow(ev) {
   li.appendChild(main);
   li.appendChild(detail);
 
-  var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'error' : 'ok', expanded: false };
+  var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'fail' : 'ok', expanded: false };
   state.orphanResultEntries.push({ li: li, ev: ev, rs: rs });
   prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
   $('stream-empty').hidden = true;
@@ -569,7 +569,7 @@ export function rowPassesFilters(row, f) {
   f = f || readStreamFilters();
   // All four constraints combine as AND: a row shows only when it passes every
   // active filter (tool AND status AND session AND time window). An absent/empty
-  // control value skips that constraint. A concrete status (pending/ok/error) is
+  // control value skips that constraint. A concrete status (pending/ok/fail) is
   // never the category of an orphan ("Unmatched result") row — orphans are their
   // own category and match only "unmatched" or all — so they are excluded here.
   if (f.tool && (row.dataset.tool || '').toLowerCase().indexOf(f.tool) === -1) return false;

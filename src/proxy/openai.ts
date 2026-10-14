@@ -34,19 +34,15 @@ export interface OpenAIHandlerDeps {
   tracker?: ToolMetricsTracker;
   /** Optional raw-tool-result store capturing each resolved result's RAW content (keyed by stable id). */
   toolResultStore?: ToolResultStore;
+  /** Optional tool-error patterns (additive to the built-in heuristic); threaded into every request path. */
+  toolErrorPatterns?: string[];
   /** SSE tool-call extractor factory (injected port) for streamed pass-through telemetry. */
   sseExtractor: SseExtractorFactory;
   /** Timing + token-estimation helpers (injected port) threaded into every request path. */
   usage: TelemetryHelpers;
 }
 
-/**
- * Handle the OpenAI-compatible routes:
- * - `GET /v1/models` (returns the configured model(s))
- * - `POST /v1/chat/completions` (forward to the upstream, translated if needed)
- *
- * Returns `true` when the route was handled, `false` otherwise.
- */
+/** Handle the OpenAI-compatible routes (`GET /v1/models`, `POST /v1/chat/completions`); returns `true` when handled. */
 export async function handleOpenAIRoute(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -62,11 +58,7 @@ export async function handleOpenAIRoute(
   if (req.method === 'POST' && url === '/v1/chat/completions') {
     const raw = await readJSONBody(req);
 
-    // Same-protocol streaming (`stream: true`, upstream speaks OpenAI): bypass the
-    // buffered pipeline path and pipe the upstream SSE straight through to the client.
-    // Cross-protocol streams (upstream = Anthropic) are intentionally NOT streamed here
-    // — streaming translation is out of scope, so they keep using the buffer-and-
-    // translate path below.
+    // Same-protocol streaming: pipe the upstream SSE straight through; cross-protocol streams keep the buffer-and-translate path.
     if (isStreamRequest(raw) && deps.upstream.protocol === 'openai') {
       await streamSameProtocol(req, res, deps, raw);
       return true;
@@ -77,7 +69,13 @@ export async function handleOpenAIRoute(
       deps.pipeline,
       requestCtx,
       (request) => forwardOpenAIRequest(deps.upstream, request as OpenAIChatRequest),
-      { bus: deps.bus, tracker: deps.tracker, toolResultStore: deps.toolResultStore, usage: deps.usage },
+      {
+        bus: deps.bus,
+        tracker: deps.tracker,
+        toolResultStore: deps.toolResultStore,
+        toolErrorPatterns: deps.toolErrorPatterns,
+        usage: deps.usage,
+      },
     );
     sendJSON(res, status, body);
     return true;
@@ -96,13 +94,7 @@ function isStreamRequest(raw: unknown): boolean {
   );
 }
 
-/**
- * Stream a same-protocol OpenAI request through to the client as raw SSE. Only the
- * REQUEST phase of the pipeline runs (policy edits applied before forwarding); response-
- * phase stages cannot run on a raw SSE pass-through (they would need the full response).
- * The request-phase tool-RESULT detection still runs (via {@link resolveAndEmitToolResults}),
- * pairing any tool results carried in the incoming messages against previously-issued calls.
- */
+/** Stream a same-protocol OpenAI request as raw SSE; only the request-phase pipeline runs (response phases can't run on a raw pass-through). */
 async function streamSameProtocol(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -112,44 +104,27 @@ async function streamSameProtocol(
   const requestCtx = buildRequestContext(req, deps.upstream, raw);
   const processed = await deps.pipeline.handleRequest(requestCtx);
   syncRequestMessages(processed);
-  // Request-phase tool-RESULT detection runs on EVERY proxied request — including streamed ones —
-  // so pending issued calls recorded by an earlier same-session request (buffered or streamed)
-  // pair into a REAL tool.result even when this response itself is streamed. A no-op here when
-  // the incoming messages carry no tool results or none match a pending issued call.
-  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage);
-  // Ask the upstream to include per-turn token usage on the stream so the passthrough SSE carries
-  // a trailing `usage` chunk the extractor reads into turn-level `tokens` (OpenAI only emits it
-  // when asked via `stream_options.include_usage`). Preserves any client-provided `stream_options`.
+  // Request-phase tool-RESULT detection runs on every proxied request (a no-op when nothing matches).
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage, deps.toolErrorPatterns);
+  // Ask the upstream to include per-turn usage so the SSE carries a trailing `usage` chunk (preserves client `stream_options`).
   ensureStreamUsage(processed.raw);
   const upstreamResponse = await streamOpenAIRequest(deps.upstream, processed.raw as OpenAIChatRequest);
-  // Pipe the raw SSE through a passthrough transformer that extracts tool-call/result
-  // telemetry onto the shared bus without altering forwarded bytes (a no-op when no
-  // bus is wired). The response-phase pipeline stages still cannot run on a raw
-  // pass-through, so this is the streaming equivalent of post-response observation.
+  // Pipe the raw SSE through a passthrough extractor that captures tool telemetry onto the bus without altering forwarded bytes.
   const extractor = deps.sseExtractor(
     deps.bus,
     toSessionKeyString(requestCtx.sessionKey),
     toClientId(requestCtx.client),
     deps.tracker,
-    // Default timing source; precomputed estimated input-token mass of THIS request's full message
-    // content, so a usage-less streamed turn WITH issued tool calls still gets its final
-    // `turn.usage` event carrying honest input tokens over all message text.
+    // Precomputed estimated input-token mass, so a usage-less streamed turn still emits an honest `turn.usage`.
     undefined,
     deps.usage.estimateInputTokens(requestCtx.messages),
-    // The request's raw body (carrying the client's `tools`), so each streamed tool.call can
-    // carry the request-provided tool description (matched by the call's name) — mirroring the
-    // buffered emission path. Uses `requestCtx.raw` (the original request) like the other fields
-    // threaded into the extractor above.
+    // The request's raw body (carrying `tools`), so each streamed tool.call carries the request-provided description.
     requestCtx.raw,
   );
   pipeUpstreamStream(res, upstreamResponse, extractor);
 }
 
-/**
- * Reflect provider-agnostic message edits from the (request-phase) context onto the raw
- * wire body's `messages` field so they reach the upstream model. No-op when the raw has
- * no `messages` array or the stream was left untouched.
- */
+/** Reflect provider-agnostic message edits onto the raw wire body's `messages` field; no-op when there is none or it's untouched. */
 function syncRequestMessages(ctx: RequestContext): void {
   const raw = ctx.raw;
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return;
@@ -159,12 +134,7 @@ function syncRequestMessages(ctx: RequestContext): void {
   record.messages = ctx.messages;
 }
 
-/**
- * Force `stream_options.include_usage` to `true` on an OpenAI stream request body so the upstream
- * emits a trailing `usage` chunk (read by the SSE extractor into turn-level `tokens`). Preserves
- * any other client-provided `stream_options`; no-op when the body is not a plain object. Mutates
- * and returns the raw wire body.
- */
+/** Force `stream_options.include_usage` so the upstream emits a trailing `usage` chunk; preserves other `stream_options`; mutates and returns the body. */
 function ensureStreamUsage(raw: unknown): unknown {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
   const record = raw as Record<string, unknown>;
