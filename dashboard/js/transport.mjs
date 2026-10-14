@@ -27,7 +27,7 @@ export function setConnected(on) {
     s.title = on ? 'Live stream connected' : bannerText;
   }
   var label = $('conn-label');
-  if (label) label.textContent = on ? 'live' : 'polling';
+  if (label) label.textContent = on ? 'Live' : 'Polling';
   var banner = $('stream-status');
   if (banner) {
     banner.hidden = !!on;

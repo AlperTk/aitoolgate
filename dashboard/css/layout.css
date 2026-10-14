@@ -1,26 +1,85 @@
 /* aitoolgate dashboard css — layout: app header / nav / connection status, notice banner, view switching, dashboard grid, and card panels */
 /* ------------------------------- header ---------------------------- */
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(13, 17, 23, 0.8);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+/* Centered inner bar: brand on the left, grouped controls on the right, all
+   aligned to the same 1400px grid as the page views beneath. */
+.app-header-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0.875rem 1.5rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  background: rgba(13, 17, 23, 0.7);
-  backdrop-filter: blur(8px);
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
-.app-title { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
-.app-title h1 { font-size: var(--fs-2xl); font-weight: var(--fw-bold); letter-spacing: 0.2px; }
-.subtitle { color: var(--muted); font-size: var(--fs-md); }
-
+/* Brand: a product-logo lockup (geometric gate/portal mark + two-tone wordmark)
+   on the left, followed by a short muted description on a shared baseline, split
+   by a thin vertical divider. */
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+/* Mark + wordmark: one cohesive, left-aligned brand block (the logo lockup),
+   vertically centered so the mark sits beside the wordmark as a single unit. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+/* Compact inline logo mark: a geometric gate/portal glyph; the accent tile and
+   the negative-space opening both adapt to the theme via tokens. */
+.brand-mark {
+  width: var(--brand-mark-size);
+  height: var(--brand-mark-size);
+  flex: none;
+  display: block;
+}
+/* Wordmark: a tight, modern two-tone treatment — the bulk in the primary text
+   token, the "gate" segment in the accent token, on a shared baseline. */
+.app-title h1 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 0;
+  white-space: nowrap;
+}
+.brand-name { color: var(--text); }
+.brand-accent { color: var(--accent); }
+/* Muted description: kept as-is; a thin divider separates it from the lockup. */
+.subtitle {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.01em;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--border);
+  white-space: nowrap;
+}
+/* Grouped right-side controls: view navigation + settings gear + live status,
+   right-aligned with consistent spacing and wrapping gracefully on narrow screens. */
+.app-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
 /* Header navigation: two client-side page links (Dashboard / Policy Rules).
    The active link gets an accent background + underline so the current page
    is obvious at a glance. */
-.app-nav { display: inline-flex; align-items: center; gap: 0.35rem; }
+.app-nav { display: inline-flex; align-items: center; gap: 0.25rem; }
 .nav-link {
   color: var(--muted);
   text-decoration: none;
@@ -36,23 +95,26 @@
   background: rgba(76, 141, 255, 0.16);
   border-bottom-color: var(--accent);
 }
-
-/* Connection status indicator (green = connected, red = disconnected). */
+/* Live status pill (green = connected, muted = polling fallback). */
 .conn {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: var(--fs-sm);
+  gap: 0.4rem;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
   color: var(--muted);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.3rem 0.75rem;
+  padding: 0.28rem 0.65rem;
+  white-space: nowrap;
 }
-.conn .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
-.conn.connected { color: var(--text); }
-.conn.connected .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
-.conn.disconnected .dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.conn .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); flex: none; }
+.conn.connected { color: var(--c-st-ok); border-color: rgba(126, 212, 145, 0.35); }
+.conn.connected .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.conn.disconnected { color: var(--muted); }
+.conn.disconnected .dot { background: var(--text-faint); }
 
 /* ------------------------------- notice ---------------------------- */
 .notice {

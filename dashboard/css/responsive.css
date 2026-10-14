@@ -23,7 +23,16 @@
 }
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
-  .app-header { flex-direction: column; align-items: flex-start; }
+  /* Stack the header: brand on top, grouped controls wrap below; drop the subtitle
+     and tighten the inner padding so everything stays within the viewport. */
+  .app-header-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.75rem 1rem;
+  }
+  .app-header-right { width: 100%; justify-content: flex-start; }
+  .subtitle { display: none; }
 }
 
 /* Below ~480px: stack the global-controls toolbar and let each control group

@@ -1,18 +1,49 @@
-    <header class="app-header">
-      <div class="app-title">
-        <h1>aitoolgate</h1>
-        <span class="subtitle">tool-monitoring &amp; policy engine</span>
-      </div>
-      <nav class="app-nav" aria-label="Dashboard pages">
-        <a class="nav-link" href="#/">Dashboard</a>
-        <a class="nav-link" href="#/rules">Policy Rules</a>
-        <!-- Settings popup trigger: opens the overlay built by js/settings.mjs (#open-settings). -->
-        <button type="button" id="open-settings" title="Settings" aria-label="Open settings">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </nav>
-      <div id="conn-status" class="conn disconnected" title="WebSocket connection status">
-        <span id="conn-dot" class="dot"></span>
-        <span id="conn-label">disconnected</span>
+<header class="app-header">
+      <!-- Centered inner bar: brand on the left, grouped controls on the right,
+           all aligned to the same 1400px grid as the page views beneath. -->
+      <div class="app-header-inner">
+        <!-- Brand: a product-logo lockup (geometric gate/portal mark + two-tone
+             wordmark) on the left, followed by a short muted description on a
+             shared baseline, split by a thin vertical divider. -->
+        <div class="app-title">
+          <div class="brand">
+            <!-- Inline logo mark: a rounded accent "tile" with a negative-space
+                 arched gate/portal opening (the LLM request gateway/proxy). The
+                 tile uses --accent; the evenodd hole is transparent, so the real
+                 header background shows through as the "opening" and adapts to
+                 the theme. No external asset / CDN. -->
+            <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
+              <path fill="var(--accent)" fill-rule="evenodd" d="M9 1 H23 A8 8 0 0 1 31 9 V23 A8 8 0 0 1 23 31 H9 A8 8 0 0 1 1 23 V9 A8 8 0 0 1 9 1 Z M10 25.5 V14.5 a6 6 0 0 1 12 0 V25.5 Z"/>
+            </svg>
+            <h1 class="brand-wordmark">
+              <span class="brand-name">aitool</span><span class="brand-accent">gate</span>
+            </h1>
+          </div>
+          <span class="subtitle">LLM tool-call proxy &amp; telemetry</span>
+        </div>
+
+        <!-- Grouped right-side controls: view navigation + settings gear + live
+             status, right-aligned with consistent spacing; wraps gracefully on
+             narrow viewports. -->
+        <div class="app-header-right">
+          <nav class="app-nav" aria-label="Dashboard pages">
+            <a class="nav-link" href="#/">Dashboard</a>
+            <a class="nav-link" href="#/rules">Policy Rules</a>
+          </nav>
+
+          <!-- Settings popup trigger: opens the overlay built by js/settings.mjs (#open-settings). -->
+          <button type="button" id="open-settings" title="Settings" aria-label="Open settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+
+          <!-- Live stream status pill: green = connected, muted = polling fallback.
+               Class + label are driven at runtime by js/transport.mjs (setConnected /
+               syncConnectivity), which toggles .connected / .disconnected on #conn-status
+               and sets #conn-label ("Live" / "Polling"). -->
+          <div id="conn-status" class="conn disconnected" title="WebSocket connection status">
+            <span id="conn-dot" class="dot"></span>
+            <span id="conn-label">Polling</span>
+          </div>
+        </div>
       </div>
     </header>
