@@ -1,21 +1,4 @@
-/**
- * Dependency-free JSON REST API layer over the existing telemetry {@link Collector}
- * and in-memory {@link RuleStore}.
- *
- * Routes (all under `/api`, all JSON):
- * - `GET    /api/stats`        → `200` `collector.summary()`
- * - `POST   /api/stats/reset`  → `200` post-reset `collector.summary()` (same shape as GET)
- * - `GET    /api/events`       → `200` `{ events }` (recent raw telemetry events, ascending)
- * - `GET    /api/rules`        → `200` `RuleSpec[]` (stored spec if present, else best-effort `describeRule`)
- * - `POST   /api/rules`        → `201` serialized rule; `400 { error }` on an invalid spec/body
- * - `PATCH  /api/rules/{id}`   → `200` serialized rule; `404 { error:'not_found' }` unknown; `400` bad body
- * - `DELETE /api/rules/{id}`   → `204`; `404 { error:'not_found' }` unknown
- * - `GET    /api/tool-results/{id}` → `200 { ok, content, chars }`; `404 { error:'not_found' }` unknown
- *
- * Non-`/api` requests return `false` WITHOUT writing a response, so the server
- * can chain this handler before the proxy handler (true = handled, false =
- * fall through). Uses only Node built-ins (`node:http`, `node:crypto`).
- */
+/** JSON REST API layer over the telemetry Collector and rule/provider stores; non-`/api` paths return false without writing a response so it can chain before the proxy. */
 import type * as http from 'node:http';
 import type { Collector } from '../telemetry/collector';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
@@ -36,55 +19,33 @@ import type { ApiProviderStore, ProviderPatch } from './providerStore';
 /** The request-handler convention: `true` = handled this route, `false` = fall through. */
 export type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
 
-/** Options for {@link createApiHandler}. */
 export interface ApiOptions {
-  /** The live in-memory rule registry backing rule CRUD. */
   ruleStore: RuleStore;
-  /** The telemetry collector backing stats. */
   collector: Collector;
-  /**
-   * Originally-submitted specs keyed by rule id, used to serialize rules with
-   * full fidelity (a closure can't be re-described losslessly). Created fresh
-   * when omitted.
-   */
+  /** Originally-submitted specs keyed by rule id, for lossless serialization (a closure can't be re-described); fresh when omitted. */
   specs?: Map<string, RuleSpec>;
-  /**
-   * Optional raw-tool-result store backing `GET /api/tool-results/:id`. When omitted,
-   * that route responds `404 { error:'not_found' }` (no results available).
-   */
+  /** Optional raw-tool-result store for `GET /api/tool-results/:id`; when omitted that route returns 404. */
   toolResultStore?: ToolResultStore;
-  /**
-   * Optional live API-provider registry backing the `/api/api-providers/*` routes. When
-   * omitted, those paths are not handled (fall through to the proxy), so existing callers
-   * are unaffected. Never returns a raw API key in list form (only an `apiKeySet` flag).
-   */
+  /** Optional API-provider registry for `/api/api-providers/*`; falls through when omitted and never leaks the raw API key in list form. */
   apiProviderStore?: ApiProviderStore;
-  /**
-   * Invoked exactly once after every successful provider mutation AND at boot, passing the
-   * currently-active provider (or `undefined`) so the live upstream reference can be hot-
-   * applied without a server restart. Omitted → no-op (callers not wiring providers).
-   */
+  /** Invoked once after each provider mutation and at boot to hot-apply the active provider without a restart; no-op when omitted. */
   applyActiveProvider?: (active: ApiProvider | undefined) => void;
 }
 
-/** Result of a PATCH attempt, so callers can map each case to an HTTP status. */
 type PatchResult =
   | { kind: 'updated'; rule: PolicyRule }
   | { kind: 'not_found' }
   | { kind: 'invalid'; error: string };
 
-/** Type guard: a non-null, non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Send a JSON response with `Content-Type: application/json`. */
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
 }
 
-/** Accumulate the raw request-body stream as a string. */
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -107,29 +68,20 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-/**
- * Create a JSON REST API handler backed by `options.ruleStore` + `options.collector`.
- * Initializes `options.specs` to a fresh map when not provided. Returns a handler
- * consistent with the codebase `(req, res) => Promise<boolean>` convention
- * (true = handled, false = fall through to the proxy handler).
- */
+/** Create the JSON REST API handler; initializes `options.specs` to a fresh map when omitted. */
 export function createApiHandler(options: ApiOptions): RequestHandler {
   const specs = (options.specs ??= new Map<string, RuleSpec>());
   const { ruleStore, collector, toolResultStore, apiProviderStore } = options;
-  // Hot-apply hook (optional): invoked once after each successful provider mutation and at
-  // boot so the shared mutable upstream reference tracks the active provider with no restart.
-  // Defaults to a no-op for legacy callers that don't wire an API-provider feature.
+  // Hot-apply hook (optional): tracks the active provider without a restart; no-op for legacy callers.
   const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});
 
   /** Serialize a rule: prefer its stored spec for fidelity, else a best-effort descriptor. */
   const serialize = (rule: PolicyRule): RuleSpec => specs.get(rule.id) ?? describeRule(rule);
 
-  /** Apply a partial PATCH to a rule, handling both stored-spec and spec-less rules. */
   function applyPatch(id: string, patch: Record<string, unknown>): PatchResult {
     if (ruleStore.get(id) === undefined) return { kind: 'not_found' };
     try {
       if (specs.has(id)) {
-        // Merge the patch into the stored spec, then rebuild the full rule from it.
         const merged = { ...(specs.get(id) as RuleSpec), ...(patch as Partial<RuleSpec>) };
         const validationError = validateSpec(merged);
         if (validationError !== null) return { kind: 'invalid', error: validationError };
@@ -144,7 +96,6 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
         });
         return updated === undefined ? { kind: 'not_found' } : { kind: 'updated', rule: updated };
       }
-      // No stored spec: apply only the provided fields directly to the live rule.
       const rulePatch: RulePatch = {};
       if ('enabled' in patch) rulePatch.enabled = patch.enabled as boolean;
       if ('priority' in patch) rulePatch.priority = patch.priority as number;
@@ -173,14 +124,12 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
     try {
       const method = req.method ?? 'GET';
 
-      // Serialize a provider WITHOUT its raw API key, exposing only an `apiKeySet` flag —
-      // the list route never leaks secrets even though get() returns them by design.
+      // Serialize a provider without its raw API key (only an `apiKeySet` flag) so the list route never leaks secrets.
       const serializePublic = (provider: ApiProvider): Record<string, unknown> => {
         const { apiKey, ...rest } = provider;
         return { ...rest, apiKeySet: apiKey !== null };
       };
-      // Fire the hot-apply hook exactly once against the current active provider (a no-op when
-      // the caller didn't wire one, or when no store / no active row exists).
+      // Fire the hot-apply hook once against the current active provider (no-op if not wired).
       const fireLiveApply = (): void => {
         liveApply(apiProviderStore?.getActive());
       };
@@ -191,7 +140,6 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
       }
 
       if (path === '/api/stats/reset' && method === 'POST') {
-        // Clear all aggregates, then return the post-reset summary (same shape as GET /api/stats).
         collector.reset();
         sendJson(res, 200, collector.summary());
         return true;
@@ -266,8 +214,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
         }
       }
 
-      // --- API-provider registry (/api/api-providers/*) — optional feature. ----
-      // Only reached when the caller wired a live store; absent callers keep prior behavior.
+      // API-provider registry (/api/api-providers/*); only reached when a live store is wired.
       if (apiProviderStore !== undefined) {
         const providerPath = /^\/api\/api-providers(?:\/([^/]+))?$/.exec(path);
         if (providerPath) {
@@ -376,7 +323,6 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
             return true;
           }
 
-          // A provider path with no matching handler (e.g. POST carrying an id segment).
           sendJson(res, 404, { error: 'not_found' });
           return true;
         }
@@ -403,7 +349,6 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
         return true;
       }
 
-      // Unknown API route.
       sendJson(res, 404, { error: 'not_found' });
       return true;
     } catch (error) {

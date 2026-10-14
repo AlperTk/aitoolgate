@@ -5,22 +5,13 @@ import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';
 import type { Message } from '../../session/session';
 
-/** Configuration for {@link createInjectMessageAction}. */
 export interface InjectMessageActionConfig {
   /** Role of the injected message. Defaults to `'user'`. */
   role?: 'user' | 'system';
-  /** Message content to inject into the stream. */
   content: string;
 }
 
-/**
- * Create an {@link Action} that injects an additional message into the stream
- * when a rule fires.
- *
- * The returned action implements the port {@link Action}: its `apply` returns
- * an {@link ActionEffect} of type `'injectMessage'` carrying the configured
- * `role` (defaulting to `'user'`) and `content`.
- */
+/** Create an injectMessage action: apply returns an injectMessage effect carrying the configured role (default 'user') and content. */
 export function createInjectMessageAction(config: InjectMessageActionConfig): Action {
   return {
     name: 'injectMessage',
@@ -30,11 +21,7 @@ export function createInjectMessageAction(config: InjectMessageActionConfig): Ac
   };
 }
 
-/**
- * The `injectMessage` action strategy: applies an `injectMessage` effect (splices
- * the message into a request's stream; on a bare response, queues it for the next
- * request), describes it, and validates/builds its wire spec.
- */
+/** injectMessage action strategy: splices the message into a request's stream (or queues it for the next request on a bare response); describes and validates/builds its spec. */
 export const injectMessageStrategy: ActionStrategy = {
   type: 'injectMessage',
 
@@ -76,11 +63,7 @@ export const injectMessageStrategy: ActionStrategy = {
   },
 };
 
-/**
- * Insert messages after the system prefix / before the trailing user turn. This is
- * the shared splicing primitive used both by the `injectMessage` effect and by the
- * policy stage's cross-request feedback drain (both splice at the same index).
- */
+/** Insert messages after the system prefix / before the trailing user turn; shared by the injectMessage effect and the cross-request feedback drain. */
 export function spliceMessages(messages: unknown[], inserts: readonly Message[]): unknown[] {
   if (inserts.length === 0) return messages;
   const result = [...messages];
@@ -89,7 +72,6 @@ export function spliceMessages(messages: unknown[], inserts: readonly Message[])
   return result;
 }
 
-/** The index at which injected/feedback messages should be inserted. */
 function injectionIndex(messages: unknown[]): number {
   // Right after the leading system-message prefix...
   let start = 0;
@@ -105,13 +87,11 @@ function injectionIndex(messages: unknown[]): number {
   return lastUser >= 0 ? lastUser : messages.length;
 }
 
-/** Extract a message's `role` when present. */
 function roleOf(message: unknown): string | undefined {
   if (!isRecord(message)) return undefined;
   return typeof message.role === 'string' ? message.role : undefined;
 }
 
-/** Type guard: is the value a non-null, non-array object? */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

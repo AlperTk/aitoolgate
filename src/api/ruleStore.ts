@@ -1,38 +1,18 @@
 import type { PolicyRule } from '../policy/ruleEngine';
 import { createCrudStore } from './crudStore';
 
-/**
- * Options for {@link createRuleStore}.
- */
 export interface RuleStoreOptions {
-  /**
-   * Rules to seed the store with. Stored defensively (a copy is taken), so later
-   * mutation of this array or its rules cannot corrupt the store. When omitted,
-   * the store starts empty and {@link RuleStore.reset} restores it to empty.
-   */
+  /** Seed rules, stored as defensive copies (mutating the array later won't corrupt the store); omitted → store starts empty. */
   initial?: PolicyRule[];
 }
 
-/**
- * A patch that can update any updatable field of a stored rule.
- *
- * Shallow-merge semantics: only the provided fields change. `matcher` and
- * `action` may be replaced wholesale by assigning them in the patch; omitting
- * them leaves the existing matcher/action untouched.
- */
+/** Patch that shallow-merges provided fields; `matcher`/`action` may be replaced wholesale, omitting them leaves the existing one untouched. */
 export type RulePatch = Partial<Omit<PolicyRule, 'matcher' | 'action'>> & {
   matcher?: PolicyRule['matcher'];
   action?: PolicyRule['action'];
 };
 
-/**
- * An in-memory registry of {@link PolicyRule}s supporting runtime add/update/
- * remove, intended to feed the rule engine dynamically via a getter source
- * (`() => store.list()`).
- *
- * Every accessor returns DEFENSIVE COPIES: mutating a returned rule (or the
- * array from {@link RuleStore.list}) never corrupts the store's internal state.
- */
+/** In-memory rule registry fed to the engine via `() => store.list()`; every accessor returns defensive copies (mutating a result never corrupts internal state). */
 export interface RuleStore {
   /** A fresh array copy of the current rules (not the internal reference). */
   list(): PolicyRule[];
@@ -46,20 +26,10 @@ export interface RuleStore {
   remove(id: string): boolean;
   /** Restore the store to its `initial` state (empty when none was provided). */
   reset(): void;
-  /** Number of rules currently stored. */
   size(): number;
 }
 
-/**
- * Create an in-memory {@link RuleStore} over the shared {@link createCrudStore}
- * base (which holds the defensive-copy / initial-seed / reset / id-assignment
- * boilerplate). Pass {@link RuleStoreOptions.initial} to seed it; otherwise it
- * starts empty. The store holds defensive copies throughout — `add`, `update`,
- * `get`, and `list` all operate on / return copies, so mutating any returned
- * object cannot corrupt the store. Hand the returned rules to `createRuleEngine`
- * via a getter (`() => store.list()`) for live add/remove reflected on each
- * evaluation.
- */
+/** Create an in-memory rule store over `createCrudStore`; returns defensive copies throughout; hand rules to `createRuleEngine` via `() => store.list()`. */
 export function createRuleStore(options: RuleStoreOptions = {}): RuleStore {
   return createCrudStore<PolicyRule, PolicyRule, RulePatch>({
     initial: options.initial,

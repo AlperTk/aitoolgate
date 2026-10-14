@@ -1,25 +1,4 @@
-/**
- * JSON-serializable rule descriptor + builders over the existing policy engine.
- *
- * A {@link RuleSpec} is the wire form a REST client POSTs/PATCHes. It mirrors
- * the scalar fields of {@link PolicyRule} and carries a {@link MatcherSpec} /
- * {@link ActionSpec} discriminated by `type`, each of which maps onto the REAL
- * factory option types of the existing policy engine:
- *
- * - matchers: `createToolNameMatcher` (ToolNameMatcherConfig) /
- *   `createArgPatternMatcher` (ArgPatternMatcherConfig) /
- *   `createLoopDetector` (LoopDetectorOptions) — all return a `PolicyMatcher`
- *   directly (no `toPortMatcher` needed; `PolicyRule.matcher` is a `PolicyMatcher`).
- * - actions: `createHideToolAction` /
- *   `createRewriteArgsAction` / `createInjectMessageAction` /
- *   `createAddDescriptionAction` — all return a port
- *   `Action`, cast to the concrete effect-returning `PolicyAction`.
- *
- * The inverse, {@link describeRule}, is best-effort display-only: matchers and
- * actions are closures that cannot be introspected, so lossless reconstruction
- * requires carrying the original spec (the HTTP layer stores submitted specs in
- * `options.specs` and prefers them over this fallback).
- */
+/** JSON-serializable rule descriptor + builders over the policy engine; `describeRule` is best-effort only (lossless round-trips require storing the original spec). */
 import { randomUUID } from 'node:crypto';
 import type { ActionEffectKind, PolicyMatcher } from '../policy/types';
 import type { PolicyAction, PolicyRule } from '../policy/ruleEngine';
@@ -33,36 +12,23 @@ import {
 import type { LoopDetectorOptions, AlwaysMatcher } from '../policy/matchers';
 import { ACTION_STRATEGIES } from '../policy/actions';
 
-/** JSON-serializable matcher descriptor, discriminated by `type`. */
 export type MatcherSpec =
   | {
-      /** Match tool calls by name (`toolName` and/or `toolNames`). */
       type: 'toolName';
-      /** A single tool name to match. */
       toolName?: string;
-      /** Additional tool names to match (OR-ed with `toolName`). */
       toolNames?: string[];
     }
   | {
-      /** Match a tool call's serialized arguments against a pattern. */
       type: 'argPattern';
-      /** Restrict to this tool name (omit to apply to all). */
       toolName?: string;
-      /** Restrict to these tool names (OR-ed; omit for all). */
       toolNames?: string[];
-      /** Case-sensitive pattern tested against serialized arguments. */
       pattern: string | RegExp;
     }
   | {
-      /** Detect a run of consecutive identical tool calls. */
       type: 'loop';
-      /** Consecutive identical calls to flag (default `4`). */
       window?: number;
-      /** When `true` (default) the run must be at the tail of the sequence. */
       requireConsecutive?: boolean;
-      /** How to compare call arguments (default `'normalized'`). */
       paramIdentity?: 'exact' | 'normalized';
-      /** How to compare tool results (default `'normalized'`). */
       resultIdentity?: 'exact' | 'normalized';
     }
   | {
@@ -70,83 +36,50 @@ export type MatcherSpec =
       type: 'always';
   };
 
-/** JSON-serializable action descriptor, discriminated by `type`. */
 export type ActionSpec =
   | {
-      /** Hide the named tools from the model's available tool set. */
       type: 'hideTool';
-      /**
-       * Tool names (exact or glob patterns) to hide. The entries form EITHER a
-       * **block-list** (no entry starts with `!`) — hide every tool whose name matches
-       * any entry's base pattern — OR an **allow-list** (at least one entry starts
-       * with `!`) — keep only the tools matching any entry's base pattern and hide
-       * everything else (the listed base patterns form the keep-set). A base pattern is
-       * an exact name OR a glob (`*` = any characters, anchored to the full name), with
-       * a single leading `!` stripped (e.g. `codebase_*` hides every `codebase_*` tool;
-       * `!codebase_*` keeps only `codebase_*`; `!knowledge_*, !codebase_*` keeps only
-       * `knowledge_*` + `codebase_*` and hides the rest). Only names present in the
-       * request's tool definitions can be hidden. Must be a non-empty array of
-       * non-empty strings (a lone `!` is not a pattern).
-       */
+      /** Tool names to hide: a block-list by default, or an allow-list when any entry starts with `!` (exact names or anchored globs); non-empty strings. */
       toolNames: string[];
     }
   | {
-      /** Rewrite a tool call's arguments before it reaches the executor. */
       type: 'rewriteArgs';
-      /** Target tool call by name (used when `toolCallId` is absent/unmatched). */
       toolName?: string;
       /** Target tool call by id (takes precedence over `toolName`). */
       toolCallId?: string;
-      /** Argument changes to apply: a full replacement or a partial merge. */
       arguments: Record<string, unknown>;
-      /** How to apply `arguments`: `replace` (default) or `merge`. */
       mode?: 'replace' | 'merge';
     }
   | {
-      /** Inject an additional message into the stream. */
       type: 'injectMessage';
-      /** Role of the injected message (defaults to `'user'`). */
       role?: 'user' | 'system';
-      /** Message content to inject into the stream. */
       content: string;
   }
   | {
-      /** Set the matched tool(s)' description on their definition in the outgoing request. */
       type: 'addDescription';
-      /** Description text set on the matched tool(s). */
       description: string;
   };
 
-/** A JSON-serializable rule, mirroring the scalar fields of {@link PolicyRule}. */
 export interface RuleSpec {
   /** Unique rule id; assigned (`randomUUID`) when omitted. */
   id?: string;
-  /** Whether the rule participates in evaluation. */
   enabled: boolean;
   /** Ordering: lower runs earlier; a missing priority sorts after explicit ones. */
   priority?: number;
-  /** Human description (used as the display label). */
   description?: string;
   matcher: MatcherSpec;
   action: ActionSpec;
 }
 
-/** Type guard: a non-null, non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** True when the given matcher is the unconditional "always" matcher. */
 function isAlwaysMatcher(matcher: PolicyMatcher): boolean {
   return (matcher as AlwaysMatcher)[ALWAYS_MATCHER_BRAND] === true;
 }
 
-/**
- * Build a concrete {@link PolicyMatcher} from a {@link MatcherSpec}, dispatching
- * on `type` to the right existing factory. Throws a descriptive error when a
- * required field for the chosen `type` is missing. Unknown extra fields are
- * ignored.
- */
+/** Build a concrete PolicyMatcher from a MatcherSpec; throws on a missing required field, ignores unknown extras. */
 export function buildMatcher(spec: MatcherSpec): PolicyMatcher {
   switch (spec.type) {
     case 'toolName':
@@ -175,25 +108,12 @@ export function buildMatcher(spec: MatcherSpec): PolicyMatcher {
   }
 }
 
-/**
- * Build a concrete {@link PolicyAction} from an {@link ActionSpec} by looking up
- * the action's strategy in the {@link ACTION_STRATEGIES} registry (via `spec.type`)
- * and delegating to its `buildSpec`. Adding a new action needs only a new strategy
- * + a registry entry — no edit to this function. Throws a descriptive error when a
- * required field for the chosen `type` is missing. Unknown extra fields are ignored.
- */
+/** Build a concrete PolicyAction from an ActionSpec via the action-strategy registry (adding an action needs no edit here). */
 export function buildAction(spec: ActionSpec): PolicyAction {
-  // Dispatch to the action's strategy via the registry: adding a new action needs
-  // only a new strategy + a single registry entry, no edit to this function.
   return ACTION_STRATEGIES[spec.type].buildSpec(spec);
 }
 
-/**
- * Build a concrete {@link PolicyRule} from a {@link RuleSpec}. Assigns
- * `id: spec.id ?? randomUUID()`. Throws a descriptive error if a required field
- * for the chosen matcher/action `type` is missing. Unknown extra fields are
- * ignored.
- */
+/** Build a concrete PolicyRule from a RuleSpec (assigns an id when omitted). */
 export function buildRuleFromSpec(spec: RuleSpec): PolicyRule {
   const id = spec.id ?? randomUUID();
   return {
@@ -206,17 +126,7 @@ export function buildRuleFromSpec(spec: RuleSpec): PolicyRule {
   };
 }
 
-/**
- * Best-effort display inverse of {@link buildRuleFromSpec}.
- *
- * Copy the scalar fields (`id` / `enabled` / `priority` / `description`) and
- * emit a *representative* descriptor for the non-introspectable matcher/action.
- * The flagship rule is a known loop detector, so it gets a `loop` descriptor;
- * everything else falls back to a neutral valid placeholder that never crashes.
- * NOTE: this is NOT lossless — matchers/actions are closures; carrying the
- * original {@link RuleSpec} (which the HTTP layer stores) is what makes
- * round-tripping exact.
- */
+/** Best-effort, non-lossless display inverse of `buildRuleFromSpec`; round-trips exactly only if the original spec is stored. */
 /** Best-effort action descriptor derived from the closure's readable `name`. */
 function describeAction(rule: PolicyRule): ActionSpec {
   switch (rule.action.name) {
@@ -254,9 +164,7 @@ export function describeRule(rule: PolicyRule): RuleSpec {
     priority: rule.priority,
     description: rule.description,
     matcher: matcherDescriptor,
-    // Derive the action TYPE from the readable closure name (the port Action sets
-    // `name` to its discriminator); params are not recoverable from the closure, so
-    // emit empty/placeholder fields that stay valid for each type.
+    // Derive the action type from the closure's readable `name`; params are unrecoverable, so emit valid placeholders.
     action: describeAction(rule),
   };
 }
@@ -268,14 +176,9 @@ const KNOWN_MATCHER_TYPES = new Set<['toolName' | 'argPattern' | 'loop' | 'alway
   'always',
 ]);
 
-/**
- * The set of known action types, derived from the action registry so a newly
- * registered action is picked up automatically (a core part of the Open/Closed
- * design; no hand-listed array to edit).
- */
+/** Known action types, derived from the registry so newly registered actions are picked up automatically. */
 const KNOWN_ACTION_TYPES = new Set<ActionEffectKind>(Object.keys(ACTION_STRATEGIES) as ActionEffectKind[]);
 
-/** Validate the `matcher` member of a spec; returns an error message or `null`. */
 function validateMatcher(value: unknown): string | null {
   if (!isRecord(value)) return 'must be an object';
   const t = value.type;
@@ -304,7 +207,6 @@ function validateMatcher(value: unknown): string | null {
   return null;
 }
 
-/** Validate the `action` member of a spec; returns an error message or `null`. */
 function validateAction(value: unknown): string | null {
   if (!isRecord(value)) return 'must be an object';
   const t = value.type;
@@ -312,17 +214,10 @@ function validateAction(value: unknown): string | null {
   if (typeof t !== 'string' || !KNOWN_ACTION_TYPES.has(t as ActionEffectKind)) {
     return `unknown action type ${JSON.stringify(t)}`;
   }
-  // Dispatch required-field validation to the action's strategy via the registry.
   return ACTION_STRATEGIES[t as ActionEffectKind].validateSpec(value);
 }
 
-/**
- * Validate an unknown candidate {@link RuleSpec}. Returns `null` when valid,
- * else a human-readable error message. Checks: the value is an object;
- * `enabled` is a boolean; `matcher` and `action` are present objects with a
- * known `type` and the required fields for that `type`; optional scalar fields
- * (`id` / `priority` / `description`) have the right types when provided.
- */
+/** Validate a candidate RuleSpec; returns null when valid, else an error message. */
 export function validateSpec(value: unknown): string | null {
   if (!isRecord(value)) return 'spec must be an object';
   if (typeof value.enabled !== 'boolean') return '"enabled" must be a boolean';

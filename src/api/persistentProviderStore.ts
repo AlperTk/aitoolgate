@@ -1,48 +1,19 @@
-/**
- * Write-through {@link ApiProviderStore} over a base in-memory store + Node's
- * built-in SQLite, so provider definitions survive restarts (mirrors
- * {@link ./persistentRuleStore}). The base store remains the PRIMARY read path
- * (`list` / `get` / `size` / `getActive`); only mutations mirror through to the
- * `api_providers` table:
- *   - `add`       → UPSERT the full row (deferred one microtask)
- *   - `update`    → UPSERT (only when a row was actually updated)
- *   - `setActive` → UPSERT (reflects the new single-active state)
- *   - `remove`    → DELETE FROM api_providers WHERE id = ?
- *
- * On init the store SEEDS from any rows already on disk (preserving each row's
- * stored `isActive`, defensively collapsing to ≤1 active). When the table is empty
- * AND a `seedFallback` record is supplied (the env-derived upstream snapshot), that
- * fallback becomes the single auto-active row — so pre-existing env-based deployments
- * gain an equivalent default provider without user action.
- *
- * The shared {@link createPersistentStore} base holds the `openDb` / queueMicrotask
- * defer / `DELETE … WHERE id = ?` + warn + finally-close boilerplate; the row
- * UPSERT mapping, the `seedFallback` boot seed, and the provider's `setActive` /
- * `getActive` write-through stay here. Persistence is best-effort: a failing
- * open/read/write logs a warning and leaves the in-memory store untouched.
- */
+/** Write-through ApiProviderStore over a base in-memory store + SQLite; the base is the primary read path and mutations mirror to the `api_providers` table (best-effort, seeded from disk). */
 import { applyMigrations } from '../storage/schema';
 import type { ApiProvider } from './providerSpec';
 import type { ApiProviderStore } from './providerStore';
 import { createApiProviderStore } from './providerStore';
 import { createPersistentStore, openDb } from './crudStore';
 
-/** Options for {@link createPersistentProviderStore}. */
 export interface PersistentProviderStoreOptions {
   /** Resolved DB file path (same file as the rules database). Defaults to `':memory:'`. */
   dbFile?: string;
-  /**
-   * A fully-formed default provider (built from the current effective upstream
-   * snapshot) seeded as the sole auto-active row ONLY when no rows exist yet.
-   * Omit to seed purely from whatever is already persisted on disk.
-   */
+  /** Default provider seeded as the sole auto-active row only when no rows exist yet; omit to seed purely from disk. */
   seedFallback?: ApiProvider;
 }
 
-/** A row returned by SQLite `StatementSync.all()`: string-keyed values. */
 type Row = Record<string, unknown>;
 
-/** Map a stored `api_providers` row back onto an {@link ApiProvider}. */
 function rowToProvider(row: Row): ApiProvider {
   const rawKey = row.api_key == null ? '' : String(row.api_key);
   const protocol: ApiProvider['protocol'] = row.protocol === 'anthropic' ? 'anthropic' : 'openai';
@@ -111,12 +82,10 @@ function upsertRecord(dbFile: string, provider: ApiProvider): void {
   }
 }
 
-/** Wrap a base {@link ApiProviderStore} so mutations are mirrored through to SQLite. */
 export function createPersistentProviderStore(options: PersistentProviderStoreOptions = {}): ApiProviderStore {
   const dbFile = options.dbFile ?? ':memory:';
 
-  // Ensure the schema (incl. the v3 api_providers table) exists on this file first —
-  // idempotent and cheap; runs even when rule persistence was never opened for it.
+  // Ensure the schema (incl. the v3 api_providers table) exists; idempotent, runs even if rule persistence never opened it.
   const ensureDb = openDb(dbFile);
   applyMigrations(ensureDb);
   ensureDb.close();
@@ -131,7 +100,6 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
 
   const base = createApiProviderStore({ initial: records });
 
-  // Domain-specific persist: UPSERT the current row at `id` (best-effort).
   const persist = (id: string): void => {
     const current = base.get(id);
     if (current === undefined) return;

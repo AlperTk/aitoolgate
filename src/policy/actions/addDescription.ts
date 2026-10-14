@@ -4,22 +4,12 @@ import type { RequestContext, ResponseContext } from '../../ports';
 import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';
 
-/** Configuration for {@link createAddDescriptionAction}. */
 export interface AddDescriptionActionConfig {
   /** Description text set on the matched tool(s)' definition in the outgoing request. */
   description: string;
 }
 
-/**
- * Create an {@link Action} that sets the description of the matched tool(s)'
- * definition in the outgoing request when a rule fires.
- *
- * The returned action implements the port {@link Action}: its `apply` extracts
- * the tool name(s) the match targeted (from `match.details.matchedToolNames`)
- * and returns an {@link ActionEffect} of type `'addDescription'` carrying those
- * names plus the configured `description`. Returns `null` when the match targeted
- * no tool name(s) (there is nothing to set).
- */
+/** Create an addDescription action: apply returns an addDescription effect for the tool name(s) the match targeted (match.details.matchedToolNames); null when none. */
 export function createAddDescriptionAction(config: AddDescriptionActionConfig): Action {
   return {
     name: 'addDescription',
@@ -31,14 +21,7 @@ export function createAddDescriptionAction(config: AddDescriptionActionConfig): 
   };
 }
 
-/**
- * The `addDescription` action strategy: applies an `addDescription` effect (sets
- * the matched tool(s)' description in the request's `tools` array, in either the
- * OpenAI `tools[i].function.description` or the Anthropic top-level
- * `tools[i].description` shape), describes it, and validates/builds its wire
- * spec. A bare response carries no tool list, so the response phase is a
- * graceful no-op.
- */
+/** addDescription action strategy: sets the matched tool(s)' description in a request's tools (OpenAI or Anthropic shape); a bare response is a no-op. */
 export const addDescriptionStrategy: ActionStrategy = {
   type: 'addDescription',
 
@@ -76,14 +59,7 @@ export const addDescriptionStrategy: ActionStrategy = {
   },
 };
 
-/**
- * Set the given description on each tool in the request's `tools` array whose
- * name is in `toolNames`. Understands both provider shapes (OpenAI
- * `tools[i].function.description` and Anthropic top-level `tools[i].description`).
- * Mutates `raw` in place. A no-op (no throw, no new entries) when `raw` has no
- * `tools` array, when no tool name matches, or when a matching entry carries no
- * recognizable shape.
- */
+/** Set the description on each tool in raw.tools whose name matches; understands both provider shapes, mutates in place, no-op when there's no match. */
 function setDescriptionOnTools(raw: unknown, toolNames: readonly string[], description: string): void {
   if (toolNames.length === 0) return;
   if (!isRecord(raw)) return;
@@ -125,7 +101,6 @@ function matchedToolNamesOf(match: Match | undefined): string[] | undefined {
   return names.length > 0 ? names : undefined;
 }
 
-/** Type guard: is the value a non-null, non-array object? */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

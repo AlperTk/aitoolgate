@@ -4,7 +4,6 @@ import type { RequestContext, ResponseContext } from '../../ports';
 import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';
 
-/** Configuration for {@link createRewriteArgsAction}. */
 export interface RewriteArgsActionConfig {
   /** Target tool call by name (used when `toolCallId` is absent / unmatched). */
   toolName?: string;
@@ -16,27 +15,13 @@ export interface RewriteArgsActionConfig {
   mode?: 'replace' | 'merge';
 }
 
-/** A tool call resolved for inspection / rewriting. */
 interface ResolvedCall {
-  /** Tool call id. */
   id: string;
-  /** Tool name. */
   name: string;
-  /** Parsed arguments of the call. */
   arguments: Record<string, unknown>;
 }
 
-/**
- * Create an {@link Action} that rewrites a tool call's arguments before it
- * reaches the executor when a rule fires.
- *
- * The returned action implements the port {@link Action}: its `apply` resolves
- * the target tool call (by `toolCallId`, else by `toolName`) and returns an
- * {@link ActionEffect} of type `'rewriteArgs'`. With `mode: 'merge'` the
- * configured arguments are merged into the target's existing parsed args; with
- * `'replace'` (the default) they replace them. Returns `null` when no target
- * resolves.
- */
+/** Create a rewriteArgs action: apply resolves the target call (by toolCallId else toolName) and returns a rewriteArgs effect (mode merge/replace); null when no target. */
 export function createRewriteArgsAction(config: RewriteArgsActionConfig): Action {
   return {
     name: 'rewriteArgs',
@@ -53,11 +38,7 @@ export function createRewriteArgsAction(config: RewriteArgsActionConfig): Action
   };
 }
 
-/**
- * The `rewriteArgs` action strategy: applies a `rewriteArgs` effect (rewrites the
- * target tool call's arguments in a request's stream, or in the response's tool
- * call), describes it, and validates/builds its wire spec.
- */
+/** rewriteArgs action strategy: rewrites the target tool call's arguments (in a request stream or a response tool call); describes and validates/builds its spec. */
 export const rewriteArgsStrategy: ActionStrategy = {
   type: 'rewriteArgs',
 
@@ -142,13 +123,7 @@ function computeArguments(
   return mode === 'merge' ? { ...target.arguments, ...config.arguments } : config.arguments;
 }
 
-/**
- * Extract tool calls from a policy context, keeping each call's id, name, and
- * parsed arguments. Prefers the parsed `ToolCall[]` (`ResponseContext.toolCalls`);
- * when that yields nothing, falls back to parsing OpenAI-shape `tool_calls`
- * out of assistant messages (`RequestContext.messages`). Mirrors the extraction
- * in `../matchers/toolName.ts`.
- */
+/** Extract tool calls from a policy context; prefers ResponseContext.toolCalls, else parses OpenAI tool_calls from assistant messages. */
 function extractCalls(ctx: PolicyContext): ResolvedCall[] {
   const calls: ResolvedCall[] = [];
   if ('toolCalls' in ctx) {
@@ -192,7 +167,6 @@ function parseArgs(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-/** Type guard: a non-null, non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

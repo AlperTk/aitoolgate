@@ -1,48 +1,25 @@
 import { createHash } from 'node:crypto';
 
-/** Options controlling {@link normalizeParams}. */
 export interface NormalizeOptions {
-  /**
-   * Object keys to drop (volatile keys such as timestamps, ids, or nonces) at
-   * every object level, so they do not affect the canonical form.
-   */
+  /** Object keys to drop (volatile keys such as timestamps, ids, or nonces) at every object level. */
   ignoreKeys?: string[];
 }
 
-/**
- * Canonical, order-independent string representation of a value, for comparing
- * tool params/results by "normalized identity."
- *
- * - Objects: keys are sorted alphabetically (so key REORDERING is irrelevant);
- *   any key in `opts.ignoreKeys` is dropped; values are recursed into.
- * - Arrays: element ORDER is preserved (arrays are ordered), each recursed into.
- * - Strings: trimmed and whitespace runs collapsed to a single space.
- * - Primitives: canonical string form (JSON semantics).
- *
- * Semantically-equal inputs produce identical output; key reordering or
- * whitespace differences in strings do NOT change the output. Node built-ins
- * only (no dependencies).
- */
+/** Canonical, order-independent string of a value for "normalized identity"; object keys sorted (order-independent), array order preserved, strings trimmed/collapsed. Node built-ins only. */
 export function normalizeParams(value: unknown, opts?: NormalizeOptions): string {
   return canonicalize(value, opts);
 }
 
-/**
- * Hex SHA-256 of {@link normalizeParams}(value) — the "normalized identity."
- * Two values compare as identical after normalization iff their hashes match:
- * `hashValue(a) === hashValue(b)`.
- */
+/** Hex SHA-256 of {@link normalizeParams}(value); two values compare identical after normalization iff their hashes match. */
 export function hashValue(value: unknown): string {
   return createHash('sha256').update(normalizeParams(value), 'utf8').digest('hex');
 }
 
-/** Recursively canonicalize a single value into a stable string. */
 function canonicalize(value: unknown, opts?: NormalizeOptions): string {
   if (value === null) return 'null';
   switch (typeof value) {
     case 'string':
-      // Trim + collapse whitespace runs, then quote via JSON.stringify so string
-      // values are unambiguously distinguished from other types (and escaped).
+      // Quoted via JSON.stringify so string values are distinguished from other types (and escaped).
       return JSON.stringify(collapseWhitespace(value));
     case 'number':
     case 'boolean':
@@ -56,11 +33,10 @@ function canonicalize(value: unknown, opts?: NormalizeOptions): string {
       return 'undefined';
     case 'object':
       if (Array.isArray(value)) {
-        // Arrays are ORDERED: preserve element order, recurse on each element.
+        // Arrays are ORDERED: preserve element order.
         return `[${value.map((element) => canonicalize(element, opts)).join(',')}]`;
       }
-      // Objects: sort keys alphabetically (order-independent) and drop any key
-      // in opts.ignoreKeys (volatile keys); recurse on each value.
+      // Objects: sort keys alphabetically (order-independent) and drop opts.ignoreKeys.
       const obj = value as Record<string, unknown>;
       const keys = Object.keys(obj).sort();
       const parts: string[] = [];
@@ -75,7 +51,6 @@ function canonicalize(value: unknown, opts?: NormalizeOptions): string {
   return String(value);
 }
 
-/** Trim a string and collapse runs of whitespace to a single space. */
 function collapseWhitespace(text: string): string {
   return text.trim().replace(/\s+/g, ' ');
 }

@@ -1,19 +1,4 @@
-/**
- * Dependency-free RFC6455 WebSocket SERVER built entirely on Node built-ins
- * (`node:http`, `node:crypto`). It attaches an `'upgrade'` listener to an
- * existing `http.Server`, performs the `101 Switching Protocols` handshake,
- * then speaks raw WebSocket framing directly on the taken-over socket:
- *
- * - encodes server→client TEXT frames (unmasked) carrying either an echo of a
- *   received client text frame (`{ "echo": <parsedJson | rawString> }`) or a
- *   live telemetry event broadcast from an optional {@link TelemetryEventBus}.
- * - decodes client→server frames incrementally, tolerating masked payloads,
- *   the 7/16/64-bit extended-length fields, and fragmentation reassembled
- *   across `data` chunks.
- *
- * Control frames are handled minimally: close (acknowledge + teardown) and
- * ping (reply pong). Zero external dependencies — no `ws` package.
- */
+/** Dependency-free RFC6455 WebSocket SERVER built on Node built-ins (`node:http`, `node:crypto`): attaches an `'upgrade'` listener, does the `101` handshake, then speaks raw framing directly on the taken-over socket (unmasked server→client TEXT echo/telemetry frames + incremental masked/extended-length/fragmented client→server decoding; minimal close/ping control frames; no `ws` package). */
 import type * as http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { createHash } from 'node:crypto';
@@ -23,21 +8,17 @@ import type { TelemetryEvent } from '../telemetry/events';
 /** The RFC6455 magic GUID used to compute `Sec-WebSocket-Accept`. */
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-/** Options for {@link createWsServer}. */
 export interface WsOptions {
   /** Optional telemetry bus whose emitted events are broadcast to all open clients. */
   bus?: TelemetryEventBus;
 }
 
-/** Handle returned by {@link createWsServer}. */
 export interface WsServer {
   /** Unsubscribe from the bus, close every open client, remove the upgrade listener. */
   close(): void;
-  /** Number of currently-open connected clients. */
   readonly size: number;
 }
 
-/** Encode a single unmasked WebSocket data/control frame with the given opcode. */
 export function encodeFrame(opcode: number, payload: Buffer): Buffer {
   const length = payload.length;
   let header: Buffer;
@@ -57,7 +38,6 @@ export function encodeFrame(opcode: number, payload: Buffer): Buffer {
   return Buffer.concat([header, payload]);
 }
 
-/** Encode an unmasked server→client TEXT frame whose payload is the UTF-8 bytes of `str`. */
 export function encodeTextFrame(str: string): Buffer {
   return encodeFrame(0x1, Buffer.from(str, 'utf8'));
 }
@@ -70,12 +50,7 @@ interface IncomingFrame {
   total: number;
 }
 
-/**
- * Try to parse ONE complete frame at the start of `buf`, returning the decoded
- * frame and how many bytes were consumed; `null` when fewer bytes than needed
- * are available yet (the caller should wait for more `data`). Tolerates masked
- * and unmasked frames and the 7/16/64-bit extended-length encodings.
- */
+/** Try to parse one complete frame at the start of `buf`, returning it plus bytes consumed; `null` when more `data` is still needed; tolerates masked/unmasked frames and 7/16/64-bit extended-length encodings. */
 function parseFrame(buf: Buffer): IncomingFrame | null {
   if (buf.length < 2) return null;
   const first = buf[0];
@@ -110,21 +85,12 @@ function parseFrame(buf: Buffer): IncomingFrame | null {
   return { fin, opcode, payload, total: offset + length };
 }
 
-/**
- * Attach an RFC6455 WebSocket server to an existing `http.Server`. A single
- * `'upgrade'` listener is registered; each non-WebSocket upgrade is dropped,
- * each valid one performs the handshake and is taken over for framing.
- *
- * The returned {@link WsServer} tracks open clients (`size`), broadcasts every
- * event from `options.bus` to all of them as a JSON text frame, and lets you
- * fully tear everything down with `close()`.
- */
+/** Attach an RFC6455 WebSocket server to an existing `http.Server`: one `'upgrade'` listener drops non-WebSocket upgrades and takes over valid ones; the returned `WsServer` tracks open clients (`size`), broadcasts `options.bus` events as JSON text frames, and tears everything down via `close()`. */
 export function createWsServer(server: http.Server, options?: WsOptions): WsServer {
   const clients = new Set<Duplex>();
   let busUnsubscribe: (() => void) | undefined;
   let closed = false;
 
-  /** Wire up incremental frame I/O + bookkeeping on a handshaked socket. */
   function takeOver(socket: Duplex, head: Buffer): void {
     if (closed || !socket.writable) {
       if (!closed) socket.destroy();

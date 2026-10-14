@@ -1,14 +1,8 @@
 import type { ApiProvider } from './providerSpec';
 import { createCrudStore, type CrudCtx } from './crudStore';
 
-/** Options for {@link createApiProviderStore}. */
 export interface ProviderStoreOptions {
-  /**
-   * Providers to seed the store with. Stored as defensive copies preserving each
-   * row's existing `isActive`, so seeding many persisted rows never re-triggers the
-   * auto-first activation that only applies to brand-new inserts into an empty store.
-   * When omitted the store starts empty; {@link ApiProviderStore.reset} restores it here.
-   */
+  /** Seed providers, stored as defensive copies preserving each row's `isActive` so seeding never re-triggers auto-first activation (only brand-new inserts into an empty store do); omitted → store starts empty. */
   initial?: ApiProvider[];
 }
 
@@ -17,20 +11,7 @@ export type ProviderPatch = Partial<
   Pick<ApiProvider, 'name' | 'baseUrl' | 'model' | 'apiKey' | 'protocol' | 'isActive'>
 >;
 
-/**
- * An in-memory registry of {@link ApiProvider}s supporting runtime CRUD, intended
- * to be read live per-request. Enforces the HARD invariant **at most one** row may
- * be `isActive` at any time (zero or one allowed, never more):
- * - `add`: inserting into an otherwise-empty store ALWAYS activates the new row
- *   (auto-first); afterwards a new row is active only when explicitly requested.
- * - `update`/`setActive`: setting a row active clears every other row first.
- * - `remove`: deleting the active row promotes the lexicographically-lowest-id
- *   remaining row active (or leaves none active when no rows remain).
- *
- * Every accessor returns DEFENSIVE COPIES; mutating a returned object cannot
- * corrupt the store's internal state. Field-presence validation belongs to the HTTP
- * layer ({@link ./providerSpec}); this layer just stores what it is given.
- */
+/** In-memory provider registry read live per-request; enforces the hard invariant that at most one row is `isActive` (add auto-activates into an empty store, setActive/update clear others, removing the active row promotes the lowest-id row); every accessor returns defensive copies; field-presence validation lives in the HTTP layer (`./providerSpec`). */
 export interface ApiProviderStore {
   /** A fresh array copy of all providers, in insertion/create order. */
   list(): ApiProvider[];
@@ -48,7 +29,6 @@ export interface ApiProviderStore {
   remove(id: string): boolean;
   /** Restore the store to its seeded `initial` state (empty when none was provided). */
   reset(): void;
-  /** Number of providers currently stored. */
   size(): number;
 }
 
@@ -72,7 +52,6 @@ function mergePatch(existing: ApiProvider, patch: ProviderPatch): ApiProvider {
   return merged;
 }
 
-/** Clear every row's active flag. */
 function clearAllActive(byId: Map<string, ApiProvider>): void {
   for (const rec of byId.values()) rec.isActive = false;
 }
@@ -93,12 +72,7 @@ function reconcileSingleActive(prefer: string | undefined, byId: Map<string, Api
   }
 }
 
-/**
- * Build an in-memory {@link ApiProviderStore} over the shared {@link
- * createCrudStore} base, preserving the ≤1-active invariant throughout. The base
- * holds the defensive-copy / seed / reset / id-assignment boilerplate; the
- * default-filling in `toStored` and the active-invariant hooks below stay here.
- */
+/** Build an in-memory provider store over the shared `createCrudStore` base, preserving the ≤1-active invariant; the base holds the boilerplate while default-filling and the active-invariant hooks stay here. */
 export function createApiProviderStore(options: ProviderStoreOptions = {}): ApiProviderStore {
   return createCrudStore<ApiProvider, Partial<ApiProvider>, ProviderPatch, ProviderStoreExtras>({
     initial: options.initial,
