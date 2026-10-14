@@ -37,7 +37,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 - **Rule selection is ALL-match, not first-match.** Only `enabled` rules fire, evaluated in ascending `priority` (missing = last; ties by array index). Multiple rules can apply in one pass.
 - Matchers return `Match | null`; only `always` never returns `null`. The others may legitimately produce `null` (no match).
 - The **flagship loop rule is ACTIVE by default**: it is wired into the default rule set at composition time (priority 0, evaluated first), is **never persisted** (the rule store stays clean), and is re-added on restart without a DB seed. It is STATELESS; per-session cooldown is laddered in the **policy stage** (which owns per-session feedback state). Don't put per-session state into a rule.
-- `hideTool` strips tools from `raw.tools` **and** removes references from messages.
+- `hideTool` `toolNames` entries are **glob patterns** (`*` = any characters, anchored to the full name) or exact names. They form either a **block-list** (default: no entry starts with `!`) — hide every tool matching any entry — or an **allow-list** (≥ 1 entry starts with `!`) — keep only matching tools and hide the rest. Resolution happens against the request's actual tool set; a pattern matching no present tool is a no-op. It strips tools from `raw.tools` **and** removes references from messages.
 - `addDescription` sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); on a response it is a graceful no-op (a bare response carries no tool list).
 - `injectMessage` on a response is **queued for the next request**, not spliced into the current response.
 - `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
@@ -61,7 +61,7 @@ Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `R
 ## Actions (`ActionEffect` union)
 | Type | Effect |
 |---|---|
-| `hideTool` `{toolNames[]}` | removes those tools from `raw.tools` and from message references. |
+| `hideTool` `{toolNames[]}` | `toolNames` entries are glob patterns / exact names forming a block-list (hide matching) or allow-list (entries with `!` prefix: keep matching, hide rest). Strips from `raw.tools` + message references. |
 | `rewriteArgs` `{toolCallId, newArguments, mode:'replace'\|'merge'}` | mutates a tool call's arguments. |
 | `injectMessage` `{role, content}` | splices into the request; if on a response, queued for the next request. |
 | `addDescription` `{description, toolNames[]}` | sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); response-phase is a graceful no-op (a bare response carries no tool list). |

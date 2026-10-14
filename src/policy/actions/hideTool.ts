@@ -13,9 +13,9 @@ export interface HideToolActionConfig {
    * starts with `!`) — keep only the tools matching any entry's base pattern and hide
    * everything else (the listed base patterns form the keep-set). A base pattern is an
    * exact tool name OR a glob (`*` = any sequence of characters, anchored to the full
-   * name), with a single leading `!` stripped: `serena_*` hides every `serena_*` tool;
-   * `!serena_*` keeps only `serena_*`; `!graphify_*, !serena_*` keeps only
-   * `graphify_*` + `serena_*` and hides the rest. Only names actually present in the
+   * name), with a single leading `!` stripped: `codebase_*` hides every `codebase_*` tool;
+   * `!codebase_*` keeps only `codebase_*`; `!knowledge_*, !codebase_*` keeps only
+   * `knowledge_*` + `codebase_*` and hides the rest. Only names actually present in the
    * request's tool definitions can be hidden.
    */
   toolNames: string[];
@@ -63,13 +63,13 @@ function escapeRegExp(text: string): string {
  *
  * The entries form EITHER a **block-list** or an **allow-list**:
  * - **Block-list** (no entry starts with `!`): hide every tool whose name matches any
- *   entry's base pattern (the base patterns are OR-combined). `serena_*` hides every
- *   `serena_*` tool; `serena_*, webfetch` hides both `serena_*` and `webfetch`.
+ *   entry's base pattern (the base patterns are OR-combined). `codebase_*` hides every
+ *   `codebase_*` tool; `codebase_*, webfetch` hides both `codebase_*` and `webfetch`.
  * - **Allow-list** (at least one entry starts with `!`): keep every tool whose name
  *   matches any entry's base pattern and hide EVERYTHING else. The leading `!` is the
  *   allow-list marker; all listed base patterns form the keep-set (their union).
- *   `!serena_*` keeps only `serena_*` and hides the rest; `!graphify_*, !serena_*`
- *   keeps only `graphify_*` + `serena_*` and hides the rest.
+ *   `!codebase_*` keeps only `codebase_*` and hides the rest; `!knowledge_*, !codebase_*`
+ *   keeps only `knowledge_*` + `codebase_*` and hides the rest.
  *
  * An entry's "base pattern" is the entry with a single leading `!` stripped; it is an
  * exact name (case-sensitive) OR a glob (`*` = any run of characters, anchored). A

@@ -82,9 +82,9 @@ export type ActionSpec =
        * with `!`) — keep only the tools matching any entry's base pattern and hide
        * everything else (the listed base patterns form the keep-set). A base pattern is
        * an exact name OR a glob (`*` = any characters, anchored to the full name), with
-       * a single leading `!` stripped (e.g. `serena_*` hides every `serena_*` tool;
-       * `!serena_*` keeps only `serena_*`; `!graphify_*, !serena_*` keeps only
-       * `graphify_*` + `serena_*` and hides the rest). Only names present in the
+       * a single leading `!` stripped (e.g. `codebase_*` hides every `codebase_*` tool;
+       * `!codebase_*` keeps only `codebase_*`; `!knowledge_*, !codebase_*` keeps only
+       * `knowledge_*` + `codebase_*` and hides the rest). Only names present in the
        * request's tool definitions can be hidden. Must be a non-empty array of
        * non-empty strings (a lone `!` is not a pattern).
        */

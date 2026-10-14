@@ -249,7 +249,7 @@ function hideToolToolNames(toolNames) {
 // One-line human-first summary of a hideTool action's toolNames. Reused by the
 // rule-card "Action" cell, the wizard's "Then: …" preview, and the humanized
 // rule label. A block-list spells out a single entry ("hide webfetch" /
-// "hide serena_*"); an allow-list reads "hide all except <base>" (single) or
+// "hide codebase_*"); an allow-list reads "hide all except <base>" (single) or
 // "hide all except <base1> + <base2> …" (several, joined with " + "); a
 // block-list with several entries collapses to a count ("hide N tools").
 function hideToolSummary(toolNames) {
@@ -260,9 +260,9 @@ function hideToolSummary(toolNames) {
 }
 // The read-only "Target tool" chip text for a hideTool action, derived from the
 // action's own toolNames (patterns) rather than the matcher: block-list single
-// ("Target: serena_*") / several ("Target: N tools"); allow-list single
-// ("Target: all except serena_*") / several ("Target: all except graphify_* +
-// serena_*", joined with " + "). When the field is empty it falls back to the
+// ("Target: codebase_*") / several ("Target: N tools"); allow-list single
+// ("Target: all except codebase_*") / several ("Target: all except knowledge_* +
+// codebase_*", joined with " + "). When the field is empty it falls back to the
 // matcher-mirroring target (the existing behaviour).
 function hideToolTargetLabel(toolNames, matcher) {
   var info = hideToolToolNames(toolNames);
@@ -432,8 +432,8 @@ export function readField(container, def) {
     case 'list': {
       // Entries are comma- or line-separated: split on commas or line breaks,
       // trim each, and drop empties. Pattern characters (* and !) are never
-      // split points, so "serena_*,webfetch" parses to ["serena_*", "webfetch"]
-      // and "serena_*\n!webfetch" to ["serena_*", "!webfetch"].
+      // split points, so "codebase_*,webfetch" parses to ["codebase_*", "webfetch"]
+      // and "codebase_*\n!webfetch" to ["codebase_*", "!webfetch"].
       var arr = String(raw).split(/[\n,]/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ''; });
       return arr.length === 0 ? { skip: true } : { value: arr };
     }
@@ -704,8 +704,8 @@ function currentActionSpec() {
 //   step 1 (#rule-when-preview)  "Fires when: <matcher summary>"
 //   step 2 (#rule-then-preview)  "Then: <action summary>"
 //   step 2 (#rule-target-chip)   for hideTool, the action's own tool names /
-//                                patterns ("Target: serena_*" / "Target: all
-//                                except serena_*" / "Target: N tools"); for every
+//                                patterns ("Target: codebase_*" / "Target: all
+//                                except codebase_*" / "Target: N tools"); for every
 //                                other action, the matcher's target tool
 //                                ("Target: x" or "Applies to matching tool(s)")
 //                                — the clarifier for actions (addDescription)

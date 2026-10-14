@@ -37,7 +37,7 @@ export const ACTION_FIELDS = {
       label: 'Tools to hide',
       kind: 'list',
       required: true,
-      hint: 'Tool name(s) or patterns — a block-list by default (hide the matching tools). Add a leading ! to any entry to make it an allow-list (keep only the matching tools, hide the rest). E.g. serena_* hides serena tools; !serena_* keeps only serena tools; !graphify_*, !serena_* keeps only graphify + serena tools. * = wildcard; entries are OR-combined.'
+      hint: 'Tool name(s) or patterns — a block-list by default (hide the matching tools). Add a leading ! to any entry to make it an allow-list (keep only the matching tools, hide the rest). E.g. codebase_* hides codebase tools; !codebase_* keeps only codebase tools; !knowledge_*, !codebase_* keeps only knowledge + codebase tools. * = wildcard; entries are OR-combined.'
     }
   ],
   rewriteArgs: [

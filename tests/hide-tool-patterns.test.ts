@@ -24,8 +24,8 @@ import type { RequestContext } from '../src/ports/pipeline';
 // --- resolution: block-list (no entry starts with !) -----------------------
 
 test('resolveHiddenToolNames: a block-list (single prefix glob) hides only the matching tools', () => {
-  const available = ['serena_get_node', 'serena_read_node', 'bash', 'read', 'webfetch'];
-  assert.deepEqual(resolveHiddenToolNames(['serena_*'], available), ['serena_get_node', 'serena_read_node']);
+  const available = ['codebase_get_node', 'codebase_read_node', 'bash', 'read', 'webfetch'];
+  assert.deepEqual(resolveHiddenToolNames(['codebase_*'], available), ['codebase_get_node', 'codebase_read_node']);
 });
 
 test('resolveHiddenToolNames: a block-list of exact names hides exactly those (backward compatible)', () => {
@@ -33,8 +33,8 @@ test('resolveHiddenToolNames: a block-list of exact names hides exactly those (b
 });
 
 test('resolveHiddenToolNames: a block-list with several entries is OR-combined', () => {
-  const available = ['serena_get_node', 'webfetch', 'bash', 'read'];
-  assert.deepEqual(resolveHiddenToolNames(['serena_*', 'webfetch'], available), ['serena_get_node', 'webfetch']);
+  const available = ['codebase_get_node', 'webfetch', 'bash', 'read'];
+  assert.deepEqual(resolveHiddenToolNames(['codebase_*', 'webfetch'], available), ['codebase_get_node', 'webfetch']);
 });
 
 test('resolveHiddenToolNames: a block-list is a no-op when nothing matches', () => {
@@ -48,8 +48,8 @@ test('resolveHiddenToolNames: an empty pattern list hides nothing (backward comp
 // --- resolution: allow-list (at least one entry starts with !) ------------
 
 test('resolveHiddenToolNames: a single negated entry is an allow-list (keeps only the match, hides the rest)', () => {
-  const available = ['serena_get_node', 'serena_read_node', 'bash', 'webfetch'];
-  assert.deepEqual(resolveHiddenToolNames(['!serena_*'], available), ['bash', 'webfetch']);
+  const available = ['codebase_get_node', 'codebase_read_node', 'bash', 'webfetch'];
+  assert.deepEqual(resolveHiddenToolNames(['!codebase_*'], available), ['bash', 'webfetch']);
 });
 
 test('resolveHiddenToolNames: a single negated exact-name entry keeps only that exact name', () => {
@@ -58,15 +58,15 @@ test('resolveHiddenToolNames: a single negated exact-name entry keeps only that 
 });
 
 test('resolveHiddenToolNames: multiple negated entries keep the UNION of all base patterns and hide the rest', () => {
-  const available = ['graphify_foo', 'graphify_bar', 'serena_get_node', 'bash', 'webfetch'];
-  assert.deepEqual(resolveHiddenToolNames(['!graphify_*', '!serena_*'], available), ['bash', 'webfetch']);
+  const available = ['knowledge_foo', 'knowledge_bar', 'codebase_get_node', 'bash', 'webfetch'];
+  assert.deepEqual(resolveHiddenToolNames(['!knowledge_*', '!codebase_*'], available), ['bash', 'webfetch']);
 });
 
 test('resolveHiddenToolNames: mixed entries are treated as an allow-list (keep-set = union of all base patterns)', () => {
   // One negated entry flips the whole list into allow-list mode; the keep-set is the
-  // union of ALL base patterns (graphify_* and the exact name webfetch).
-  const available = ['graphify_foo', 'webfetch', 'serena_get_node', 'bash'];
-  assert.deepEqual(resolveHiddenToolNames(['!graphify_*', 'webfetch'], available), ['serena_get_node', 'bash']);
+  // union of ALL base patterns (knowledge_* and the exact name webfetch).
+  const available = ['knowledge_foo', 'webfetch', 'codebase_get_node', 'bash'];
+  assert.deepEqual(resolveHiddenToolNames(['!knowledge_*', 'webfetch'], available), ['codebase_get_node', 'bash']);
 });
 
 // --- spec validation --------------------------------------------------------
@@ -77,10 +77,10 @@ function hideToolSpec(toolNames: unknown) {
 
 test('validateSpec accepts a hideTool spec with block-list and allow-list toolNames', () => {
   assert.equal(validateSpec(hideToolSpec(['bash'])), null);
-  assert.equal(validateSpec(hideToolSpec(['serena_*'])), null);
-  assert.equal(validateSpec(hideToolSpec(['serena_*', 'webfetch'])), null);
-  assert.equal(validateSpec(hideToolSpec(['!serena_*'])), null);
-  assert.equal(validateSpec(hideToolSpec(['!graphify_*', '!serena_*'])), null);
+  assert.equal(validateSpec(hideToolSpec(['codebase_*'])), null);
+  assert.equal(validateSpec(hideToolSpec(['codebase_*', 'webfetch'])), null);
+  assert.equal(validateSpec(hideToolSpec(['!codebase_*'])), null);
+  assert.equal(validateSpec(hideToolSpec(['!knowledge_*', '!codebase_*'])), null);
 });
 
 test('validateSpec rejects a hideTool spec with a missing, non-array, or empty toolNames', () => {
@@ -102,7 +102,7 @@ test('validateSpec rejects a hideTool spec with an empty-string entry or a lone 
 test('buildAction throws for an invalid hideTool toolNames (empty array / lone !) and builds a valid one', () => {
   assert.throws(() => buildAction({ type: 'hideTool', toolNames: [] }));
   assert.throws(() => buildAction({ type: 'hideTool', toolNames: ['!'] }));
-  const action = buildAction({ type: 'hideTool', toolNames: ['!graphify_*', '!serena_*'] });
+  const action = buildAction({ type: 'hideTool', toolNames: ['!knowledge_*', '!codebase_*'] });
   assert.equal(action.name, 'hideTool');
 });
 
@@ -165,7 +165,7 @@ function referencedToolNames(ctx: RequestContext): string[] {
   return out;
 }
 
-test('resolution flow (OpenAI): a block-list serena_* strips the CONCRETE matching tools AND their message references', () => {
+test('resolution flow (OpenAI): a block-list codebase_* strips the CONCRETE matching tools AND their message references', () => {
   const ctx = makeRequest(
     [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -173,34 +173,34 @@ test('resolution flow (OpenAI): a block-list serena_* strips the CONCRETE matchi
         role: 'assistant',
         content: null,
         tool_calls: [
-          { id: 'c-serena', type: 'function', function: { name: 'serena_get_node', arguments: '{}' } },
+          { id: 'c-codebase', type: 'function', function: { name: 'codebase_get_node', arguments: '{}' } },
           { id: 'c-bash', type: 'function', function: { name: 'bash', arguments: '{}' } },
         ],
       },
-      { role: 'tool', tool_call_id: 'c-serena', name: 'serena_get_node', content: 'out' },
+      { role: 'tool', tool_call_id: 'c-codebase', name: 'codebase_get_node', content: 'out' },
       { role: 'tool', tool_call_id: 'c-bash', name: 'bash', content: 'out' },
       { role: 'user', content: 'Go again.' },
     ],
     {
       model: 'gpt-test',
       tools: [
-        { type: 'function', function: { name: 'serena_get_node', parameters: {} } },
-        { type: 'function', function: { name: 'serena_read_node', parameters: {} } },
+        { type: 'function', function: { name: 'codebase_get_node', parameters: {} } },
+        { type: 'function', function: { name: 'codebase_read_node', parameters: {} } },
         { type: 'function', function: { name: 'bash', parameters: {} } },
         { type: 'function', function: { name: 'webfetch', parameters: {} } },
       ],
     },
   );
-  applyHide(ctx, ['serena_*']);
+  applyHide(ctx, ['codebase_*']);
 
-  // Definitions: BOTH serena_* tools removed; bash + webfetch kept.
+  // Definitions: BOTH codebase_* tools removed; bash + webfetch kept.
   assert.deepEqual(toolNamesOf(ctx.raw), ['bash', 'webfetch']);
-  // Message references: the serena_* call + its result removed; bash call + result kept.
+  // Message references: the codebase_* call + its result removed; bash call + result kept.
   assert.deepEqual(referencedToolNames(ctx), ['bash']);
-  assert.ok(!JSON.stringify(ctx).includes('serena_'), 'no serena_* reference remains anywhere in the request');
+  assert.ok(!JSON.stringify(ctx).includes('codebase_'), 'no codebase_* reference remains anywhere in the request');
 });
 
-test('resolution flow (OpenAI): a single negated entry (!serena_*) is an allow-list that keeps only serena_* and hides the rest', () => {
+test('resolution flow (OpenAI): a single negated entry (!codebase_*) is an allow-list that keeps only codebase_* and hides the rest', () => {
   const ctx = makeRequest(
     [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -208,33 +208,33 @@ test('resolution flow (OpenAI): a single negated entry (!serena_*) is an allow-l
         role: 'assistant',
         content: null,
         tool_calls: [
-          { id: 'c-serena', type: 'function', function: { name: 'serena_get_node', arguments: '{}' } },
+          { id: 'c-codebase', type: 'function', function: { name: 'codebase_get_node', arguments: '{}' } },
           { id: 'c-bash', type: 'function', function: { name: 'bash', arguments: '{}' } },
           { id: 'c-web', type: 'function', function: { name: 'webfetch', arguments: '{}' } },
         ],
       },
-      { role: 'tool', tool_call_id: 'c-serena', name: 'serena_get_node', content: 'out' },
+      { role: 'tool', tool_call_id: 'c-codebase', name: 'codebase_get_node', content: 'out' },
       { role: 'tool', tool_call_id: 'c-bash', name: 'bash', content: 'out' },
       { role: 'user', content: 'Go again.' },
     ],
     {
       model: 'gpt-test',
       tools: [
-        { type: 'function', function: { name: 'serena_get_node', parameters: {} } },
+        { type: 'function', function: { name: 'codebase_get_node', parameters: {} } },
         { type: 'function', function: { name: 'bash', parameters: {} } },
         { type: 'function', function: { name: 'webfetch', parameters: {} } },
       ],
     },
   );
-  applyHide(ctx, ['!serena_*']);
+  applyHide(ctx, ['!codebase_*']);
 
-  // Definitions: everything EXCEPT serena_* is hidden.
-  assert.deepEqual(toolNamesOf(ctx.raw), ['serena_get_node']);
-  // Message references: bash + webfetch removed; serena_* kept.
-  assert.deepEqual(referencedToolNames(ctx), ['serena_get_node']);
+  // Definitions: everything EXCEPT codebase_* is hidden.
+  assert.deepEqual(toolNamesOf(ctx.raw), ['codebase_get_node']);
+  // Message references: bash + webfetch removed; codebase_* kept.
+  assert.deepEqual(referencedToolNames(ctx), ['codebase_get_node']);
 });
 
-test('resolution flow (OpenAI): a multi-negated allow-list (!graphify_*, !serena_*) keeps the union of graphify_* + serena_* and hides the rest', () => {
+test('resolution flow (OpenAI): a multi-negated allow-list (!knowledge_*, !codebase_*) keeps the union of knowledge_* + codebase_* and hides the rest', () => {
   const ctx = makeRequest(
     [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -242,37 +242,37 @@ test('resolution flow (OpenAI): a multi-negated allow-list (!graphify_*, !serena
         role: 'assistant',
         content: null,
         tool_calls: [
-          { id: 'c-graphify', type: 'function', function: { name: 'graphify_foo', arguments: '{}' } },
-          { id: 'c-serena', type: 'function', function: { name: 'serena_get_node', arguments: '{}' } },
+          { id: 'c-knowledge', type: 'function', function: { name: 'knowledge_foo', arguments: '{}' } },
+          { id: 'c-codebase', type: 'function', function: { name: 'codebase_get_node', arguments: '{}' } },
           { id: 'c-bash', type: 'function', function: { name: 'bash', arguments: '{}' } },
         ],
       },
-      { role: 'tool', tool_call_id: 'c-graphify', name: 'graphify_foo', content: 'out' },
-      { role: 'tool', tool_call_id: 'c-serena', name: 'serena_get_node', content: 'out' },
+      { role: 'tool', tool_call_id: 'c-knowledge', name: 'knowledge_foo', content: 'out' },
+      { role: 'tool', tool_call_id: 'c-codebase', name: 'codebase_get_node', content: 'out' },
       { role: 'tool', tool_call_id: 'c-bash', name: 'bash', content: 'out' },
       { role: 'user', content: 'Go again.' },
     ],
     {
       model: 'gpt-test',
       tools: [
-        { type: 'function', function: { name: 'graphify_foo', parameters: {} } },
-        { type: 'function', function: { name: 'graphify_bar', parameters: {} } },
-        { type: 'function', function: { name: 'serena_get_node', parameters: {} } },
+        { type: 'function', function: { name: 'knowledge_foo', parameters: {} } },
+        { type: 'function', function: { name: 'knowledge_bar', parameters: {} } },
+        { type: 'function', function: { name: 'codebase_get_node', parameters: {} } },
         { type: 'function', function: { name: 'bash', parameters: {} } },
         { type: 'function', function: { name: 'webfetch', parameters: {} } },
       ],
     },
   );
-  applyHide(ctx, ['!graphify_*', '!serena_*']);
+  applyHide(ctx, ['!knowledge_*', '!codebase_*']);
 
-  // Definitions: the keep-set (graphify_* + serena_*) remains; bash + webfetch hidden.
-  assert.deepEqual(toolNamesOf(ctx.raw), ['graphify_foo', 'graphify_bar', 'serena_get_node']);
-  // Message references: the bash call + result removed; graphify_foo + serena_get_node kept.
-  assert.deepEqual(referencedToolNames(ctx), ['graphify_foo', 'serena_get_node']);
+  // Definitions: the keep-set (knowledge_* + codebase_*) remains; bash + webfetch hidden.
+  assert.deepEqual(toolNamesOf(ctx.raw), ['knowledge_foo', 'knowledge_bar', 'codebase_get_node']);
+  // Message references: the bash call + result removed; knowledge_foo + codebase_get_node kept.
+  assert.deepEqual(referencedToolNames(ctx), ['knowledge_foo', 'codebase_get_node']);
   assert.ok(!JSON.stringify(ctx).includes('"bash"'), 'no bash reference remains anywhere in the request');
 });
 
-test('resolution flow (Anthropic shape): a block-list serena_* resolves and strips tools AND references', () => {
+test('resolution flow (Anthropic shape): a block-list codebase_* resolves and strips tools AND references', () => {
   const ctx = makeRequest(
     [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -280,14 +280,14 @@ test('resolution flow (Anthropic shape): a block-list serena_* resolves and stri
         role: 'assistant',
         content: [
           { type: 'text', text: 'hi' },
-          { type: 'tool_use', id: 'tu-serena', name: 'serena_get_node', input: {} },
+          { type: 'tool_use', id: 'tu-codebase', name: 'codebase_get_node', input: {} },
           { type: 'tool_use', id: 'tu-bash', name: 'bash', input: {} },
         ],
       },
       {
         role: 'user',
         content: [
-          { type: 'tool_result', tool_use_id: 'tu-serena', content: 'out' },
+          { type: 'tool_result', tool_use_id: 'tu-codebase', content: 'out' },
           { type: 'tool_result', tool_use_id: 'tu-bash', content: 'out' },
         ],
       },
@@ -295,23 +295,23 @@ test('resolution flow (Anthropic shape): a block-list serena_* resolves and stri
     {
       model: 'claude-test',
       tools: [
-        { name: 'serena_get_node', input_schema: {} },
-        { name: 'serena_read_node', input_schema: {} },
+        { name: 'codebase_get_node', input_schema: {} },
+        { name: 'codebase_read_node', input_schema: {} },
         { name: 'bash', input_schema: {} },
         { name: 'webfetch', input_schema: {} },
       ],
     },
   );
-  applyHide(ctx, ['serena_*']);
+  applyHide(ctx, ['codebase_*']);
 
-  // Definitions (Anthropic shape): BOTH serena_* tools removed; bash + webfetch kept.
+  // Definitions (Anthropic shape): BOTH codebase_* tools removed; bash + webfetch kept.
   assert.deepEqual(toolNamesOf(ctx.raw), ['bash', 'webfetch']);
-  // References: the serena_* tool_use + its tool_result removed; bash kept.
+  // References: the codebase_* tool_use + its tool_result removed; bash kept.
   assert.deepEqual(referencedToolNames(ctx), ['bash']);
-  assert.ok(!JSON.stringify(ctx).includes('serena_'), 'no serena_* reference remains anywhere in the request');
+  assert.ok(!JSON.stringify(ctx).includes('codebase_'), 'no codebase_* reference remains anywhere in the request');
 });
 
-test('resolution flow (Anthropic shape): a single negated entry (!serena_*) is an allow-list that keeps only serena_* and hides the rest', () => {
+test('resolution flow (Anthropic shape): a single negated entry (!codebase_*) is an allow-list that keeps only codebase_* and hides the rest', () => {
   const ctx = makeRequest(
     [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -319,7 +319,7 @@ test('resolution flow (Anthropic shape): a single negated entry (!serena_*) is a
         role: 'assistant',
         content: [
           { type: 'text', text: 'hi' },
-          { type: 'tool_use', id: 'tu-serena', name: 'serena_get_node', input: {} },
+          { type: 'tool_use', id: 'tu-codebase', name: 'codebase_get_node', input: {} },
           { type: 'tool_use', id: 'tu-bash', name: 'bash', input: {} },
           { type: 'tool_use', id: 'tu-web', name: 'webfetch', input: {} },
         ],
@@ -327,7 +327,7 @@ test('resolution flow (Anthropic shape): a single negated entry (!serena_*) is a
       {
         role: 'user',
         content: [
-          { type: 'tool_result', tool_use_id: 'tu-serena', content: 'out' },
+          { type: 'tool_result', tool_use_id: 'tu-codebase', content: 'out' },
           { type: 'tool_result', tool_use_id: 'tu-bash', content: 'out' },
           { type: 'tool_result', tool_use_id: 'tu-web', content: 'out' },
         ],
@@ -336,18 +336,18 @@ test('resolution flow (Anthropic shape): a single negated entry (!serena_*) is a
     {
       model: 'claude-test',
       tools: [
-        { name: 'serena_get_node', input_schema: {} },
+        { name: 'codebase_get_node', input_schema: {} },
         { name: 'bash', input_schema: {} },
         { name: 'webfetch', input_schema: {} },
       ],
     },
   );
-  applyHide(ctx, ['!serena_*']);
+  applyHide(ctx, ['!codebase_*']);
 
-  // Definitions (Anthropic shape): everything EXCEPT serena_* is hidden.
-  assert.deepEqual(toolNamesOf(ctx.raw), ['serena_get_node']);
-  // References: the bash + webfetch tool_use + tool_result removed; serena_* kept.
-  assert.deepEqual(referencedToolNames(ctx), ['serena_get_node']);
+  // Definitions (Anthropic shape): everything EXCEPT codebase_* is hidden.
+  assert.deepEqual(toolNamesOf(ctx.raw), ['codebase_get_node']);
+  // References: the bash + webfetch tool_use + tool_result removed; codebase_* kept.
+  assert.deepEqual(referencedToolNames(ctx), ['codebase_get_node']);
 });
 
 test('resolution flow: a block-list pattern matching no present tool is a no-op (tools + messages preserved)', () => {

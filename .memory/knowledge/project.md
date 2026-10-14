@@ -25,6 +25,9 @@ description: What aitoolgate is, who it serves, its scope, core use cases, and t
 - A local browser dashboard (real-time ops view).
 - Operators adding/removing rules or providers via the REST API or the dashboard UI.
 
+## License
+Apache License 2.0 (see `LICENSE` at repo root).
+
 ## Technology stack (version-pinned)
 | Layer | Choice | Notes |
 |---|---|---|

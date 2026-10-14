@@ -504,18 +504,18 @@ test('the hideTool toolNames field accepts patterns without splitting on * or !'
   R.renderMatcherFields('always');
   R.renderActionFields('hideTool');
   // Comma-separated pattern + exact name: * and ! are never split points.
-  setControlValue('action-fields', 'toolNames', 'serena_*,webfetch');
+  setControlValue('action-fields', 'toolNames', 'codebase_*,webfetch');
   const r1 = R.collectSpec();
   assert.equal(r1.error, undefined, 'no parse error');
-  assert.deepEqual(r1.spec.action.toolNames, ['serena_*', 'webfetch'], 'pattern + exact name parse (not split on * or !)');
+  assert.deepEqual(r1.spec.action.toolNames, ['codebase_*', 'webfetch'], 'pattern + exact name parse (not split on * or !)');
   // Line-separated + a negation preserved.
-  setControlValue('action-fields', 'toolNames', '!serena_*\nwebfetch');
+  setControlValue('action-fields', 'toolNames', '!codebase_*\nwebfetch');
   const r2 = R.collectSpec();
-  assert.deepEqual(r2.spec.action.toolNames, ['!serena_*', 'webfetch'], 'negation (!) preserved; entries are line- or comma-separated');
+  assert.deepEqual(r2.spec.action.toolNames, ['!codebase_*', 'webfetch'], 'negation (!) preserved; entries are line- or comma-separated');
   // Whitespace around entries is trimmed.
-  setControlValue('action-fields', 'toolNames', '  serena_* ,  webfetch  ');
+  setControlValue('action-fields', 'toolNames', '  codebase_* ,  webfetch  ');
   const r3 = R.collectSpec();
-  assert.deepEqual(r3.spec.action.toolNames, ['serena_*', 'webfetch'], 'entries are trimmed');
+  assert.deepEqual(r3.spec.action.toolNames, ['codebase_*', 'webfetch'], 'entries are trimmed');
 });
 
 /* ---- (18) the field's label + hint explain block-list vs allow-list ---- */
@@ -526,19 +526,19 @@ test('the hideTool field label + hint explain the block-list vs allow-list seman
   assert.match(field.hint, /block-list/i, 'the hint states the field is a block-list by default');
   assert.match(field.hint, /allow-list/i, 'the hint explains the ! allow-list');
   assert.match(field.hint, /\*/, 'the hint mentions the * wildcard');
-  assert.match(field.hint, /!serena_\*/, 'the hint gives the !serena_* example');
-  assert.match(field.hint, /!graphify_/, 'the hint gives the multi allow-list example (!graphify_*)');
+  assert.match(field.hint, /!codebase_\*/, 'the hint gives the !codebase_* example');
+  assert.match(field.hint, /!knowledge_/, 'the hint gives the multi allow-list example (!knowledge_*)');
 });
 
 /* ---- (19) the block-list vs allow-list actionSummary ------------------- */
 test('actionSummary reflects hideTool block-list vs allow-list semantics', () => {
   assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['webfetch'] }), 'hide webfetch', 'block single exact name');
-  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['serena_*'] }), 'hide serena_*', 'block single pattern');
-  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['serena_*', 'webfetch'] }), 'hide 2 tools', 'block several (2) tools');
+  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['codebase_*'] }), 'hide codebase_*', 'block single pattern');
+  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['codebase_*', 'webfetch'] }), 'hide 2 tools', 'block several (2) tools');
   assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['a', 'b', 'c'] }), 'hide 3 tools', 'block several (3) tools');
-  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!serena_*'] }), 'hide all except serena_*', 'allow single');
-  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!graphify_*', '!serena_*'] }), 'hide all except graphify_* + serena_*', 'allow multi (union)');
-  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!graphify_*', 'webfetch'] }), 'hide all except graphify_* + webfetch', 'mixed entries = allow-list (union)');
+  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!codebase_*'] }), 'hide all except codebase_*', 'allow single');
+  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!knowledge_*', '!codebase_*'] }), 'hide all except knowledge_* + codebase_*', 'allow multi (union)');
+  assert.equal(R.actionSummary({ type: 'hideTool', toolNames: ['!knowledge_*', 'webfetch'] }), 'hide all except knowledge_* + webfetch', 'mixed entries = allow-list (union)');
   assert.equal(R.actionSummary({ type: 'hideTool', toolNames: [] }), 'hide tools', 'empty falls back');
 });
 
@@ -550,18 +550,18 @@ test('the step 2 "Then" preview reflects hideTool block-list vs allow-list seman
   (S.byId('action-type')! as any).value = 'hideTool';
   R.renderMatcherFields('always');
   R.renderActionFields('hideTool');
-  setControlValue('action-fields', 'toolNames', 'serena_*');
+  setControlValue('action-fields', 'toolNames', 'codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide serena_*', 'block single pattern');
-  setControlValue('action-fields', 'toolNames', 'serena_*,webfetch');
+  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide codebase_*', 'block single pattern');
+  setControlValue('action-fields', 'toolNames', 'codebase_*,webfetch');
   R.updatePreviews();
   assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide 2 tools', 'block several');
-  setControlValue('action-fields', 'toolNames', '!serena_*');
+  setControlValue('action-fields', 'toolNames', '!codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide all except serena_*', 'allow single');
-  setControlValue('action-fields', 'toolNames', '!graphify_*,!serena_*');
+  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide all except codebase_*', 'allow single');
+  setControlValue('action-fields', 'toolNames', '!knowledge_*,!codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide all except graphify_* + serena_*', 'allow multi (union)');
+  assert.equal(String(S.byId('rule-then-preview')!.textContent), 'Then: hide all except knowledge_* + codebase_*', 'allow multi (union)');
 });
 
 /* ---- (21) the target chip is action-aware for hideTool (block vs allow) */
@@ -574,19 +574,19 @@ test('the target chip is action-aware for hideTool (block-list vs allow-list)', 
   R.renderActionFields('hideTool');
   R.updatePreviews();
   assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Applies to matching tool(s)', 'empty field → matcher fallback (always)');
-  setControlValue('action-fields', 'toolNames', 'serena_*');
+  setControlValue('action-fields', 'toolNames', 'codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: serena_*', 'block single pattern');
+  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: codebase_*', 'block single pattern');
   setControlValue('action-fields', 'toolNames', 'webfetch');
   R.updatePreviews();
   assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: webfetch', 'block single exact name');
-  setControlValue('action-fields', 'toolNames', 'serena_*,webfetch');
+  setControlValue('action-fields', 'toolNames', 'codebase_*,webfetch');
   R.updatePreviews();
   assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: 2 tools', 'block several');
-  setControlValue('action-fields', 'toolNames', '!serena_*');
+  setControlValue('action-fields', 'toolNames', '!codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: all except serena_*', 'allow single');
-  setControlValue('action-fields', 'toolNames', '!graphify_*,!serena_*');
+  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: all except codebase_*', 'allow single');
+  setControlValue('action-fields', 'toolNames', '!knowledge_*,!codebase_*');
   R.updatePreviews();
-  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: all except graphify_* + serena_*', 'allow multi (union)');
+  assert.equal(String(S.byId('rule-target-chip')!.textContent), 'Target: all except knowledge_* + codebase_*', 'allow multi (union)');
 });
