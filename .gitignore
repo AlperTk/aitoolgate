@@ -12,3 +12,4 @@ coverage/
 .chromium-test/
 
 .memory/tmp/
+.serena/

@@ -6,7 +6,18 @@ import type { FeedbackMessage } from '../feedbackStore';
 
 /** Configuration for {@link createHideToolAction}. */
 export interface HideToolActionConfig {
-  /** Names of the tools to hide from the model's available tool set. */
+  /**
+   * The tools to hide from the model's available tool set. The entries form EITHER a
+   * **block-list** (the default: no entry starts with `!`) — hide every tool whose
+   * name matches any entry's base pattern — OR an **allow-list** (at least one entry
+   * starts with `!`) — keep only the tools matching any entry's base pattern and hide
+   * everything else (the listed base patterns form the keep-set). A base pattern is an
+   * exact tool name OR a glob (`*` = any sequence of characters, anchored to the full
+   * name), with a single leading `!` stripped: `serena_*` hides every `serena_*` tool;
+   * `!serena_*` keeps only `serena_*`; `!graphify_*, !serena_*` keeps only
+   * `graphify_*` + `serena_*` and hides the rest. Only names actually present in the
+   * request's tool definitions can be hidden.
+   */
   toolNames: string[];
 }
 
@@ -28,6 +39,55 @@ export function createHideToolAction(config: HideToolActionConfig): Action {
 }
 
 /**
+ * Glob match: `*` → any (possibly empty) run of characters, anchored to the full name;
+ * all other characters are escaped and matched literally. Never throws (a malformed
+ * generated pattern falls back to `false`).
+ */
+function nameMatchesGlob(name: string, pattern: string): boolean {
+  const source = `^${pattern.split('*').map(escapeRegExp).join('.*')}$`;
+  try {
+    return new RegExp(source).test(name);
+  } catch {
+    return false;
+  }
+}
+
+/** Escape regex-special characters so they match literally (only `*` stays a wildcard). */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Resolve a set of `hideTool` `toolNames` against the tool-definition names a request
+ * actually offers, producing the CONCRETE names to hide.
+ *
+ * The entries form EITHER a **block-list** or an **allow-list**:
+ * - **Block-list** (no entry starts with `!`): hide every tool whose name matches any
+ *   entry's base pattern (the base patterns are OR-combined). `serena_*` hides every
+ *   `serena_*` tool; `serena_*, webfetch` hides both `serena_*` and `webfetch`.
+ * - **Allow-list** (at least one entry starts with `!`): keep every tool whose name
+ *   matches any entry's base pattern and hide EVERYTHING else. The leading `!` is the
+ *   allow-list marker; all listed base patterns form the keep-set (their union).
+ *   `!serena_*` keeps only `serena_*` and hides the rest; `!graphify_*, !serena_*`
+ *   keeps only `graphify_*` + `serena_*` and hides the rest.
+ *
+ * An entry's "base pattern" is the entry with a single leading `!` stripped; it is an
+ * exact name (case-sensitive) OR a glob (`*` = any run of characters, anchored). A
+ * plain exact name is backward compatible. Only names actually present in
+ * `availableNames` are ever hidden — a pattern matching no present tool is a no-op.
+ */
+export function resolveHiddenToolNames(patterns: readonly string[], availableNames: readonly string[]): string[] {
+  const basePatterns = patterns.map((pattern) => (pattern.startsWith('!') ? pattern.slice(1) : pattern));
+  const isAllowList = patterns.some((pattern) => pattern.startsWith('!'));
+  const matchesAny = (name: string): boolean => basePatterns.some((base) => nameMatchesGlob(name, base));
+  const hidden: string[] = [];
+  for (const name of availableNames) {
+    if (isAllowList ? !matchesAny(name) : matchesAny(name)) hidden.push(name);
+  }
+  return hidden;
+}
+
+/**
  * The `hideTool` action strategy: applies a `hideTool` effect (strips the named
  * tools from a request's tool list AND their message references; a bare response
  * carries no tool list, so it is a graceful no-op), describes it, and
@@ -37,7 +97,12 @@ export const hideToolStrategy: ActionStrategy = {
   type: 'hideTool',
 
   applyRequest(ctx: RequestContext, effect: ActionEffect): void {
-    hideToolsFromRequest(ctx, (effect as Extract<ActionEffect, { type: 'hideTool' }>).toolNames);
+    const toolNames = (effect as Extract<ActionEffect, { type: 'hideTool' }>).toolNames;
+    // Resolve the configured names (a block-list or allow-list of exact names / glob
+    // patterns) against the tools the request actually offers, then strip the CONCRETE
+    // resolved names from both the tool definitions and the message references.
+    const hiddenNames = resolveHiddenToolNames(toolNames, toolDefinitionNames(ctx.raw));
+    hideToolsFromRequest(ctx, hiddenNames);
   },
 
   applyResponse(
@@ -55,22 +120,37 @@ export const hideToolStrategy: ActionStrategy = {
 
   validateSpec(spec: unknown): string | null {
     const record = spec as Record<string, unknown>;
-    if (!Array.isArray(record.toolNames)) return 'missing required "toolNames" array';
-    return null;
+    return validateHideToolToolNames(record.toolNames);
   },
 
   buildSpec(spec: unknown): PolicyAction {
     const record = spec as Record<string, unknown>;
-    if (!Array.isArray(record.toolNames)) {
-      throw new Error('action "hideTool" requires a "toolNames" array');
-    }
-    return createHideToolAction({ toolNames: record.toolNames }) as PolicyAction;
+    const error = validateHideToolToolNames(record.toolNames);
+    if (error !== null) throw new Error(`action "hideTool" ${error}`);
+    return createHideToolAction({ toolNames: record.toolNames as string[] }) as PolicyAction;
   },
 };
 
 /**
- * Remove the named tools from a provider request so the model can no longer see or
- * invoke them. This strips BOTH surfaces consistently:
+ * Validate a `hideTool` action spec's `toolNames` field: it must be a non-empty array
+ * of non-empty strings, where each entry's base pattern (the entry with a single
+ * leading `!` stripped) is itself non-empty (a lone `!` is not a pattern). Returns an
+ * error message, or `null` when valid.
+ */
+function validateHideToolToolNames(value: unknown): string | null {
+  if (!Array.isArray(value)) return 'missing required "toolNames" array';
+  if (value.length === 0) return '"toolNames" must be a non-empty array';
+  for (const entry of value) {
+    if (typeof entry !== 'string') return '"toolNames" must be an array of strings';
+    const base = entry.charAt(0) === '!' ? entry.slice(1) : entry;
+    if (base === '') return '"toolNames" entries must be non-empty (a lone "!" is not a pattern)';
+  }
+  return null;
+}
+
+/**
+ * Remove the CONCRETE named tools from a provider request so the model can no longer
+ * see or invoke them. This strips BOTH surfaces consistently:
  * - the top-level `tools` definitions (`raw.tools`, either OpenAI/Anthropic shape), and
  * - any in-message references to those tools (assistant `tool_calls` entries / Anthropic
  *   `tool_use` content blocks, plus the tool-result messages/blocks that point at them),
@@ -78,6 +158,10 @@ export const hideToolStrategy: ActionStrategy = {
  *   consistent. It mutates `ctx.raw`'s `tools` in place and reassigns `ctx.messages`
  *   when references are removed; when nothing matches it is a no-op that preserves the
  *   messages array identity (so an unedited passthrough stays byte-identical).
+ *
+ * `toolNames` are CONCRETE tool names — already resolved from the action's exact-name /
+ * glob-pattern config via {@link resolveHiddenToolNames} — so both the tool-definition
+ * removal and the message-reference removal are exact (no pattern re-matching here).
  */
 function hideToolsFromRequest(ctx: RequestContext, toolNames: readonly string[]): void {
   const names = new Set(toolNames);
@@ -178,6 +262,23 @@ function toolNameOf(tool: unknown): string | undefined {
   const fn = isRecord(tool.function) ? tool.function : undefined;
   if (typeof fn?.name === 'string') return fn.name;
   return typeof tool.name === 'string' ? tool.name : undefined;
+}
+
+/**
+ * Read the tool-definition names a request offers from `raw.tools`, understanding BOTH
+ * provider wire shapes by value (OpenAI `tools[i].function.name` and Anthropic
+ * `tools[i].name`). Best-effort: a non-record `raw` or a non-array `tools` yields `[]`
+ * (never throws).
+ */
+function toolDefinitionNames(raw: unknown): string[] {
+  const tools = isRecord(raw) ? raw.tools : undefined;
+  if (!Array.isArray(tools)) return [];
+  const names: string[] = [];
+  for (const tool of tools) {
+    const name = toolNameOf(tool);
+    if (name !== undefined) names.push(name);
+  }
+  return names;
 }
 
 /** Type guard: is the value a non-null, non-array object? */

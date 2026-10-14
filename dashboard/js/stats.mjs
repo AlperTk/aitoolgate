@@ -7,6 +7,7 @@
  * generic, dependency-free widget built by ./table.mjs (createDataTable).
  * ========================================================================== */
 import { $, fmtOpt, setStatValue, showNotice, clearNotice, errMsg } from './dom.mjs';
+import { formatCount } from './format.mjs';
 import { NO_DATA_TIP } from './constants.mjs';
 import { createDataTable } from './table.mjs';
 
@@ -31,7 +32,6 @@ export function initTopTools() {
     columns: [
       { key: 'toolName', label: 'Tool' },
       { key: 'count', label: 'Calls', align: 'right' },
-      { key: 'totalCacheHitInputTokens', label: 'Cache hit (tok)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) },
       { key: 'avgRespTokPerCall', label: 'Avg resp (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) }
     ],
     rows: _lastTop,
@@ -50,11 +50,10 @@ export async function refreshStats() {
     var s = await res.json();
     $('total-calls').textContent = String(typeof s.totalCalls === 'number' ? s.totalCalls : 0);
     $('total-results').textContent = String(typeof s.totalResults === 'number' ? s.totalResults : 0);
-    setStatValue('total-tokens', s.totalTokens);
-    setStatValue('input-tokens', s.totalInputTokens);
-    setStatValue('output-tokens', s.totalOutputTokens);
-    setStatValue('cache-hit-input-tokens', s.totalCacheHitInputTokens);
-    setStatValue('avg-duration', s.avgDurationMs);
+    setStatValue('total-tokens', s.totalTokens, formatCount);
+    setStatValue('input-tokens', s.totalInputTokens, formatCount);
+    setStatValue('output-tokens', s.totalOutputTokens, formatCount);
+    setStatValue('cache-hit-input-tokens', s.totalCacheHitInputTokens, formatCount);
     $('interventions-retained').textContent = String(Array.isArray(s.interventions) ? s.interventions.length : 0);
     // Map the server aggregate fields onto the table's column keys, then push
     // them into the table. Only when it exists — app.js may call this before
@@ -64,8 +63,7 @@ export async function refreshStats() {
       return {
         toolName: t.toolName,
         count: t.count,
-        avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null,
-        totalCacheHitInputTokens: t.totalCacheHitInputTokens
+        avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null
       };
     });
     if (topToolsTable) topToolsTable.setData(_lastTop);

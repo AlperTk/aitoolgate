@@ -49,11 +49,14 @@ export function fmtOpt(v) {
   return typeof v === 'number' && isFinite(v) ? String(Math.round(v)) : '—';
 }
 
-// Set a stat tile's displayed value (via fmtOpt) and attach/remove the
-// "no data yet" tooltip depending on whether the value is present.
-export function setStatValue(id, v) {
+// Set a stat tile's displayed value (via `fmt`, defaulting to fmtOpt) and
+// attach/remove the "no data yet" tooltip depending on whether the value is
+// present. Pass formatCount / formatSize (./format.mjs) to render large token
+// totals compactly; durations keep the default plain-integer formatting.
+export function setStatValue(id, v, fmt) {
   var tileEl = $(id);
-  var txt = fmtOpt(v);
+  var f = typeof fmt === 'function' ? fmt : fmtOpt;
+  var txt = f(v);
   tileEl.textContent = txt;
   if (txt === '\u2014') tileEl.title = NO_DATA_TIP; else tileEl.removeAttribute('title');
 }

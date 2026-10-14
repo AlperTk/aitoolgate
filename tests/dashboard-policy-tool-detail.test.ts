@@ -155,6 +155,7 @@ test('Hide button POSTs the exact hide spec', async () => {
 test('New policy prefills the editor, navigates, moves focus, and consumes the pending spec', async () => {
   state.rules = [];
   (globalThis as any).location.hash = '';
+  (S.byId('action-type')! as any).focusedCount = 0;
   (S.byId('rule-description')! as any).focusedCount = 0;
   R.prefillNewRule({ enabled: true, matcher: { type: 'toolName', toolName: 'read_file' }, action: { type: 'hideTool', toolNames: ['read_file'] } });
   assert.equal((globalThis as any).location.hash, '#/rules/new', 'navigates to the add-mode editor');
@@ -164,11 +165,12 @@ test('New policy prefills the editor, navigates, moves focus, and consumes the p
   assert.equal(controlValue('matcher-fields', 'toolName'), 'read_file', 'tool name pre-filled');
   assert.equal(S.byId('action-type')!.value, 'hideTool', 'action type pre-filled');
   assert.equal(S.byId('rule-enabled')!.checked, true, 'enabled checked');
-  assert.ok((S.byId('rule-description')! as any).focusedCount >= 1, 'focus moved into the editor form');
+  assert.ok((S.byId('action-type')! as any).focusedCount >= 1, 'focus moved into the editor form (step-2 action-type select)');
+  assert.equal((S.byId('rule-description')! as any).focusedCount, 0, 'the step-3 description is NOT focused');
   assert.equal(S.byId('rule-editor-title')!.textContent, 'New rule', 'add mode, not edit');
   // A subsequent fresh (no-pending) open resets cleanly — proving no pre-fill leak.
   R.openNewRuleForm();
-  assert.equal(S.byId('matcher-type')!.value, 'loop', 'clean reset default after consuming the pre-fill');
+  assert.equal(S.byId('matcher-type')!.value, 'always', 'clean reset default after consuming the pre-fill');
 });
 
 /* ---- (e) Duplicate enabled rules are not re-created ---------------------- */

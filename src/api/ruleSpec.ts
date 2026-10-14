@@ -75,7 +75,19 @@ export type ActionSpec =
   | {
       /** Hide the named tools from the model's available tool set. */
       type: 'hideTool';
-      /** Names of the tools to hide. */
+      /**
+       * Tool names (exact or glob patterns) to hide. The entries form EITHER a
+       * **block-list** (no entry starts with `!`) — hide every tool whose name matches
+       * any entry's base pattern — OR an **allow-list** (at least one entry starts
+       * with `!`) — keep only the tools matching any entry's base pattern and hide
+       * everything else (the listed base patterns form the keep-set). A base pattern is
+       * an exact name OR a glob (`*` = any characters, anchored to the full name), with
+       * a single leading `!` stripped (e.g. `serena_*` hides every `serena_*` tool;
+       * `!serena_*` keeps only `serena_*`; `!graphify_*, !serena_*` keeps only
+       * `graphify_*` + `serena_*` and hides the rest). Only names present in the
+       * request's tool definitions can be hidden. Must be a non-empty array of
+       * non-empty strings (a lone `!` is not a pattern).
+       */
       toolNames: string[];
     }
   | {

@@ -19,6 +19,48 @@ import { $, el, isPlainObject, errMsg, showNotice, clearNotice, showFormError } 
 import { state } from './state.mjs';
 import { MATCHER_FIELDS, ACTION_FIELDS } from './rule-schema.mjs';
 
+/* ==================== human-first type-select labels ==================== */
+// Human-first labels for the matcher / action type selects. The plain phrase
+// leads; the internal identifier is shown as a muted secondary hint (see the
+// <span class="muted">(identifier)</span> in the static HTML options and the
+// dynamically-added options built by renderTypeOption).
+var MATCHER_TYPE_LABELS = {
+  toolName: 'Tool name',
+  argPattern: 'Argument pattern',
+  loop: 'Loop · repeated calls',
+  always: 'Always'
+};
+var ACTION_TYPE_LABELS = {
+  hideTool: 'Hide tool',
+  rewriteArgs: 'Rewrite arguments',
+  injectMessage: 'Inject a message',
+  addDescription: 'Add a description'
+};
+// The human-first phrase for a matcher / action type (falls back to the raw
+// identifier for an unknown type).
+export function matcherTypeLabel(type) { return MATCHER_TYPE_LABELS[type] || String(type || ''); }
+export function actionTypeLabel(type) { return ACTION_TYPE_LABELS[type] || String(type || ''); }
+// Build a <select> option whose visible text is "Phrase (identifier)", the
+// identifier rendered as a muted secondary hint. In the browser this is a text
+// node + a <span class="muted">(identifier)</span>; in DOM-less test stubs (no
+// document.createTextNode) it falls back to a flat, readable string so the
+// label stays assertable via textContent.
+export function renderTypeOption(value, phrase) {
+  var o = document.createElement('option');
+  o.value = value;
+  var hint = '(' + value + ')';
+  if (typeof document.createTextNode === 'function') {
+    o.appendChild(document.createTextNode(phrase + ' '));
+    var s = document.createElement('span');
+    s.className = 'muted';
+    s.textContent = hint;
+    o.appendChild(s);
+  } else {
+    o.textContent = phrase + ' ' + hint;
+  }
+  return o;
+}
+
 /* ========================= rules list / CRUD ====================== */
 // Build one rule card for a serialized RuleSpec: an enabled toggle + action
 // "severity" pill + name, then matcher / action (/priority) summaries, then id
@@ -40,13 +82,13 @@ export function renderRuleRow(spec) {
   var sevType = spec.action && spec.action.type ? String(spec.action.type) : '\u2014';
   top.appendChild(toggle);
   top.appendChild(el('span', 'badge rc-sev ' + severityClass(sevType), sevType));
-  top.appendChild(el('div', 'rc-name', spec.description || 'Untitled rule'));
+  top.appendChild(el('div', 'rc-name', ruleLabel(spec)));
   card.appendChild(top);
 
   // Body: matcher / action summaries (+ priority when set).
   var body = el('div', 'rc-body');
   body.appendChild(summaryCell('Matcher', matcherSummary(spec.matcher)));
-  body.appendChild(summaryCell('Action', actionSummary(spec.action)));
+  body.appendChild(summaryCell('Action', actionSummary(spec.action, spec.matcher)));
   if (typeof spec.priority === 'number') body.appendChild(summaryCell('Priority', String(spec.priority)));
   card.appendChild(body);
 
@@ -109,7 +151,9 @@ export async function toggleEnabled(spec, enabled) {
 }
 // Delete a rule via DELETE /api/rules/{id}.
 export async function deleteRule(spec) {
-  var label = spec.description || spec.id;
+  // The confirm shows the humanized label (description, or a friendly
+  // matcher+action summary) instead of leaking a raw rule id.
+  var label = ruleLabel(spec);
   if (!window.confirm('Delete rule "' + label + '"?')) return;
   try {
     var res = await fetch('api/rules/' + encodeURIComponent(spec.id), { method: 'DELETE' });
@@ -164,51 +208,132 @@ function severityClass(actionType) {
   return SEVERITY_CLASS_BY_ACTION[actionType] || 'badge';
 }
 function truncate(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
-// One-line human summary of a matcher spec (shown under "Matcher" in a row).
-function matcherSummary(m) {
+// The concrete tool name(s) a matcher targets (from toolName / toolNames).
+// An empty list means the matcher does not name a specific tool.
+function toolNamesFrom(m) {
+  var names = [];
+  if (!m) return names;
+  if (typeof m.toolName === 'string' && m.toolName) names.push(m.toolName);
+  if (Array.isArray(m.toolNames)) names = names.concat(m.toolNames.filter(function (n) { return typeof n === 'string' && n; }));
+  return names.filter(function (n, i) { return names.indexOf(n) === i; });
+}
+// The single concrete tool a matcher targets, or null when it targets several
+// or no specific tool (a toolNames[] list, an argPattern with no name, loop,
+// or always). This is the "Target tool" for the read-only chip on the Action
+// step — the only place the matcher -> action coupling is made explicit for
+// actions that carry no tool name of their own (addDescription, and hideTool
+// acting on the matched tool).
+function matcherTargetToolName(m) {
+  if (!m) return null;
+  if (m.type === 'toolName' || m.type === 'argPattern') {
+    var names = toolNamesFrom(m);
+    if (names.length === 1) return names[0];
+  }
+  return null;
+}
+
+
+// The hideTool toolNames split into a block-list or an allow-list: a base
+// pattern is each entry with a single leading ! stripped; the entries form an
+// allow-list when ANY entry starts with ! (the ! is the allow-list marker and
+// the keep-set is the union of all base patterns). Pure helpers shared by the
+// actionSummary and the target chip.
+function hideToolToolNames(toolNames) {
+  var entries = Array.isArray(toolNames) ? toolNames.filter(function (n) { return typeof n === 'string' && n; }) : [];
+  return {
+    entries: entries,
+    base: entries.map(function (n) { return n.charAt(0) === '!' ? n.slice(1) : n; }),
+    allow: entries.some(function (n) { return n.charAt(0) === '!'; })
+  };
+}
+// One-line human-first summary of a hideTool action's toolNames. Reused by the
+// rule-card "Action" cell, the wizard's "Then: …" preview, and the humanized
+// rule label. A block-list spells out a single entry ("hide webfetch" /
+// "hide serena_*"); an allow-list reads "hide all except <base>" (single) or
+// "hide all except <base1> + <base2> …" (several, joined with " + "); a
+// block-list with several entries collapses to a count ("hide N tools").
+function hideToolSummary(toolNames) {
+  var info = hideToolToolNames(toolNames);
+  if (info.entries.length === 0) return 'hide tools';
+  if (info.entries.length === 1) return info.allow ? 'hide all except ' + info.base[0] : 'hide ' + info.base[0];
+  return info.allow ? 'hide all except ' + info.base.join(' + ') : 'hide ' + info.entries.length + ' tools';
+}
+// The read-only "Target tool" chip text for a hideTool action, derived from the
+// action's own toolNames (patterns) rather than the matcher: block-list single
+// ("Target: serena_*") / several ("Target: N tools"); allow-list single
+// ("Target: all except serena_*") / several ("Target: all except graphify_* +
+// serena_*", joined with " + "). When the field is empty it falls back to the
+// matcher-mirroring target (the existing behaviour).
+function hideToolTargetLabel(toolNames, matcher) {
+  var info = hideToolToolNames(toolNames);
+  if (info.entries.length === 1) return info.allow ? 'Target: all except ' + info.base[0] : 'Target: ' + info.base[0];
+  if (info.entries.length > 1) return info.allow ? 'Target: all except ' + info.base.join(' + ') : 'Target: ' + info.entries.length + ' tools';
+  var name = matcherTargetToolName(matcher);
+  return name ? 'Target: ' + name : 'Applies to matching tool(s)';
+}
+// One-line human-first summary of a matcher spec. Reused by the rule-card body
+// ("Matcher" cell) and the wizard's per-step "Fires when: …" preview.
+export function matcherSummary(m) {
   if (!m) return '\u2014';
   switch (m.type) {
     case 'toolName': {
-      var names = [];
-      if (typeof m.toolName === 'string' && m.toolName) names.push(m.toolName);
-      if (Array.isArray(m.toolNames)) Array.prototype.push.apply(names, m.toolNames);
-      return names.length ? names.join(', ') : 'any tool';
+      var names = toolNamesFrom(m);
+      return names.length ? 'by tool name' + (names.length > 1 ? 's' : '') + ': ' + names.join(', ') : 'by any tool';
     }
     case 'argPattern': {
       var parts = [];
-      if (typeof m.toolName === 'string' && m.toolName) parts.push(m.toolName);
-      else if (Array.isArray(m.toolNames) && m.toolNames.length) parts.push('[' + m.toolNames.join(', ') + ']');
-      if (typeof m.pattern === 'string' && m.pattern) parts.push('args \u220b ' + truncate(m.pattern, 48));
+      var t = toolNamesFrom(m);
+      if (t.length) parts.push('on ' + t.join(', '));
+      if (typeof m.pattern === 'string' && m.pattern) parts.push('arguments match ' + truncate(m.pattern, 48));
       return parts.length ? parts.join(' \u00B7 ') : 'all calls';
     }
     case 'loop': {
-      var bits = [];
-      if (typeof m.window === 'number') bits.push(m.window + '\u00D7 in a row');
+      var base = typeof m.window === 'number' ? m.window + '\u00D7 in a row' : 'repeated identical calls';
+      var bits = [base];
       if (m.requireConsecutive === false) bits.push('anywhere in run');
       if (m.paramIdentity === 'exact') bits.push('exact params');
       else if (m.resultIdentity === 'exact') bits.push('exact results');
-      return bits.length ? bits.join(' \u00B7 ') : 'consecutive identical calls';
+      return bits.join(' \u00B7 ');
     }
     case 'always':
-      return 'always';
+      return 'every call';
     default: return '\u2014';
   }
 }
-// One-line human summary of an action spec (shown under "Action" in a row).
-function actionSummary(a) {
+// One-line human-first summary of an action spec. Reused by the rule-card body
+// ("Action" cell) and the wizard's per-step "Then: …" preview. `matcher` is
+// optional and supplies the target tool for addDescription (whose target is
+// implied by the rule's matcher, not a field of the action).
+export function actionSummary(a, matcher) {
   if (!a) return '\u2014';
   switch (a.type) {
     case 'hideTool':
-      return Array.isArray(a.toolNames) && a.toolNames.length ? 'hide ' + a.toolNames.join(', ') : 'hide tools';
+      return hideToolSummary(a.toolNames);
     case 'rewriteArgs': {
       var mode = a.mode ? ' (' + a.mode + ')' : '';
-      var target = a.toolCallId ? 'id ' + a.toolCallId : (typeof a.toolName === 'string' && a.toolName ? a.toolName : 'arguments');
-      return 'rewrite args' + (target !== 'arguments' ? ' \u00B7 ' + target : '') + mode;
+      var target = a.toolCallId ? 'by call id ' + a.toolCallId : (typeof a.toolName === 'string' && a.toolName ? 'on ' + a.toolName : 'arguments');
+      return 'rewrite arguments' + (target !== 'arguments' ? ' \u00B7 ' + target : '') + mode;
     }
     case 'injectMessage':
-      return (a.role ? a.role + ' message' : 'inject message') + (typeof a.content === 'string' && a.content ? ' \u00B7 \u201C' + truncate(a.content, 60) + '\u201D' : '');
+      return (a.role ? a.role + ' message' : 'inject a message') + (typeof a.content === 'string' && a.content ? ' \u00B7 \u201C' + truncate(a.content, 60) + '\u201D' : '');
+    case 'addDescription': {
+      var tgt = matcher ? matcherTargetToolName(matcher) : null;
+      return tgt ? 'add a description to ' + tgt : 'add a description to matching tool(s)';
+    }
     default: return '\u2014';
   }
+}
+// The human-readable label for a rule: its description when set, otherwise a
+// friendly "New rule · <what it does>" label derived from the action (with the
+// matcher) summary. Replaces the raw "Untitled rule" / bare-id fallback in the
+// list card name and the delete confirmation.
+export function ruleLabel(spec) {
+  if (spec && typeof spec.description === 'string' && spec.description.trim()) return spec.description.trim();
+  var a = spec ? spec.action : null;
+  var m = spec ? spec.matcher : null;
+  var as = a ? actionSummary(a, m) : '\u2014';
+  if (as && as !== '\u2014') return 'New rule \u00B7 ' + as;
+  return 'New rule';
 }
 // One labelled summary cell for the rule-card body.
 function summaryCell(label, value) {
@@ -274,6 +399,7 @@ export function renderMatcherFields(type, values) {
   (MATCHER_FIELDS[type] || []).forEach(function (def) {
     box.appendChild(makeField('matcher-fields', def, values && values[def.key]));
   });
+  updatePreviews(); // refresh the live "When" preview + target chip after re-rendering
 }
 // The addDescription action was added to the backend after the field schemas in
 // rule-schema.mjs were authored, so ACTION_FIELDS has no entry for it. Merge its
@@ -291,6 +417,7 @@ export function renderActionFields(type, values) {
   (ACTION_FIELDS_ALL[type] || []).forEach(function (def) {
     box.appendChild(makeField('action-fields', def, values && values[def.key]));
   });
+  updatePreviews(); // refresh the live "Then" preview + target chip after re-rendering
 }
 // Read one control's value; returns { skip } or { value } or { err }.
 export function readField(container, def) {
@@ -303,7 +430,11 @@ export function readField(container, def) {
       return t === '' ? { skip: true } : { value: t };
     }
     case 'list': {
-      var arr = String(raw).split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s !== ''; });
+      // Entries are comma- or line-separated: split on commas or line breaks,
+      // trim each, and drop empties. Pattern characters (* and !) are never
+      // split points, so "serena_*,webfetch" parses to ["serena_*", "webfetch"]
+      // and "serena_*\n!webfetch" to ["serena_*", "!webfetch"].
+      var arr = String(raw).split(/[\n,]/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ''; });
       return arr.length === 0 ? { skip: true } : { value: arr };
     }
     case 'json': {
@@ -340,9 +471,9 @@ export function readSection(defs, container, out) {
 }
 // Client-side mirror of the server's validateSpec required-field checks so we
 // can reject obviously-incomplete rules before they hit the network.
-export function clientValidate(spec) {
-  if (typeof spec.enabled !== 'boolean') return '"enabled" must be a boolean';
-  var m = spec.matcher, a = spec.action;
+// Per-step validators (pure — operate on spec sub-objects, no DOM access).
+// Step 1 (When): the matcher is well-formed + carries its required fields.
+function validateMatcher(m) {
   if (!isPlainObject(m) || typeof m.type !== 'string') return 'a matcher with a "type" is required';
   if (m.type === 'argPattern' && !(typeof m.pattern === 'string' && m.pattern !== '')) {
     return 'matcher requires a non-empty "pattern"';
@@ -350,6 +481,10 @@ export function clientValidate(spec) {
   if (m.type === 'loop' && m.window !== undefined && typeof m.window !== 'number') {
     return 'matcher "window" must be a number';
   }
+  return null;
+}
+// Step 2 (Then): the action is well-formed + carries its required fields.
+function validateAction(a) {
   if (!isPlainObject(a) || typeof a.type !== 'string') return 'an action with a "type" is required';
   if (a.type === 'hideTool' && !(Array.isArray(a.toolNames) && a.toolNames.length > 0)) {
     return 'action requires a non-empty "toolNames" array';
@@ -363,6 +498,28 @@ export function clientValidate(spec) {
   if (a.type === 'addDescription' && !(typeof a.description === 'string' && a.description !== '')) {
     return 'action requires a non-empty "description" string';
   }
+  return null;
+}
+// Step 3 (Details): the rule fields — enabled must be a boolean and priority,
+// when set, must be a number (description is optional).
+function validateRuleFields(spec) {
+  if (typeof spec.enabled !== 'boolean') return '"enabled" must be a boolean';
+  if (spec.priority !== undefined && typeof spec.priority !== 'number') {
+    return '"priority" must be a number';
+  }
+  return null;
+}
+// Client-side mirror of the server's validateSpec required-field checks so we
+// can reject obviously-incomplete rules before they hit the network. Reuses the
+// per-step validators above (step 3 rule fields, then step 1 matcher, then
+// step 2 action) so the whole-form and per-step checks never drift apart.
+export function clientValidate(spec) {
+  var err = validateRuleFields(spec);
+  if (err) return err;
+  err = validateMatcher(spec.matcher);
+  if (err) return err;
+  err = validateAction(spec.action);
+  if (err) return err;
   return null;
 }
 // Assemble a full RuleSpec from the current form state; { spec } or { error }.
@@ -386,6 +543,54 @@ export function collectSpec() {
   if (verr) return { error: verr };
   return { spec: spec };
 }
+
+// Assemble only the fields relevant to wizard step `n` (1 When · 2 Then ·
+// 3 Details) into a spec; { spec } or { error }. Used by per-step validation so
+// "Next" can check just the active step without reading the whole form.
+export function collectStep(n) {
+  var enabledEl = $('rule-enabled');
+  var spec = { enabled: enabledEl ? !!enabledEl.checked : true };
+  if (n === 1) {
+    spec.matcher = { type: state.curMatcherType };
+    var mbox = $('matcher-fields');
+    if (mbox) {
+      var me = readSection(MATCHER_FIELDS[state.curMatcherType] || [], mbox, spec.matcher);
+      if (me) return { error: me };
+    }
+    return { spec: spec };
+  }
+  if (n === 2) {
+    spec.action = { type: state.curActionType };
+    var abox = $('action-fields');
+    if (abox) {
+      var ae = readSection(ACTION_FIELDS_ALL[state.curActionType] || [], abox, spec.action);
+      if (ae) return { error: ae };
+    }
+    return { spec: spec };
+  }
+  var descEl = $('rule-description');
+  if (descEl) { var d = descEl.value.trim(); if (d) spec.description = d; }
+  var prEl = $('rule-priority');
+  if (prEl) {
+    var pr = prEl.value.trim();
+    if (pr !== '') {
+      var num = Number(pr);
+      if (isNaN(num)) return { error: '"priority" must be a number' };
+      spec.priority = num;
+    }
+  }
+  return { spec: spec };
+}
+// Validate a single wizard step; returns an error string (invalid) or null
+// (valid). Reuses the per-step validators over the step's collected fields.
+export function validateStep(n) {
+  var r = collectStep(n);
+  if (r.error) return r.error;
+  var spec = r.spec;
+  if (n === 1) return validateMatcher(spec.matcher);
+  if (n === 2) return validateAction(spec.action);
+  return validateRuleFields(spec);
+}
 // The addDescription action is not in the static form HTML (dashboard/html/
 // rules-view.html), so before it is selected (prefill / edit / wiring) ensure the
 // action-type select carries an option for it. Idempotent: adds the option only
@@ -398,10 +603,9 @@ function ensureActionTypeOption(type) {
     if (o && o.value === type) has = true;
   });
   if (!has) {
-    var o = document.createElement('option');
-    o.value = type;
-    o.textContent = type === 'addDescription' ? 'addDescription \u2014 set a tool description' : type;
-    sel.appendChild(o);
+    // Human-first label for the dynamically-added option (e.g. addDescription):
+    // "Add a description (addDescription)" — the identifier as a muted hint.
+    sel.appendChild(renderTypeOption(type, actionTypeLabel(type)));
   }
 }
 // Load an existing rule's serialized spec into the form for editing.
@@ -424,7 +628,7 @@ export function loadSpecIntoForm(spec) {
 // Reset the form to a clean add-mode state.
 export function resetForm() {
   state.editingId = '';
-  state.curMatcherType = 'loop';
+  state.curMatcherType = 'always';
   state.curActionType = 'hideTool';
   $('matcher-type').value = state.curMatcherType;
   $('action-type').value = state.curActionType;
@@ -435,12 +639,13 @@ export function resetForm() {
   $('rule-priority').value = '';
   updateFormMode();
   showFormError('');
+  showStep(1); // a fresh (add-mode) form lands on step 1 (When)
 }
 // Reflect edit vs. add mode in the form buttons.
 export function updateFormMode() {
   var editing = state.editingId !== '';
-  var cancelBtn = $('btn-cancel');
-  if (cancelBtn) cancelBtn.hidden = !editing;
+  // Cancel is now a persistent footer action (visible in both add and edit
+  // modes); only the Save button's label and the editor title reflect mode.
   var addBtn = $('btn-add');
   if (addBtn) addBtn.textContent = editing ? 'Save changes' : 'Add rule';
   var title = $('rule-editor-title');
@@ -474,9 +679,142 @@ export async function saveRule(spec) {
 export function submitRule(e) {
   if (e) e.preventDefault();
   var r = collectSpec();
-  if (r.error) { showFormError(r.error); return; }
+  if (r.error) { showFormError(r.error); goToFirstInvalidStep(); return; }
   showFormError('');
   saveRule(r.spec);
+}
+
+/* ==================== live per-step previews + target chip ==================== */
+// The best-effort matcher / action spec for the current form state, read from
+// the live fields (collectStep) and falling back to the selected type when a
+// field is not yet filled. Used to drive the live previews + target chip.
+function currentMatcherSpec() {
+  var r = collectStep(1);
+  var m = r && r.spec && r.spec.matcher;
+  if (!m || !m.type) m = { type: state.curMatcherType };
+  return m;
+}
+function currentActionSpec() {
+  var r = collectStep(2);
+  var a = r && r.spec && r.spec.action;
+  if (!a || !a.type) a = { type: state.curActionType };
+  return a;
+}
+// Refresh the wizard's live previews and the read-only "Target tool" chip:
+//   step 1 (#rule-when-preview)  "Fires when: <matcher summary>"
+//   step 2 (#rule-then-preview)  "Then: <action summary>"
+//   step 2 (#rule-target-chip)   for hideTool, the action's own tool names /
+//                                patterns ("Target: serena_*" / "Target: all
+//                                except serena_*" / "Target: N tools"); for every
+//                                other action, the matcher's target tool
+//                                ("Target: x" or "Applies to matching tool(s)")
+//                                — the clarifier for actions (addDescription)
+//                                whose target is implied by the matcher.
+//   step 3 (#rule-combined-preview) "When <matcher> → then <action>. <Enabled|Disabled>"
+// Every element is optional (guarded) so this is safe on a partially-materialized
+// DOM (tests). Wired into the type-change + field-change handlers, renderMatcher
+// / renderActionFields, and showStep.
+export function updatePreviews() {
+  var m = currentMatcherSpec();
+  var a = currentActionSpec();
+  var mSum = matcherSummary(m);
+  var aSum = actionSummary(a, m);
+  var when = $('rule-when-preview');
+  if (when) when.textContent = 'Fires when: ' + mSum;
+  var then = $('rule-then-preview');
+  if (then) then.textContent = 'Then: ' + aSum;
+  var chip = $('rule-target-chip');
+  if (chip) {
+    // hideTool names its own target (the toolNames patterns) — derive it from
+    // the action, not the matcher; every other action mirrors the matcher.
+    if (a.type === 'hideTool') {
+      chip.textContent = hideToolTargetLabel(a.toolNames, m);
+    } else {
+      var name = matcherTargetToolName(m);
+      chip.textContent = name ? 'Target: ' + name : 'Applies to matching tool(s)';
+    }
+  }
+  var combined = $('rule-combined-preview');
+  if (combined) {
+    var en = $('rule-enabled');
+    var on = en ? !!en.checked : true;
+    combined.textContent = 'When ' + mSum + ' \u2192 then ' + aSum + '. ' + (on ? 'Enabled' : 'Disabled');
+  }
+}
+
+/* ============================ wizard step state ==================== */
+// The rule editor is a 3-step wizard: 1 When (matcher) · 2 Then (action) ·
+// 3 Details. Only the active step is visible; the others stay in the DOM so
+// their field state, event wiring, and dynamic renders persist across steps.
+// Element ids are referenced by step number so the step logic never hardcodes
+// three scattered literals.
+var currentStep = 1;
+var STEP_PANEL_IDS = { 1: 'rule-step-when', 2: 'rule-step-then', 3: 'rule-step-details' };
+var STEP_INDICATOR_IDS = { 1: 'rule-step-ind-1', 2: 'rule-step-ind-2', 3: 'rule-step-ind-3' };
+var FOOTER_BACK_ID = 'rule-btn-back';
+var FOOTER_SAVE_ID = 'btn-add';
+// Make only step `n` visible, refresh the indicator, and update the footer.
+// Tolerates a partially-materialized DOM (tests) — missing elements are skipped.
+export function showStep(n) {
+  currentStep = (n === 2) ? 2 : (n === 3) ? 3 : 1;
+  [1, 2, 3].forEach(function (s) {
+    var p = $(STEP_PANEL_IDS[s]);
+    if (!p) return;
+    var active = s === currentStep;
+    p.classList.toggle('is-active', active);
+    p.hidden = !active;
+  });
+  updateStepIndicator();
+  updateFooterNav();
+  updatePreviews(); // keep the live previews / target chip current for the shown step
+}
+// The currently active wizard step (1 When · 2 Then · 3 Details).
+export function getCurrentStep() { return currentStep; }
+// A step is reachable from here if it is behind us, or every step between us
+// and it validates (so walking forward through them would be legal).
+function isReachable(n) {
+  if (n <= currentStep) return true;
+  for (var s = currentStep; s < n; s++) { if (validateStep(s)) return false; }
+  return true;
+}
+// Refresh the step indicator: highlight the current step, mark done (valid)
+// steps, and flag which steps are reachable (clickable).
+function updateStepIndicator() {
+  [1, 2, 3].forEach(function (s) {
+    var item = $(STEP_INDICATOR_IDS[s]);
+    if (!item) return;
+    item.classList.toggle('is-current', s === currentStep);
+    item.classList.toggle('is-done', s !== currentStep && validateStep(s) === null);
+    item.classList.toggle('is-reachable', isReachable(s));
+    item.setAttribute('aria-current', s === currentStep ? 'step' : 'false');
+  });
+}
+// Refresh the footer: Back shows from step 2 on; Save is the primary action on
+// step 3; Cancel always. (The step indicator is the forward navigation.)
+function updateFooterNav() {
+  var back = $(FOOTER_BACK_ID);
+  if (back) back.hidden = currentStep <= 1;
+  var save = $(FOOTER_SAVE_ID);
+  if (save) save.classList.toggle('btn-primary', currentStep === 3);
+}
+// Step back without validation (going back is always allowed).
+export function backStep() {
+  if (currentStep <= 1) return;
+  showFormError('');
+  showStep(currentStep - 1);
+}
+// Jump directly to a step (the clickable step indicator). No-op when it is the
+// current step or not reachable.
+export function jumpToStep(n) {
+  if (n === currentStep || !isReachable(n)) return;
+  showFormError('');
+  showStep(n);
+}
+// On a failed whole-form save, land on the first invalid step (so the error is
+// shown in context); fall back to the last step when none are invalid.
+function goToFirstInvalidStep() {
+  for (var n = 1; n <= 3; n++) { if (validateStep(n)) { showStep(n); return; } }
+  showStep(3);
 }
 
 /* ========================= route -> form entry ====================== */
@@ -501,10 +839,15 @@ export function openNewRuleForm() {
     var spec = pendingNewRuleSpec;
     pendingNewRuleSpec = null; // consume exactly once
     loadSpecIntoForm(spec);
-    var focusEl = $('rule-description') || $('rule-form');
+    showStep(2); // prefill lands on Then: matcher + action are already filled
+    // Focus a step-2 element (not the step-3 description): the first dynamic
+    // action field if one is rendered, else the action-type select.
+    var actionBox = $('action-fields');
+    var firstField = actionBox && actionBox.querySelector('input, textarea, select');
+    var focusEl = firstField || $('action-type') || $('rule-form');
     if (focusEl && typeof focusEl.focus === 'function') focusEl.focus();
   } else {
-    resetForm();
+    resetForm(); // resetForm() lands the wizard on step 1
   }
 }
 
@@ -557,6 +900,7 @@ export async function openEditRuleForm(id) {
     return;
   }
   loadSpecIntoForm(spec);
+  showStep(1); // edit mode lands on step 1 (When)
 }
 
 /* ========================= wiring =============================== */
@@ -581,10 +925,28 @@ export function bindFormEvents() {
     renderActionFields(state.curActionType);
     updateFormMode();
   });
+  // Live previews + target chip: update as any dynamic field is typed / changed
+  // (event delegation on the field containers survives the per-type re-renders),
+  // and as the enabled state toggles (drives the combined preview's Enabled/
+  // Disabled suffix). The type-change handlers above already refresh via render*.
+  var mf = $('matcher-fields');
+  if (mf) { mf.addEventListener('input', updatePreviews); mf.addEventListener('change', updatePreviews); }
+  var af = $('action-fields');
+  if (af) { af.addEventListener('input', updatePreviews); af.addEventListener('change', updatePreviews); }
+  var en = $('rule-enabled');
+  if (en) en.addEventListener('change', updatePreviews);
   var form = $('rule-form');
   if (form) form.addEventListener('submit', submitRule);
+  // Wizard footer navigation: Back / Cancel (Save is the form submit).
+  var back = $('rule-btn-back');
+  if (back) back.addEventListener('click', backStep);
   var cancel = $('btn-cancel');
   if (cancel) cancel.addEventListener('click', function () { location.hash = '#/rules'; });
+  // Clickable step indicator: jump to a reachable step.
+  [1, 2, 3].forEach(function (s) {
+    var item = $(STEP_INDICATOR_IDS[s]);
+    if (item) item.addEventListener('click', function () { jumpToStep(s); });
+  });
   var addRuleBtn = $('btn-add-rule');
   if (addRuleBtn) addRuleBtn.addEventListener('click', function () { location.hash = '#/rules/new'; });
 }

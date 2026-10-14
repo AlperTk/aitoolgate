@@ -33,40 +33,73 @@
       </div>
 
       <form id="rule-form" novalidate>
-        <!-- Section: matcher -->
-        <div class="form-section">
-          <h3 class="section-title">Matcher</h3>
+        <!-- Step indicator: numbered, clickable steps (1 When · 2 Then · 3
+             Details). The current step is highlighted, completed (valid) steps
+             are marked done, and reachable steps are clickable. Driven by
+             js/rules.mjs (showStep / updateStepIndicator). -->
+        <div id="rule-steps" class="rule-steps" role="tablist" aria-label="Rule authoring steps">
+          <button type="button" id="rule-step-ind-1" class="rule-step is-current is-reachable" data-step="1" aria-current="step">
+            <span class="rule-step-num" aria-hidden="true">1</span><span class="rule-step-label">When</span>
+          </button>
+          <span class="rule-step-sep" aria-hidden="true"></span>
+          <button type="button" id="rule-step-ind-2" class="rule-step" data-step="2">
+            <span class="rule-step-num" aria-hidden="true">2</span><span class="rule-step-label">Then</span>
+          </button>
+          <span class="rule-step-sep" aria-hidden="true"></span>
+          <button type="button" id="rule-step-ind-3" class="rule-step" data-step="3">
+            <span class="rule-step-num" aria-hidden="true">3</span><span class="rule-step-label">Details</span>
+          </button>
+        </div>
+
+        <!-- Step 1: When (the matcher). Only the active step is visible; the
+             others stay in the DOM so field state and event wiring persist. -->
+        <div id="rule-step-when" class="form-section rule-step-panel is-active" data-step="1">
+          <h3 class="section-title">When</h3>
           <div class="field">
             <label for="matcher-type">Matcher type</label>
             <select id="matcher-type">
-              <option value="loop">loop — consecutive identical calls</option>
-              <option value="toolName">toolName — match by tool name</option>
-              <option value="argPattern">argPattern — match arguments</option>
-              <option value="always">always — match every call</option>
+              <option value="loop">Loop · repeated calls <span class="muted">(loop)</span></option>
+              <option value="toolName">Tool name <span class="muted">(toolName)</span></option>
+              <option value="argPattern">Argument pattern <span class="muted">(argPattern)</span></option>
+              <option value="always" selected>Always <span class="muted">(always)</span></option>
             </select>
             <div class="hint">Choose how the rule detects matching tool calls.</div>
           </div>
           <div class="fields" id="matcher-fields"></div>
+          <!-- Live "When" preview: "Fires when: &lt;matcher summary&gt;" — driven by js/rules.mjs (updatePreviews). -->
+          <div class="step-preview" id="rule-when-preview" role="status" aria-live="polite"></div>
         </div>
 
-        <!-- Section: action -->
-        <div class="form-section">
-          <h3 class="section-title">Action</h3>
+        <!-- Step 2: Then (the action). -->
+        <div id="rule-step-then" class="form-section rule-step-panel" data-step="2" hidden>
+          <h3 class="section-title">Then</h3>
           <div class="field">
             <label for="action-type">Action type</label>
             <select id="action-type">
-              <option value="hideTool">hideTool — remove tools</option>
-              <option value="rewriteArgs">rewriteArgs — edit arguments</option>
-              <option value="injectMessage">injectMessage — add a message</option>
+              <option value="hideTool">Hide tool <span class="muted">(hideTool)</span></option>
+              <option value="injectMessage">Inject a message <span class="muted">(injectMessage)</span></option>
+              <!-- rewriteArgs is intentionally NOT offered as a new-rule action ("for now"):
+                   it stays fully functional everywhere else, and an existing rewriteArgs
+                   rule regains its option when loaded for editing (ensureActionTypeOption
+                   in js/rules.mjs). addDescription is appended at runtime the same way. -->
             </select>
             <div class="hint">Choose what happens when a call matches. The coloured pill on each rule shows this action's severity.</div>
+            <!-- Read-only "Target tool" chip: mirrors the matcher so the coupling is
+                 explicit (crucial for addDescription / hideTool, whose target tool is
+                 implied by the matcher, not a field on the action). Driven by updatePreviews. -->
+            <div class="target-chip" id="rule-target-chip" role="status" aria-live="polite"></div>
           </div>
           <div class="fields" id="action-fields"></div>
+          <!-- Live "Then" preview: "Then: &lt;action summary&gt;" — driven by updatePreviews. -->
+          <div class="step-preview" id="rule-then-preview" role="status" aria-live="polite"></div>
         </div>
 
-        <!-- Section: details & status -->
-        <div class="form-section">
-          <h3 class="section-title">Details &amp; status</h3>
+        <!-- Step 3: Details & status. -->
+        <div id="rule-step-details" class="form-section rule-step-panel" data-step="3" hidden>
+          <h3 class="section-title">Details</h3>
+          <!-- Combined "When … → then …" preview (plus the enabled/disabled state) —
+               driven by updatePreviews. -->
+          <div class="step-preview combined" id="rule-combined-preview" role="status" aria-live="polite"></div>
           <div class="field-row">
             <div class="field grow">
               <label for="rule-description">Description</label>
@@ -84,10 +117,13 @@
           </label>
         </div>
 
-        <div class="form-foot">
-          <button type="button" id="btn-cancel" class="btn" hidden>Cancel</button>
+        <!-- Persistent footer navigation bar: Back / Save / Cancel.
+             Save is the form submit; the step indicator is the forward nav. -->
+        <div id="rule-step-footer" class="rule-step-footer">
+          <button type="button" id="rule-btn-back" class="btn" hidden>Back</button>
           <span class="spacer"></span>
-          <button type="submit" id="btn-add" class="btn btn-primary">Add rule</button>
+          <button type="submit" id="btn-add" class="btn">Add rule</button>
+          <button type="button" id="btn-cancel" class="btn">Cancel</button>
         </div>
         <div id="form-error" class="form-error" role="alert" hidden></div>
       </form>

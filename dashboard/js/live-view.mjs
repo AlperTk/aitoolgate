@@ -10,6 +10,7 @@
  * time-window constraints over the visible rows.
  * ========================================================================== */
 import { $, el, esc, fmtOpt, fmtTime, shortSession, showNotice } from './dom.mjs';
+import { formatCount, formatSize } from './format.mjs';
 import { state } from './state.mjs';
 import { MAX_LIST_ITEMS } from './constants.mjs';
 import { inTimeRange } from './time.mjs';
@@ -28,22 +29,22 @@ export function prependTrim(listEl, node, max) {
 // payload size (chars) when known. Driven by tokens.input / tokens.output / tokens.total.
 export function appendTokenAndSizeCells(main, ev) {
   var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
-  var inCell = el('span', 's-tokens-in col-num', tokens && typeof tokens.input === 'number' ? fmtOpt(tokens.input) : '\u2014');
+  var inCell = el('span', 's-tokens-in col-num', tokens && typeof tokens.input === 'number' ? formatCount(tokens.input) : '\u2014');
   inCell.title = 'Input tokens (turn)';
   main.appendChild(inCell);
-  var outCell = el('span', 's-tokens-out col-num', tokens && typeof tokens.output === 'number' ? fmtOpt(tokens.output) : '\u2014');
+  var outCell = el('span', 's-tokens-out col-num', tokens && typeof tokens.output === 'number' ? formatCount(tokens.output) : '\u2014');
   outCell.title = 'Output tokens (turn)';
   main.appendChild(outCell);
-  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? fmtOpt(tokens.total) : '\u2014');
+  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '\u2014');
   totCell.title = 'Turn tokens (in+out) \u2014 the full upstream turn total (dominated by resent history), not a per-tool cost.';
   main.appendChild(totCell);
-  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? fmtOpt(ev.chars) : '\u2014');
+  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '\u2014');
   sizeCell.title = 'Result payload size (characters)';
   main.appendChild(sizeCell);
 }
 // Update a numeric cell's text from an optional value; leave it unchanged ('—') when absent.
-export function setNumCellText(cell, v) {
-  if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = fmtOpt(v);
+export function setNumCellText(cell, v, fmt) {
+  if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = (typeof fmt === 'function' ? fmt : fmtOpt)(v);
 }
 // Append the Description cell: the tool.call event's request-provided description, or a '—'
 // placeholder when absent (orphan result rows carry no callEv, so they always show '—'). The
@@ -158,10 +159,10 @@ export function updateCallRowWithResult(rs, ev) {
   var dur = rs.li.querySelector('.s-duration');
   if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
   // Update the numeric columns in place; absent values keep their existing '—'.
-  setNumCellText(rs.li.querySelector('.s-tokens-in'), ev.tokens && ev.tokens.input);
-  setNumCellText(rs.li.querySelector('.s-tokens-out'), ev.tokens && ev.tokens.output);
-  setNumCellText(rs.li.querySelector('.s-tokens-total'), ev.tokens && ev.tokens.total);
-  setNumCellText(rs.li.querySelector('.s-size'), ev.chars);
+  setNumCellText(rs.li.querySelector('.s-tokens-in'), ev.tokens && ev.tokens.input, formatCount);
+  setNumCellText(rs.li.querySelector('.s-tokens-out'), ev.tokens && ev.tokens.output, formatCount);
+  setNumCellText(rs.li.querySelector('.s-tokens-total'), ev.tokens && ev.tokens.total, formatCount);
+  setNumCellText(rs.li.querySelector('.s-size'), ev.chars, formatSize);
   if (rs.expanded) renderRowDetail(rs);
   applyFilters();
 }
@@ -431,10 +432,10 @@ export function buildDetailsPanel(rs) {
   if (res) {
     html += '<div class="rd-section"><div class="rd-label">Result</div>';
     html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
-    html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? String(res.chars) : '\u2014') + '</div>';
+    html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? formatSize(res.chars) : '\u2014') + '</div>';
     html += '<div class="rd-kv"><span>durationMs:</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
     if (res.tokens && typeof res.tokens.total === 'number') {
-      html += '<div class="rd-kv"><span>tokens:</span> ' + fmtOpt(res.tokens.total) + '</div>';
+      html += '<div class="rd-kv"><span>tokens:</span> ' + formatCount(res.tokens.total) + '</div>';
     }
     html += '</div>';
   }
@@ -516,7 +517,7 @@ function renderResponseValue(rs) {
     html = '<pre class="rd-pre">' + esc(content) + '</pre>';
   }
   if (typeof chars === 'number' && content.length < chars) {
-    html += '<div class="muted small rd-trunc">\u2026 (' + chars + ' total chars)</div>';
+    html += '<div class="muted small rd-trunc">\u2026 (' + formatSize(chars) + ' total chars)</div>';
   }
   return html;
 }

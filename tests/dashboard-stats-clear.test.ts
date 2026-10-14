@@ -24,7 +24,7 @@ const S: DomStub = createDomStub();
 // Elements the stats module resolves via $(id) during initClearStats/refreshStats.
 S.el('btn-clear-stats', 'button');
 ['total-calls', 'total-results', 'total-tokens', 'input-tokens', 'output-tokens',
- 'cache-hit-input-tokens', 'avg-duration', 'interventions-retained'].forEach((id) => S.el(id, 'span'));
+ 'cache-hit-input-tokens', 'interventions-retained'].forEach((id) => S.el(id, 'span'));
 S.el('top-tools', 'div');
 S.el('notice', 'div');
 
