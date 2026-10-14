@@ -48,6 +48,7 @@ The proxy needs an upstream model endpoint to forward to. For live use, point `U
 | `TOOL_RESULTS_FLUSH_MS` | `50` | SQLite drain flush interval. |
 | `TOOL_RESULTS_BATCH_SIZE` | `100` | SQLite drain batch size. |
 | `TOOL_RESULTS_FSYNC` | `false` | `wal_checkpoint(TRUNCATE)` per batch. |
+| `TOOL_ERROR_PATTERNS` | *(none)* | Comma-separated case-insensitive regex patterns; a tool result whose content matches is flagged as an error (additive to the built-in content heuristic). |
 
 ## Debugging / dev shortcuts
 - `GET /health` → `{status:"ok"}` liveness check.
