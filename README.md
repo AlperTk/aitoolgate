@@ -2,7 +2,7 @@
 
 **Observe, debug, and optimize AI agent tool usage — locally.**
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](#)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue)](#)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](#)
 [![Runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen)](#)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
