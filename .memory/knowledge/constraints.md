@@ -39,8 +39,8 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - Static dashboard serving **rejects path traversal / absolute paths / null bytes** and serves only `.html/.css/.js/.mjs` inside the dashboard dir; `resolveDashboardDir` walks up ≤4 levels for `dashboard/index.html`.
 
 ## External-system restrictions
-- `UPSTREAM_PROTOCOL` switches only on the value `anthropic` (anything else = `openai`) — it's effectively binary.
-- Single *active* upstream target via `UPSTREAM_BASE_URL` / `UPSTREAM_MODEL` / `UPSTREAM_API_KEY`; multiple persisted provider configs are allowed but only one is active at a time (no concurrent routing).
+- **No env-based upstream config:** upstream target comes only from the provider store or programmatic `options.upstream`; an unconfigured proxy answers LLM routes with **503 JSON** (`UNCONFIGURED_UPSTREAM`) before any fetch — configure via dashboard Settings or `POST /api/api-providers`.
+- Single *active* upstream target (provider store or programmatic `options.upstream`); multiple persisted provider configs are allowed but only one is active at a time (no concurrent routing).
 - Persistence is Node built-in `node:sqlite` — no external DB server, no migration CLI (migrations auto-apply on open, `SCHEMA_VERSION=3`).
 
 ## Rules whose violation causes a production incident

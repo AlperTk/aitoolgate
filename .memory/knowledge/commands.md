@@ -22,7 +22,7 @@ npm install          # installs dev deps only (typescript, @types/node)
 | Test | `npm test` | `node --test 'dist/tests/**/*.test.js'` — **MUST `npm run build` first** (tests run compiled `dist/`). |
 | Typecheck | `npm run typecheck` | `tsc --noEmit` against the dev tsconfig. |
 
-There is **no lint or format script** in `package.json` (none observed). No `main`/`bin`/`type` field; entry is `dist/src/server/index.js`.
+There is **no lint or format script** in `package.json` (none observed). `main` and `bin` (`aitoolgate`) both point at `dist/src/server/index.js`; published `files` = `["dist/src","dist/config","dashboard","README.md","LICENSE"]` (tarball verified self-sufficient via `npm pack` + extracted smoke test); `engines` `node >=22.5` (required for `node:sqlite`); `publishConfig.access=public`.
 
 ## Database & migrations
 - No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=3`, idempotent, tracked in a `migrations` table).
@@ -32,15 +32,11 @@ There is **no lint or format script** in `package.json` (none observed). No `mai
 - Delete a DB file to reset; it is regenerated at startup.
 
 ## Required env vars / local services
-The proxy needs an upstream model endpoint to forward to. For live use, point `UPSTREAM_BASE_URL` at a real OpenAI- or Anthropic-compatible server; for local tests, the e2e suite uses a canned mock (no real service required).
+There is **no env-based upstream config**: the upstream target comes only from a **provider config** (dashboard **Settings** or `POST /api/api-providers`); with no active provider the LLM routes answer **503 JSON** instead of forwarding. For local tests, the e2e suite uses a canned mock (no real service required).
 
 | Var | Default | Meaning |
 |---|---|---|
 | `PORT` | `8787` | HTTP/WS/dashboard port (validated 0–65535). |
-| `UPSTREAM_BASE_URL` | `http://127.0.0.1:9005/v1` | Single upstream target base URL. |
-| `UPSTREAM_MODEL` | `gpt-4o-mini` | Model name forwarded upstream. |
-| `UPSTREAM_API_KEY` | *(none)* | Key sent to the upstream. |
-| `UPSTREAM_PROTOCOL` | `openai` | `openai` or `anthropic` (switches only on `anthropic`). |
 | `RULES_ENABLED` | `true` | Persist rules + events to `RULES_DB_PATH`. |
 | `RULES_DB_PATH` | `data/rules.db` | Path of the rules/events DB. |
 | `TOOL_RESULTS_ENABLED` | `false` | Persist raw tool-result values to `TOOL_RESULTS_DB`. |
