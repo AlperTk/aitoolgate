@@ -184,6 +184,35 @@ test('OpenAI stream carries cached_tokens onto the turn.usage', async () => {
   assert.equal(turn.tokens.total, 1362, 'total = base + hit + output');
 });
 
+test('OpenAI stream with a batched multi-call turn omits per-call tokens; the merged usage rides on the turn.usage', async () => {
+  // A batched turn: two tool calls (index 0 and 1), then a trailing usage frame, then [DONE].
+  // Both calls are emitted at stream end WITHOUT per-call tokens (the turn's token mass is
+  // carried once by the whole-turn turn.usage, not duplicated on every per-call event).
+  const sse =
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_a', function: { name: 'search_web', arguments: '{}' } }] } }] })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: 'call_b', function: { name: 'read_file', arguments: '{}' } }] } }] })}\n\n` +
+    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 } })}\n\n` +
+    `data: [DONE]\n\n`;
+  const { events } = feedExtractor(sse);
+  await sleep(25);
+
+  const calls = events.filter((e) => e.type === 'tool.call') as ToolCallEvent[];
+  assert.equal(calls.length, 2, 'both batched streamed tool.calls were captured');
+  assert.equal(new Set(calls.map((c) => c.at)).size, 1, 'every tool.call in the turn shares one turn-level `at`');
+  for (const call of calls) {
+    assert.equal(
+      call.tokens,
+      undefined,
+      `the batched call ${call.id} omits per-call tokens (the turn.usage carries the merged usage)`,
+    );
+  }
+  const turn = events.find((e) => e.type === 'turn.usage') as TurnUsageEvent | undefined;
+  assert.ok(turn, 'a whole-turn turn.usage is emitted for the batched turn');
+  assert.equal(turn.tokens.input, 10, 'the turn.usage carries the merged turn input');
+  assert.equal(turn.tokens.output, 20, 'the turn.usage carries the merged turn output');
+  assert.equal(turn.tokens.total, 30, 'the turn.usage carries the merged turn total');
+});
+
 test('Anthropic stream: final message_delta output/cache_read win over the preliminary message_start values', async () => {
   // REALISTIC Anthropic frame sequence: `message_start` carries input_tokens +
   // cache_creation_input_tokens + cache_read_input_tokens AND a preliminary (stale)

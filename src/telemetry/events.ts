@@ -59,6 +59,15 @@ export type ToolCallEvent = {
   /** Upstream token usage of the turn that produced this call (OpenAI prompt/completion/total or Anthropic input/output, normalized); omitted when the upstream didn't report usage. */
   tokens?: { input?: number; output?: number; total?: number; cacheHitInput?: number };
   /**
+   * ESTIMATE of the tokens spent CALLING this tool: the tool name plus its serialized
+   * arguments (name alone when there are no arguments), via `estimateTokensFromChars`
+   * (~4 chars/token). A per-call REQUEST-side estimate — NOT provider-reported (distinct
+   * from the turn-level {@link ToolCallEvent.tokens} usage above) — computed identically
+   * on both the buffered and streamed emission paths, so it is present for every call
+   * carrying a name or arguments and distinct per tool when argument sizes differ.
+   */
+  callTokens?: number;
+  /**
    * When the TURN containing this call was observed (epoch milliseconds). All calls in one
    * streamed/buffered turn share ONE turn-level `at` (token-turn dedup collapses the turn);
    * per-call DURATION attribution is carried on the matched {@link ToolResultEvent.durationMs},
@@ -87,6 +96,13 @@ export type ToolResultEvent = {
   durationMs?: number;
   /** Raw character length of the tool-result payload (best-effort size metric); omitted when unknown. */
   chars?: number;
+  /**
+   * Estimated response-payload tokens of the resolved result (`estimateTokensFromChars(chars)`,
+   * ~4 chars/token); omitted when `chars` is unknown. Mirrors the collector's per-tool
+   * `totalResponseTokens` estimate and is surfaced per row by the dashboard's result-side
+   * token column (analogous to the call-side {@link ToolCallEvent.callTokens}).
+   */
+  tokens?: number;
   /** When it occurred (epoch milliseconds). */
   at: number;
 };

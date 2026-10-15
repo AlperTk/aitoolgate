@@ -9,7 +9,7 @@
  * so no data is lost. Client-side filters compose tool / status / session /
  * time-window constraints over the visible rows.
  * ========================================================================== */
-import { $, el, esc, fmtOpt, fmtTime, shortSession, showNotice } from './dom.mjs';
+import { $, el, esc, fmtOpt, fmtTime, showNotice } from './dom.mjs';
 import { formatCount, formatSize } from './format.mjs';
 import { state } from './state.mjs';
 import { MAX_LIST_ITEMS } from './constants.mjs';
@@ -23,58 +23,58 @@ export function prependTrim(listEl, node, max) {
     listEl.removeChild(listEl.lastChild);
   }
 }
-// Append the four numeric cells (In | Out | Total | Size) to a row's .row-main.
-// Each token column renders '\u2014' unless the event carries that field (tokens are only
-// present when the upstream provider reported usage); Size shows the paired result
-// payload size (chars) when known. Driven by tokens.input / tokens.output / tokens.total.
+// Append the four numeric cells (In (est) | Out (est) | Total | Size) to a row's .row-main.
+// In = the per-tool call-side token estimate (ev.callTokens, name + arguments, ~chars/4);
+// '—' on result rows, which carry no callTokens.
+// Out = the per-tool result-side token estimate (the paired tool.result's ev.tokens, a number
+// ~chars/4); call rows created before their result show '—' and are filled in-place by
+// updateCallRowWithResult; orphan result rows show their own value.
+// Total = the turn-level context size (see applyTurnUsageToRows): rendered exactly once per
+// turn on the last tool-call row, '—' elsewhere — NOT the sum of In and Out.
+// Size = the paired result payload size (chars) when known.
+// The three token cells are returned so the turn-usage application can update them in place.
 export function appendTokenAndSizeCells(main, ev) {
   var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
-  var inCell = el('span', 's-tokens-in col-num', tokens && typeof tokens.input === 'number' ? formatCount(tokens.input) : '\u2014');
-  inCell.title = 'Input tokens (turn)';
+  var inCell = el('span', 's-tokens-in col-num', typeof ev.callTokens === 'number' ? formatCount(ev.callTokens) : '—');
+  inCell.title = 'Call tokens (est) — estimate of the tokens spent invoking the tool (name + arguments), not provider-reported.';
   main.appendChild(inCell);
-  var outCell = el('span', 's-tokens-out col-num', tokens && typeof tokens.output === 'number' ? formatCount(tokens.output) : '\u2014');
-  outCell.title = 'Output tokens (turn)';
+  var outCell = el('span', 's-tokens-out col-num', typeof ev.tokens === 'number' ? formatCount(ev.tokens) : '—');
+  outCell.title = 'Result tokens (est) — estimate of the resolved result payload (chars/4).';
   main.appendChild(outCell);
-  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '\u2014');
-  totCell.title = 'Turn tokens (in+out) \u2014 the full upstream turn total (dominated by resent history), not a per-tool cost.';
+  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '—');
+  totCell.title = 'Turn tokens — the full upstream turn total (context size), not a per-tool cost.';
   main.appendChild(totCell);
-  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '\u2014');
+  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '—');
   sizeCell.title = 'Result payload size (characters)';
   main.appendChild(sizeCell);
+  // Return the token + size cells so callers (turn-usage application / result pairing) can
+  // update them in place by stored reference (the test stub's querySelector is a no-op).
+  return { in: inCell, out: outCell, total: totCell, size: sizeCell };
 }
 // Update a numeric cell's text from an optional value; leave it unchanged ('—') when absent.
 export function setNumCellText(cell, v, fmt) {
   if (cell && typeof v === 'number' && isFinite(v)) cell.textContent = (typeof fmt === 'function' ? fmt : fmtOpt)(v);
 }
-// Append the Description cell: the tool.call event's request-provided description, or a '—'
-// placeholder when absent (orphan result rows carry no callEv, so they always show '—'). The
-// full text is exposed via the cell's title attribute so a truncated value stays readable.
-export function appendDescriptionCell(main, description) {
-  var text = typeof description === 'string' ? description : '';
-  var cell = el('span', 's-description', text !== '' ? text : '\u2014');
-  if (text !== '') cell.title = text;
-  main.appendChild(cell);
-}
+
 
 
 /* ---- stream-head self-healing -------------------------------------- */
 // Canonical column headers for the live call stream, matching the shared
-// 11-track grid template used by createCallRow() rows. Normalizing the
+// 10-track grid template used by createCallRow() rows. Normalizing the
 // header at init guarantees correct structure regardless of the served HTML
 // state (stale cache / service worker / older copy); idempotent by design.
 var STREAM_HEAD_CELLS = [
   ['Status', ''],
   ['Tool', ''],
-  ['Description', ''],
   ['Session', ''],
   ['Time', ''],
   ['Dur (ms)', 'num-col'],
-  ['In', 'num-col'],
-  ['Out', 'num-col'],
-  ['Total', 'num-col'],
+  ['In (est)', 'num-col'],
+  ['Out (est)', 'num-col'],
+  ['Context Size', 'num-col'],
   ['Size', 'num-col'],
 ];
-// Rebuild the .stream-head so it contains exactly the canonical 11 cells,
+// Rebuild the .stream-head so it contains exactly the canonical 10 cells,
 // mirroring the .row-main layout. Container attributes are left intact; the
 // final empty cell carries aria-hidden instead of scope.
 export function normalizeStreamHead() {
@@ -113,8 +113,7 @@ export function createCallRow(ev) {
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
-  appendDescriptionCell(main, ev.description);
-  var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+  var sess = el('span', 's-session muted', ev.sessionKey || '');
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
   var t = el('time', 's-time', fmtTime(ev.at));
@@ -123,7 +122,7 @@ export function createCallRow(ev) {
   var dur = el('span', 's-duration col-num', '\u2014');
   dur.title = 'Duration (ms)';
   main.appendChild(dur);
-  appendTokenAndSizeCells(main, ev);
+  var tokenCells = appendTokenAndSizeCells(main, ev);
   var exp = el('span', 's-expand', '\u25BE');
   exp.setAttribute('aria-hidden', 'true');
   main.appendChild(exp);
@@ -136,7 +135,7 @@ export function createCallRow(ev) {
 
   // Key the row state by the unique event id so each distinct batched same-name
   // call gets its own row (retaining the empty-id fallback for legacy events).
-  var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false };
+  var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false, tokenCells: tokenCells };
   if (callId) state.callRows.set(callId, rs);
   prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
   $('stream-empty').hidden = true;
@@ -158,13 +157,48 @@ export function updateCallRowWithResult(rs, ev) {
   }
   var dur = rs.li.querySelector('.s-duration');
   if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
-  // Update the numeric columns in place; absent values keep their existing '—'.
-  setNumCellText(rs.li.querySelector('.s-tokens-in'), ev.tokens && ev.tokens.input, formatCount);
-  setNumCellText(rs.li.querySelector('.s-tokens-out'), ev.tokens && ev.tokens.output, formatCount);
-  setNumCellText(rs.li.querySelector('.s-tokens-total'), ev.tokens && ev.tokens.total, formatCount);
-  setNumCellText(rs.li.querySelector('.s-size'), ev.chars, formatSize);
+  // OUT (est): the result event carries its response-payload token estimate as a number;
+  // the per-tool In (call estimate) and the turn-level Total are left untouched. Cell
+  // references come from the row's stored tokenCells (works in the real DOM and the test
+  // stub, whose querySelector is a no-op).
+  var cells = rs.tokenCells;
+  setNumCellText(cells && cells.out, typeof ev.tokens === 'number' ? ev.tokens : undefined, formatCount);
+  setNumCellText(cells && cells.size, ev.chars, formatSize);
   if (rs.expanded) renderRowDetail(rs);
   applyFilters();
+}
+
+// Apply a whole-turn turn.usage event to the call rows of that turn (matched by sessionKey +
+// the shared turn-level `at` — every event of one turn shares ONE turn-level timestamp). Every
+// matching row gets `turnTokens` set (so its details panel surfaces the turn's reported
+// input / cache-hit input / output / total), but only the Total cell is rendered on the LAST
+// tool-call row of the turn: a batched turn's token mass is a single turn-level value (the
+// turn's context size), so showing it once — on the final row — keeps the earlier rows clean
+// instead of duplicating it. The per-tool In (call estimate) and Out (result estimate)
+// columns are NOT affected: every row keeps its own values. Rows of OTHER turns are untouched.
+export function applyTurnUsageToRows(ev) {
+  if (!ev || !ev.tokens || typeof ev.tokens !== 'object') return;
+  var tokens = ev.tokens;
+  var lastRow = null;
+  state.callRows.forEach(function (rs) {
+    var ce = rs.callEv;
+    if (!ce || ce.sessionKey !== ev.sessionKey || ce.at !== ev.at) return;
+    rs.turnTokens = tokens;
+    if (rs.expanded) renderRowDetail(rs);
+    lastRow = rs;
+  });
+  if (lastRow) {
+    var cells = lastRow.tokenCells;
+    if (cells) {
+      fillTokenCell(cells.total, tokens.total, formatCount);
+    }
+  }
+}
+// Set a row's numeric token cell from `v`, but only when it still shows the '—' placeholder
+// (a row that already rendered its own token value keeps it).
+function fillTokenCell(cell, v, fmt) {
+  if (!cell || cell.textContent !== '—') return;
+  setNumCellText(cell, v, fmt);
 }
 
 // Create a standalone row for a tool.result that could not be paired to any call.
@@ -181,8 +215,7 @@ export function createOrphanResultRow(ev) {
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
-  appendDescriptionCell(main, undefined);
-  var sess = el('span', 's-session muted', shortSession(ev.sessionKey));
+  var sess = el('span', 's-session muted', ev.sessionKey || '');
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
   var t = el('time', 's-time', fmtTime(ev.at));
@@ -191,7 +224,7 @@ export function createOrphanResultRow(ev) {
   var dur = el('span', 's-duration col-num', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
   dur.title = 'Duration (ms)';
   main.appendChild(dur);
-  appendTokenAndSizeCells(main, ev);
+  var tokenCells = appendTokenAndSizeCells(main, ev);
   var exp = el('span', 's-expand', '\u25BE');
   exp.setAttribute('aria-hidden', 'true');
   main.appendChild(exp);
@@ -434,10 +467,23 @@ export function buildDetailsPanel(rs) {
     html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
     html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? formatSize(res.chars) : '\u2014') + '</div>';
     html += '<div class="rd-kv"><span>durationMs:</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
-    if (res.tokens && typeof res.tokens.total === 'number') {
-      html += '<div class="rd-kv"><span>tokens:</span> ' + formatCount(res.tokens.total) + '</div>';
-    }
     html += '</div>';
+  }
+  // The row's effective turn usage (input / cache-hit input / output / total): the applied
+  // turn.usage bound via rs.turnTokens, or a result/carried turn-usage object. The per-tool
+  // In/Out columns are separate; this surfaces the REPORTED turn usage breakdown. Omitted
+  // when unknown.
+  var t = (res && res.tokens && typeof res.tokens.total === 'number') ? res.tokens
+       : (rs.turnTokens && typeof rs.turnTokens.total === 'number') ? rs.turnTokens
+       : (ev && ev.tokens && typeof ev.tokens.total === 'number') ? ev.tokens
+       : null;
+  if (t) {
+    var parts = [];
+    if (typeof t.input === 'number') parts.push('in ' + formatCount(t.input));
+    if (typeof t.cacheHitInput === 'number') parts.push('cache ' + formatCount(t.cacheHitInput));
+    if (typeof t.output === 'number') parts.push('out ' + formatCount(t.output));
+    if (typeof t.total === 'number') parts.push('total ' + formatCount(t.total));
+    if (parts.length) html += '<div class="rd-kv"><span>tokens (turn):</span> ' + parts.join(' · ') + '</div>';
   }
   var fullSession = (ev && ev.sessionKey) || '';
   if (fullSession) {

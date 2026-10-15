@@ -23,20 +23,19 @@
           <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
             <th scope="col">Status</th>
             <th scope="col">Tool</th>
-            <th scope="col">Description</th>
             <th scope="col">Session</th>
             <th scope="col">Time</th>
             <th scope="col" class="num-col">Dur (ms)</th>
-            <th scope="col" class="num-col">In</th>
-            <th scope="col" class="num-col">Out</th>
-            <th scope="col" class="num-col">Total</th>
+            <th scope="col" class="num-col">In (est)</th>
+            <th scope="col" class="num-col">Out (est)</th>
+            <th scope="col" class="num-col">Context Size</th>
             <th scope="col" class="num-col">Size</th>
             <th scope="col" aria-hidden="true"></th>
           </div>
           <ul id="stream-list" class="stream-list"></ul>
           <div id="stream-empty" class="empty">Waiting for tool calls…</div>
         </div>
-        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters. The Description column shows each tool's description from the request's tool definitions; "—" means the request provided none.</div>
+        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters. The tool description (from the request's tool definitions) is shown in the row's detail panel; “—” means the request provided none.</div>
       </section>
 
       <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->

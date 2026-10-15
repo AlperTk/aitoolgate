@@ -8,15 +8,31 @@
   #view-rules { padding: 1rem; }
 
   /* Mobile reflow: keep the page at viewport width (no horizontal scroll) at any
-     sub-960px width. Compact the live-call stream by hiding the five low-priority
-     numeric columns (Duration / In / Out / Total / Size) and collapsing the shared
-     grid template so it fits any narrow screen; full values stay available by
-     expanding a row (Arguments / Response / Details). */
-  #stream-head .num-col,
-  .row-main .col-num { display: none; }
+     sub-960px width. Render the live-call stream as 7 columns — Status | Tool |
+     Session | Time | In (est) | Out (est) | expand — by revealing the two per-tool
+     token columns (In (est) = ev.callTokens, Out (est) = the paired result's
+     estimated tokens) while hiding the other low-priority numeric columns
+     (Duration / Context Size / Size). The tool and session tracks stay flexible
+     (minmax(0, 1fr)), filling the space the hidden columns free up (with a 0 min so
+     they can collapse); In/Out are fixed minmax(0, 3.5rem) tracks, room for values
+     like "122.3k". Full values stay available by expanding a row
+     (Arguments / Response / Details). */
+  .row-main .s-duration,
+  .row-main .s-tokens-total,
+  .row-main .s-size,
+  #stream-head .num-col:nth-child(5),
+  #stream-head .num-col:nth-child(8),
+  #stream-head .num-col:nth-child(9) { display: none; }
+  /* Let the two revealed In (est) / Out (est) header labels wrap to two lines so
+     "In (est) tok" / "Out (est) tok" stay legible in the narrow 3.5rem tracks. */
+  #stream-head th:nth-child(6),
+  #stream-head th:nth-child(7) {
+    white-space: normal;
+    overflow: visible;
+  }
   .stream-head,
   .row-main {
-    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) 1.2rem;
+    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) minmax(0, 3.5rem) minmax(0, 3.5rem) 1.2rem;
   }
   /* Safety net so the wide top-tools table can't push the page wider either. */
   .tools-scroll { overflow-x: auto; }

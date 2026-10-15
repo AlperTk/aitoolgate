@@ -1,5 +1,6 @@
 /**
- * Coverage for dashboard/js/stats.mjs — the stats panel's "Clear" button.
+ * Coverage for dashboard/js/stats.mjs — the stats panel's "Clear" button and
+ * the top-tools table's "Avg call (tok/call)" column (totalCallTokens / count).
  *
  * Loads the real ES module under a minimal in-memory DOM (tests/dom-stub.ts)
  * with an injected global fetch, wires initClearStats(), and simulates a click
@@ -82,4 +83,54 @@ test('Clear button issues POST api/stats/reset then a follow-up api/stats refres
   // The refreshed (empty) summary is reflected in the stat tiles.
   assert.equal(S.byId('total-calls')!.textContent, '0', 'total calls reset to zero');
   assert.equal(S.byId('total-results')!.textContent, '0', 'total results reset to zero');
+});
+
+/* ---- top-tools table: "Avg call (tok/call)" column ------------------- */
+// Locate the rendered <table> inside the #top-tools widget container.
+function findTable(): any {
+  const root = S.byId('top-tools')!.children[0];
+  const table = root.children.find((c: any) => c.tagName === 'TABLE');
+  assert.ok(table, 'the top-tools widget rendered a <table>');
+  return table;
+}
+// The rendered header labels, in column order.
+function headerLabels(table: any): string[] {
+  const thead = table.children.find((c: any) => c.tagName === 'THEAD');
+  return thead.children[0].children.map((th: any) => String(th.textContent));
+}
+// The rendered value of a cell for the given tool's row + column index
+// (textContent for plain cells, innerHTML for render()-produced string cells).
+function cellValue(table: any, colIndex: number, toolName: string): string {
+  const tbody = table.children.find((c: any) => c.tagName === 'TBODY');
+  const row = tbody.children.find((tr: any) => tr.children[0] && String(tr.children[0].textContent) === toolName);
+  assert.ok(row, `a data row for ${toolName} is rendered`);
+  const td = row.children[colIndex];
+  return String(td.textContent || td.innerHTML || '');
+}
+
+test('the top-tools table shows "Avg call (tok/call)" as totalCallTokens / count', async () => {
+  M.initTopTools();
+  // Feed the table: a tool with a 96-token call-side sum over 4 calls (avg 24)
+  // and a tool with no call-side estimate (renders the em-dash placeholder).
+  respond = () => ({
+    ok: true,
+    status: 200,
+    json: () => ({
+      totalCalls: 7,
+      totalResults: 0,
+      topTools: [
+        { toolName: 'bash', count: 4, totalCallTokens: 96, resolvedCount: 2, totalResponseTokens: 50 },
+        { toolName: 'no_est', count: 3 }
+      ]
+    })
+  });
+  await M.refreshStats();
+
+  const table = findTable();
+  const headers = headerLabels(table);
+  assert.ok(headers.includes('Avg call (tok/call)'), 'the header reads "Avg call (tok/call)"');
+  assert.ok(!headers.includes('Call (tok)'), 'the old per-tool sum header is gone');
+  const col = headers.indexOf('Avg call (tok/call)');
+  assert.equal(cellValue(table, col, 'bash'), '24', '96 total call tokens / 4 calls renders 24 (average per call)');
+  assert.equal(cellValue(table, col, 'no_est'), '\u2014', 'no call-side estimate renders the placeholder');
 });

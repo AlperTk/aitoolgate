@@ -99,6 +99,18 @@ export function estimateOutputTokens(content: unknown, toolCalls?: readonly { ar
 }
 
 /**
+ * Estimate the INPUT token mass SPENT CALLING a tool: its name plus its serialized
+ * arguments (name alone when there are none) — the request-side call payload, not the
+ * tool's returned output. Returns 0 when there is nothing to measure (never throws).
+ * Shared by both the buffered (`proxy/context.ts`) and streamed (`stream-extract.ts`)
+ * `tool.call` emission paths so the per-call `callTokens` estimate is consistent.
+ */
+export function estimateCallTokens(name: string, args: unknown): number {
+  const callName = typeof name === 'string' ? name : '';
+  return estimateTokensFromChars(callName.length + serializedArgsLength(args));
+}
+
+/**
  * Estimate a WHOLE turn's normalized usage: `input` over ALL request messages, `output` over
  * the response content + tool calls, and `total = input + output`. `cacheHitInput` is always
  * `0` on the estimate path (there is no upstream usage to read cache fields from). All fields

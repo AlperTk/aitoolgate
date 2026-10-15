@@ -37,7 +37,7 @@ export const state = {
   wsLastInboundAt: 0,
   // dedup gate: event keys already rendered (bounded)
   seenEventKeys: new Set(),
-  // callId -> { li, callEv, resultEv, status, expanded }
+  // callId -> { li, callEv, resultEv, status, expanded, tokenCells? (the row's In/Out/Total cells), turnTokens? (applied turn.usage) }
   callRows: new Map(),
   // [{ li, ev }] unmatched tool.result rows
   orphanResultEntries: [],

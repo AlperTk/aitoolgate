@@ -15,6 +15,7 @@ import { MAX_SEEN_EVENTS } from './constants.mjs';
 import {
   applyFilters,
   addInterventionRow,
+  applyTurnUsageToRows,
   createCallRow,
   matchAndRenderResult,
   storeInterventionForDrillDown,
@@ -55,6 +56,11 @@ export function ingestEvent(raw) {
       state.localCounts.calls += 1; createCallRow(ev); updateLiveCounters(); break;
     case 'tool.result':
       state.localCounts.results += 1; matchAndRenderResult(ev); updateLiveCounters(); break;
+    case 'turn.usage':
+      // Whole-turn token usage: apply to EVERY call row of this turn (same sessionKey +
+      // turn-level `at`), so batched turns whose call events did not carry the final usage
+      // still show the values on every row. No counter change (not a call/result/intervention).
+      applyTurnUsageToRows(ev); break;
     case 'policy.intervention':
       state.localCounts.interventions += 1; addInterventionRow(ev); storeInterventionForDrillDown(ev); updateLiveCounters(); applyFilters(); break;
     default:

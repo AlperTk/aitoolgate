@@ -38,11 +38,6 @@ export function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 export function errMsg(e) { return e && e.message ? e.message : String(e); }
-// Show a short session key (hashes are long); truncate with an ellipsis.
-export function shortSession(k) {
-  k = String(k || '');
-  return k.length > 14 ? k.slice(0, 12) + '…' : k;
-}
 // Format an optional numeric summary field (ms/token totals) as an integer;
 // shows '—' when the field is absent (early in the run) or not finite.
 export function fmtOpt(v) {

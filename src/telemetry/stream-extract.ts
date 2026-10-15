@@ -11,18 +11,23 @@
  * `content_block_stop`, with turn usage read from `message_start` / `message_delta`).
  * It then emits telemetry onto an optional event bus:
  *
- * - A `tool.call` event whenever a NEW tool-call `index` starts (finalising the
- *   previously-accumulated call) — i.e. "when a new tool call starts".
- * - Any remaining accumulated calls when the stream ends (`flush`), i.e. "when the
- *   stream ends" (also covers a `data: [DONE]` terminator and client-disconnect/error
- *   teardown). Each call carrying a stable id is ALSO recorded into an optional shared
- *   latency tracker so its LATER result (fed back by the client) pairs into a REAL
- *   `tool.result`; no synthetic per-stream `tool.result` is emitted. Every tool.call in one
- *   streamed turn shares ONE turn-level `at` (so the collector's per-(sessionKey, at) token
- *   dedup collapses multi-call turns into a single contribution) and carries the turn's
- *   `tokens` (normalized from the stream's usage — an OpenAI trailing `usage` chunk OR an
- *   Anthropic `message_start` / `message_delta` `usage` frame) when the provider reports
- *   usage on the stream — omitted rather than fabricated when no usage is present.
+ * - A `tool.call` event for EVERY accumulated call when the stream ends (`flush`), i.e. "when
+ *   the stream ends" (also covers a `data: [DONE]` terminator and client-disconnect/error
+ *   teardown). Emission is deferred to stream end (rather than when a new call `index`
+ *   starts) so a SINGLE-call turn's per-call event carries the turn's FINAL merged `tokens`:
+ *   a provider may report usage only on a trailing frame (OpenAI) or a final frame (Anthropic
+ *   `message_delta`), which arrives after every call has been observed. A batched turn (>1
+ *   calls) omits per-call `tokens` — the whole-turn `turn.usage` carries the token mass once. Each call carrying a
+ *   stable id is ALSO recorded into an optional shared latency tracker so its LATER result
+ *   (fed back by the client) pairs into a REAL `tool.result`; no synthetic per-stream
+ *   `tool.result` is emitted. Every tool.call in one streamed turn shares ONE turn-level `at`
+ *   (so the collector's per-(sessionKey, at) token dedup collapses multi-call turns into a
+ *   single contribution) and, for a SINGLE-call turn, carries the turn's `tokens` (normalized
+ *   from the stream's usage — an OpenAI trailing `usage` chunk OR an Anthropic `message_start`
+ *   / `message_delta` `usage` frame) when the provider reports usage on the stream. A batched
+ *   turn omits per-call `tokens` (the whole-turn `turn.usage` carries the token mass once)
+ *   rather than duplicating them across its per-call events — and the usage is omitted, never
+ *   fabricated, when no usage is present.
  * - A single `turn.usage` event per stream when the stream ends, carrying the WHOLE-TURN token
  *   mass over ALL message content (not only tool calls/results): the stream's reported usage
  *   when present, else an ESTIMATE — `input` from this request's full message content (the
@@ -47,7 +52,7 @@
 import { Transform } from 'node:stream';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from './events';
 import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
-import { estimateTokensFromChars } from './tokenEstimate';
+import { estimateTokensFromChars, estimateCallTokens } from './tokenEstimate';
 import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap, type NormalizedUsage } from './protocol-common';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
@@ -114,11 +119,11 @@ export function createSseToolCallExtractor(
   };
 
   const byIndex = new Map<number, StreamToolCall>();
-  let maxSeenIndex = -1;
   let buffer = '';
   let finished = false;
-  // The turn's upstream usage, parsed once from a trailing `usage` chunk, shared by every tool
-  // call emitted this stream so they all carry the same turn-level tokens (or none).
+  // The turn's upstream usage, merged field-aware across every usage frame seen this stream;
+  // shared by every tool call emitted this stream so they all carry the same FINAL turn-level
+  // tokens (or none when the provider reports no usage).
   let streamUsage: NormalizedUsage | undefined;
   // A single turn-level timestamp shared by EVERY tool call emitted this stream, so the
   // collector's per-(sessionKey, at) token dedup collapses a multi-call turn into one.
@@ -139,11 +144,16 @@ export function createSseToolCallExtractor(
   let callsEmitted = 0;
 
   /**
-   * Emit and drop the accumulated call at `index` (only when it carries a tool name). When a
-   * stable id is present it is ALSO recorded into the shared latency tracker so a LATER request
-   * carrying the matching result pairs into a REAL `tool.result` (no synthetic per-stream result).
+   * Emit and drop the accumulated call at `index` (only when it carries a tool name). Called
+   * only from flushAllCalls() at stream end, so the emitted event carries the turn's FINAL
+   * merged usage (when the provider reported it). Per-call `tokens` are attached only when the
+   * turn is a SINGLE call (`totalCalls === 1`); a batched turn (>1 calls) omits per-call tokens
+   * so the turn's token mass is carried once by the whole-turn `turn.usage`, not duplicated
+   * across the batched per-call events. When a stable id is present it is ALSO recorded into
+   * the shared latency tracker so a LATER request carrying the matching result pairs into a
+   * REAL `tool.result` (no synthetic per-stream result).
    */
-  const emitCallAt = (index: number): void => {
+  const emitCallAt = (index: number, totalCalls: number): void => {
     const acc = byIndex.get(index);
     if (acc === undefined) return;
     byIndex.delete(index);
@@ -179,8 +189,12 @@ export function createSseToolCallExtractor(
       ...(args !== undefined ? { args } : {}),
       ...(typeof description === 'string' && description !== '' ? { description } : {}),
       at,
-      // Attach the turn's upstream usage when the provider reported it on the stream (omitted otherwise).
-      ...(streamUsage !== undefined ? { tokens: streamUsage } : {}),
+      // Attach the turn's upstream usage when the provider reported it AND the turn is a single
+      // call (omitted for a batched turn so the whole-turn turn.usage carries the token mass once).
+      ...(totalCalls === 1 && streamUsage !== undefined ? { tokens: streamUsage } : {}),
+      // Per-call REQUEST-side token estimate (name + serialized arguments); distinct per tool,
+      // mirroring the buffered (proxy/context.ts) emission path.
+      ...(acc.name !== '' || acc.args.length > 0 ? { callTokens: estimateCallTokens(acc.name, acc.args) } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
     });
     // Record the issued call with ITS OWN issue time (plus its name so a resolved result can
@@ -195,15 +209,21 @@ export function createSseToolCallExtractor(
     }
   };
 
-  /** Emit every remaining accumulated call in index order. */
+  /** Emit every accumulated call in index order — the SOLE emission point, at stream end. */
   const flushAllCalls = (): void => {
-    for (const index of [...byIndex.keys()].sort((a, b) => a - b)) emitCallAt(index);
+    const indices = [...byIndex.keys()].sort((a, b) => a - b);
+    // Count the calls that will actually be emitted (non-empty tool names): a single-call turn
+    // attaches the turn's tokens to its per-call event, while a batched turn omits them.
+    const totalCalls = indices.reduce((n, index) => n + (byIndex.get(index)?.name ? 1 : 0), 0);
+    for (const index of indices) emitCallAt(index, totalCalls);
   };
 
   /**
-   * Finalise the stream once: emit any remaining accumulated calls. No synthetic per-stream
-   * `tool.result` is emitted here — real results are paired against the tracker (see
-   * {@link emitCallAt}) when the client resends with the matching result message.
+   * Finalise the stream once: emit ALL accumulated calls (a single-call turn attaches the turn's
+   * final merged usage to its per-call event; a batched turn omits per-call tokens), then emit
+   * the whole-turn `turn.usage`. No synthetic per-stream `tool.result` is emitted here — real
+   * results are paired against the tracker (see {@link emitCallAt}) when the client resends
+   * with the matching result message.
    */
   const finish = (): void => {
     if (finished) return;
@@ -236,16 +256,10 @@ export function createSseToolCallExtractor(
     }
   };
 
-  /** Accumulate one `choices[].delta.tool_calls[]` fragment, keyed by its `index`. */
+  /** Accumulate one `choices[].delta.tool_calls[]` fragment, keyed by its `index`; calls are emitted at stream end. */
   const accumulate = (entry: unknown): void => {
     const record = entry as { index?: number; id?: string; function?: { name?: string; arguments?: string } };
     const index = typeof record.index === 'number' ? record.index : byIndex.size;
-    // A strictly-new higher index means every lower-index call is complete: finalise them.
-    if (maxSeenIndex >= 0 && index > maxSeenIndex) {
-      for (const key of [...byIndex.keys()]) {
-        if (key < index) emitCallAt(key);
-      }
-    }
     let acc = byIndex.get(index);
     if (acc === undefined) {
       acc = { name: '', args: '', id: '' };
@@ -259,7 +273,6 @@ export function createSseToolCallExtractor(
       if (typeof fn.name === 'string' && fn.name !== '') acc.name = fn.name;
       if (typeof fn.arguments === 'string') acc.args += fn.arguments;
     }
-    if (index > maxSeenIndex) maxSeenIndex = index;
   };
 
   /**

@@ -11,12 +11,18 @@
 }
 .stream-row:last-child { border-bottom: none; }
 /* Stream rows and their header share one grid template so the <th> labels line up
-   exactly with each column: status | tool | description | session | time | duration(ms)
-   | in | out | total | size | expand-chevron (last track has no header label). */
+   exactly with each column: status | tool | session | time | duration(ms)
+   | in (est) | out (est) | context size | size | expand-chevron (last track has no header label).
+   All tracks except tool and session are FIXED widths; only the tool and session tracks
+   are minmax(min, 1fr), so they split the leftover container width equally and the grid
+   always fills the row (nothing monopolizes the space, no trailing blank gap). On a wide
+   container the tool + session tracks stretch to fill the row; on a narrow one every
+   track floors at its min (total floor unchanged) and the list's overflow-x: auto takes
+   over, so there is never a trailing blank gap. */
 .stream-head,
 .row-main {
   display: grid;
-  grid-template-columns: minmax(max-content, 6rem) minmax(9rem, 1fr) minmax(0, 1fr) 6.3rem 4.5rem repeat(5, minmax(3.4rem, 5rem)) 1.2rem;
+  grid-template-columns: 4.5rem minmax(14.0rem, 1fr) minmax(4.5rem, auto) 4.5rem 3.5rem 3.8rem 3.8rem 3.8rem 3.8rem 1.2rem;
   align-items: center;
   gap:.5rem;
 }
@@ -37,10 +43,10 @@
 /* Make the terse token/size column headers self-explanatory. The JS-rebuilt header
    uses short labels (In / Out / Total / Size); append a short unit hint so each reads
    clearly. The numeric tracks were widened above so these hints don't clip. */
-.stream-head th:nth-child(7)::after { content: ' tok'; }   /* In    -> input tokens   */
-.stream-head th:nth-child(8)::after { content: ' tok'; }   /* Out   -> output tokens  */
-.stream-head th:nth-child(9)::after { content: ' tok'; }   /* Total -> turn total toks */
-.stream-head th:nth-child(10)::after { content: ' (ch)'; } /* Size  -> payload chars  */
+.stream-head th:nth-child(6)::after { content: ' tok'; }   /* In (est)  -> call tokens (est)   */
+.stream-head th:nth-child(7)::after { content: ' tok'; }   /* Out (est) -> result tokens (est) */
+.stream-head th:nth-child(8)::after { content: ' tok'; }   /* Context Size -> turn total toks  */
+.stream-head th:nth-child(9)::after { content: ' (ch)'; } /* Size      -> payload chars       */
 .row-main {
   padding: 0.45rem 0.25rem;
   cursor: pointer;
@@ -48,13 +54,10 @@
 }
 .row-main:hover { background: rgba(255, 255, 255, 0.03); }
 .s-tool { font-weight: var(--fw-semibold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-/* Request-provided tool description (from the incoming request's tools array); '—' when
-   absent. Truncates with an ellipsis (full text via the cell's title attribute) to match
-   the neighboring text columns. */
-.s-description { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.s-session { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 1px smaller than the 13.5px row font so the full 30-char ID fits the 14.5rem track without ellipsis. */
+.s-session { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Numeric cells + their right-aligned headers (Duration, In, Out, Total, Size). */
+/* Numeric cells + their right-aligned headers (Duration, In, Out, Context Size, Size). */
 .col-num {
   color: var(--muted);
   font-variant-numeric: tabular-nums;

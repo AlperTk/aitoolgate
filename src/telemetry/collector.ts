@@ -31,6 +31,8 @@ export interface TopTool {
   totalTokens?: number;
   /** Sum of `tokens.cacheHitInput` across distinct turns that invoked this tool (deduped by turn); omitted when the tool reported no cache-hit input tokens. */
   totalCacheHitInputTokens?: number;
+  /** Sum of per-call `callTokens` estimates across this tool's calls (per-call, no dedup); omitted when the tool has no call-side estimate. */
+  totalCallTokens?: number;
   /** Sum of estimated response-payload tokens (`estimateTokensFromChars(chars)`) across resolved results reporting `chars`; omitted when the tool has no resolved results. */
   totalResponseTokens?: number;
   /** Count of resolved results that reported `chars` for this tool; omitted when the tool has none. */
@@ -147,8 +149,16 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   const toolCacheHitInput = new Map<string, number>();
   // Bounded, insertion-ordered set of seen per-tool token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const toolTokenTurnKeys = new Set<string>();
+  // Per-turn set of tool names observed on `tool.call` events: the whole-turn `turn.usage`
+  // attributes the turn's token mass to EACH tool in the turn (once per distinct (turn, tool))
+  // so a batched turn whose per-call events omit tokens still keeps correct per-tool totals.
+  // Bounded at `maxTokenTurns`, evicting the oldest turn first.
+  const turnToolNames = new Map<string, Set<string>>();
   // Per-tool resolved-result response-token stats (accumulated estimated tokens + resolved result count).
   const toolResolvedResults = new Map<string, { totalResponseTokens: number; resolvedCount: number }>();
+  // Per-tool call-side token totals: sum of each tool.call's per-call `callTokens` estimate
+  // (per-call, no dedup) so a tool's aggregate reflects the token cost of invoking it.
+  const toolCallTokens = new Map<string, number>();
 
   /**
    * Sum a distinct turn's token mass EXACTLY ONCE, deduped by `${sessionKey}\u0000${at}`
@@ -189,10 +199,24 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         if (isAggregateExcluded(event.toolName, excludedTools)) break;
         totalCalls += 1;
         perTool.set(event.toolName, (perTool.get(event.toolName) ?? 0) + 1);
+        const turnKey = `${event.sessionKey}\u0000${event.at}`;
+        // Remember this tool for its turn so the whole-turn turn.usage can attribute the turn's
+        // token mass to it (once per distinct (turn, tool)). This keeps per-tool totals correct
+        // for a batched turn whose per-call events omit tokens. Bounded at maxTokenTurns.
+        let turnTools = turnToolNames.get(turnKey);
+        if (turnTools === undefined) {
+          turnTools = new Set();
+          turnToolNames.set(turnKey, turnTools);
+          while (turnToolNames.size > maxTokenTurns) {
+            const oldest = turnToolNames.keys().next().value;
+            if (oldest === undefined) break;
+            turnToolNames.delete(oldest);
+          }
+        }
+        turnTools.add(event.toolName);
         // Sum a turn's upstream token usage once, deduped by (sessionKey, at): calls sharing one
         // response turn repeat identical `tokens`, so only the first-seen turn contributes.
         if (event.tokens) {
-          const turnKey = `${event.sessionKey}\u0000${event.at}`;
           recordTurnTokensOnce(turnKey, event.tokens);
           // Per-tool token total: attribute this turn's tokens to this tool once per distinct (turn, tool), so
           // batched same-turn calls don't double-count it. Mirrors the global turn-dedup above.
@@ -211,6 +235,12 @@ export function createCollector(options: CollectorOptions = {}): Collector {
               toolCacheHitInput.set(event.toolName, (toolCacheHitInput.get(event.toolName) ?? 0) + event.tokens.cacheHitInput);
             }
           }
+        }
+        // Per-tool call-side token total: sum each call's per-call `callTokens` estimate
+        // (per-call, no dedup) — the token cost of invoking the tool, independent of the
+        // turn-level usage accumulated above.
+        if (typeof event.callTokens === 'number' && Number.isFinite(event.callTokens) && event.callTokens > 0) {
+          toolCallTokens.set(event.toolName, (toolCallTokens.get(event.toolName) ?? 0) + event.callTokens);
         }
         break;
       }
@@ -243,7 +273,31 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         // Whole-turn token mass over ALL message content (not only tool calls/results): summed
         // exactly once per distinct (sessionKey, at) turn via the SAME dedup key as tool.call
         // `tokens`, so a turn carrying both sources contributes exactly once (first-seen wins).
-        recordTurnTokensOnce(`${event.sessionKey}\u0000${event.at}`, event.tokens);
+        const turnKey = `${event.sessionKey}\u0000${event.at}`;
+        recordTurnTokensOnce(turnKey, event.tokens);
+        // Attribute the turn's token mass to EACH tool observed in the turn (once per distinct
+        // (turn, tool)), so a batched turn whose per-call events omit tokens still keeps correct
+        // per-tool totals. A single-call turn is a no-op here: its tool.call already attributed
+        // the same (turn, tool) via the per-call `tokens` (first-seen wins).
+        const turnTools = turnToolNames.get(turnKey);
+        if (turnTools !== undefined) {
+          for (const toolName of turnTools) {
+            const toolTurnKey = turnKey + '\u0000' + toolName;
+            if (toolTokenTurnKeys.has(toolTurnKey)) continue;
+            toolTokenTurnKeys.add(toolTurnKey);
+            while (toolTokenTurnKeys.size > maxTokenTurns) {
+              const oldest = toolTokenTurnKeys.values().next().value;
+              if (oldest === undefined) break;
+              toolTokenTurnKeys.delete(oldest);
+            }
+            toolTokens.set(toolName, (toolTokens.get(toolName) ?? 0) + (event.tokens.total ?? 0));
+            // Only attribute cache-hit mass when the turn actually reported it (so a tool whose
+            // turns carried no cache-hit tokens leaves `totalCacheHitInputTokens` omitted, not 0).
+            if (event.tokens.cacheHitInput !== undefined) {
+              toolCacheHitInput.set(toolName, (toolCacheHitInput.get(toolName) ?? 0) + event.tokens.cacheHitInput);
+            }
+          }
+        }
         break;
       }
       case 'policy.intervention':
@@ -283,6 +337,10 @@ export function createCollector(options: CollectorOptions = {}): Collector {
         if (toolResolved) {
           entry.totalResponseTokens = toolResolved.totalResponseTokens;
           entry.resolvedCount = toolResolved.resolvedCount;
+        }
+        const toolCallTokensTotal = toolCallTokens.get(toolName);
+        if (toolCallTokensTotal !== undefined) {
+          entry.totalCallTokens = toolCallTokensTotal;
         }
         return entry;
       })
@@ -348,6 +406,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     toolCacheHitInput.clear();
     toolTokenTurnKeys.clear();
     toolResolvedResults.clear();
+    toolCallTokens.clear();
   };
 
   const dispose = (): void => {

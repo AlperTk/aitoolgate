@@ -7,8 +7,9 @@
  *   S-B  multi-tool turn with results spread across MULTIPLE mixed streamed/non-streamed
  *        OpenAI follow-ups (#call == #result == N, no row pending, per-tool duration stats).
  *   S-C  Anthropic STREAMED issue of >=3 tool_use blocks followed by tool_result follow-ups
- *        (M1: native content_block_* capture; every call carries tokens; every result has
- *        a real toolName + measured duration; per-tool stats defined).
+ *        (M1: native content_block_* capture; every batched call omits per-call tokens —
+ *        the turn.usage carries the turn's total; every result has a real toolName +
+ *        measured duration; per-tool stats defined).
  *   S-D  inconsistent/absent x-session-id between issue and resolution (M2: cross-session
  *        id fallback so nothing is permanently unresolved).
  *   S-E  existing non-stream paths (Anthropic + OpenAI) remain green.
@@ -145,8 +146,9 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     await res4.text();
     await sleep(25);
 
-    // #call == #result == 3; each batch tool.call carries a DISTINCT stable id plus the full
-    // normalized turn tokens, and every result carries a real toolName and a positive duration.
+    // #call == #result == 3; each batch tool.call carries a DISTINCT stable id and omits
+    // per-call tokens (the turn's total rides on the whole-turn turn.usage), and every result
+    // carries a real toolName and a positive duration.
     const calls = events.filter(isToolCall);
     assert.equal(calls.length, 3, 'exactly three tool.call events observed');
     assert.ok(
@@ -155,8 +157,8 @@ test('S-B: a multi-tool turn spreads results over mixed stream/non-stream follow
     );
     assert.equal(new Set(calls.map((c) => c.id)).size, 3, 'sibling batch tool.calls never share an identical id');
     assert.ok(
-      calls.every((c) => c.tokens !== undefined && c.tokens.input === 10 && c.tokens.output === 20 && c.tokens.total === 30),
-      'every batch tool.call carries the normalized turn tokens (input/output/total)',
+      calls.every((c) => c.tokens === undefined),
+      'every batch tool.call omits per-call tokens (the turn.usage carries the turn total)',
     );
     const results = events.filter(isToolResult);
     assert.equal(results.length, 3, 'exactly three tool.result events observed (#call == #result)');
@@ -253,9 +255,10 @@ test('S-C: an Anthropic streamed turn of >=3 tool_use blocks pairs into real too
     assert.equal(calls.length, 3, 'three tool.call events captured from the native Anthropic stream');
     for (const c of calls) {
       assert.ok(typeof c.id === 'string' && c.id !== '', 'each streamed tool.call carries its stable tool_use id');
-      assert.ok(
-        c.tokens !== undefined && (c.tokens.input ?? 0) > 0 && (c.tokens.output ?? 0) > 0 && (c.tokens.total ?? 0) > 0,
-        'each streamed tool.call carries the turn tokens (input/output/total)',
+      assert.equal(
+        c.tokens,
+        undefined,
+        'each batched streamed tool.call omits per-call tokens (the turn.usage carries the turn tokens)',
       );
     }
     // All calls in one streamed turn share ONE turn-level `at` so token dedup stays correct.
@@ -511,8 +514,8 @@ test('S-F: a batch turn with missing/duplicate upstream tool ids still yields di
       'an id-less call gets a deterministic ${sessionKey}#${at}#${index} fallback id',
     );
     assert.ok(
-      calls.every((c) => c.tokens !== undefined && c.tokens.input === 5 && c.tokens.output === 6 && c.tokens.total === 11),
-      'every sibling still carries the normalized turn tokens (input/output/total)',
+      calls.every((c) => c.tokens === undefined),
+      'every sibling batch tool.call omits per-call tokens (the turn.usage carries the turn total)',
     );
   } finally {
     unsub();

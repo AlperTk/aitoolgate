@@ -32,6 +32,7 @@ export function initTopTools() {
     columns: [
       { key: 'toolName', label: 'Tool' },
       { key: 'count', label: 'Calls', align: 'right' },
+      { key: 'avgCallTokPerCall', label: 'Avg call (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) },
       { key: 'avgRespTokPerCall', label: 'Avg resp (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) }
     ],
     rows: _lastTop,
@@ -59,10 +60,12 @@ export async function refreshStats() {
     // them into the table. Only when it exists — app.js may call this before
     // initTopTools(), which then seeds real data via rows:_lastTop.
     _lastTop = (s.topTools || []).map(function (t) {
-      // Per-tool average response-payload tokens: estimated from result char count (÷4), divided by resolved results.
+      // Per-tool average call tokens (÷call count) and average response-payload tokens (÷resolved
+      // results); each null (= —) when there is nothing to divide by.
       return {
         toolName: t.toolName,
         count: t.count,
+        avgCallTokPerCall: (t.totalCallTokens != null && t.count > 0) ? Math.round(t.totalCallTokens / t.count) : null,
         avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null
       };
     });

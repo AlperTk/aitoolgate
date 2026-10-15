@@ -225,8 +225,8 @@ test('D-B: runThroughPipeline attributes exact per-call durations under an injec
   const calls = events.filter(isToolCall);
   assert.equal(calls.length, 3, 'the batch turn emitted exactly three tool.call events');
   assert.ok(calls.every((c) => c.at === 1000), 'every batch tool.call carries the shared turn-level issue `at` (1000)');
-  assert.ok(calls.every((c) => c.tokens !== undefined && c.tokens.input === 5 && c.tokens.output === 6 && c.tokens.total === 11),
-    'every batch tool.call carries the normalized turn tokens');
+  assert.ok(calls.every((c) => c.tokens === undefined),
+    'every batch tool.call omits per-call tokens (the turn.usage carries the turn total)');
   assert.equal(new Set(calls.map((c) => c.id)).size, 3, 'sibling batch calls carry distinct stable ids');
 
   const results = events.filter(isToolResult);
@@ -276,20 +276,23 @@ test('D-C: the streamed extractor records each call OWN first-observation time; 
   await sleep(25); // let the Transform flush (and finish) process the final lines.
 
   // BOTH emitted events share ONE turn-level `at` (token-turn dedup invariant); the TRACKER
-  // records each call's OWN first-observation time. Tokens reflect usage observed UP TO each
-  // call's emission: the trailing OpenAI usage chunk arrives AFTER the first call is already
-  // finalised, so the earlier call omits not-yet-observed usage (never fabricated) while the
-  // last-finalised call carries the full normalised turn usage ("omit, don't fabricate").
+  // records each call's OWN first-observation time. Calls are emitted at stream end (after
+  // the trailing usage frame) but WITHOUT per-call tokens: a batched turn's token mass is
+  // carried once by the whole-turn turn.usage, not duplicated on every per-call event; usage
+  // is never fabricated — a stream with NO usage frame emits neither per-call tokens nor a
+  // turn.usage ("omit, don't fabricate").
   const calls = events.filter(isToolCall);
   assert.equal(calls.length, 2, 'both streamed tool.calls were captured');
   assert.equal(new Set(calls.map((c) => c.at)).size, 1, 'every tool.call in the streamed turn shares one turn-level `at`');
   const callA = calls.find((c) => c.id === 'st_a')!;
   const callB = calls.find((c) => c.id === 'st_b')!;
-  assert.equal(callA.tokens, undefined, 'the earlier-finalised call omits not-yet-observed trailing usage (never fabricated)');
-  assert.ok(
-    callB.tokens !== undefined && callB.tokens.input === 5 && callB.tokens.output === 6 && callB.tokens.total === 11,
-    'the last-finalised call carries the full normalised turn tokens',
-  );
+  for (const call of [callA, callB]) {
+    assert.equal(
+      call.tokens,
+      undefined,
+      `the batched call ${call.id} omits per-call tokens (the turn.usage carries the turn total)`,
+    );
+  }
   assert.deepEqual(
     new Set(calls.map((c) => c.id)),
     new Set(['st_a', 'st_b']),

@@ -6,6 +6,7 @@ import type { ToolMetricsTracker, TelemetryHelpers } from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
 import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap, isErrorResultContent, isErrorResultContentByPatterns } from '../telemetry/protocol-common';
 import type { NormalizedUsage } from '../telemetry/protocol-common';
+import { estimateTokensFromChars, estimateCallTokens } from '../telemetry/tokenEstimate';
 import { syncResponseBody } from './translate';
 import type { UpstreamClient, UpstreamResult } from './upstream';
 
@@ -220,7 +221,7 @@ export function toClientId(client: ClientConfig): string | undefined {
 /** Re-exported from `telemetry/protocol-common` (the single source of truth for this shape). */
 export type { NormalizedUsage };
 
-/** Emit one `tool.call` (stable id + turn tokens) per observed tool call, record each into the shared tracker, and emit one whole-turn `turn.usage` per turn that has a token source (a no-op for an effect when its bus/tracker is undefined). */
+//** Emit one `tool.call` per observed tool call (each with a stable id), record each into the shared tracker, and emit one whole-turn `turn.usage` per turn that has a token source. Per-call `tokens` are attached only for a SINGLE tool call; a batched turn (>1 calls) omits them so the turn's token mass is carried once by the `turn.usage` (not duplicated on every per-call event, which would make each batched row look identical). A no-op when the bus/tracker is undefined. */
 function emitResponseTelemetry(
   bus: TelemetryEmitter | undefined,
   tracker: ToolMetricsTracker | undefined,
@@ -243,8 +244,12 @@ function emitResponseTelemetry(
   // Map each issued tool name to the request-provided description so the emitted tool.call can carry it (omitted when absent).
   const descByTool = toolDescriptionMap(requestCtx.raw);
   if (bus !== undefined) {
+    // Per-call `tokens` are attached only for a SINGLE tool call; a batched turn (>1 calls) omits
+    // them so the turn's token mass is carried once by the whole-turn turn.usage (below) instead
+    // of being duplicated on every per-call event.
+    const singleCall = toolCalls.length === 1;
     for (const { call, id } of issued) {
-      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, usage, at, id, descByTool.get(call.name)));
+      safeEmit(bus, makeToolCallEvent(sessionKey, clientId, call, singleCall ? usage : undefined, at, id, descByTool.get(call.name)));
     }
   }
   // Record issued calls so a LATER request carrying their results can pair them (same `at` keeps durationMs consistent).
@@ -282,6 +287,7 @@ function makeToolCallEvent(
   description?: string,
 ): ToolCallEvent {
   const hasArgs = Object.keys(call.arguments ?? {}).length > 0;
+  const hasName = call.name !== '';
   return {
     type: 'tool.call',
     sessionKey,
@@ -290,6 +296,9 @@ function makeToolCallEvent(
     ...(hasArgs ? { args: call.arguments } : {}),
     ...(id !== '' ? { id } : {}),
     ...(usage !== undefined ? { tokens: usage } : {}),
+    // Per-call REQUEST-side token estimate (name + serialized arguments), distinct per tool;
+    // omitted only for a nameless, argument-less call.
+    ...(hasName || hasArgs ? { callTokens: estimateCallTokens(call.name, hasArgs ? call.arguments : undefined) } : {}),
     ...(clientId !== undefined ? { clientId } : {}),
     ...(typeof description === 'string' && description !== '' ? { description } : {}),
   };
@@ -349,6 +358,9 @@ export function resolveAndEmitToolResults(
       durationMs: entry.durationMs,
       ok,
       ...(entry.chars !== undefined ? { chars: entry.chars } : {}),
+      // Per-result response-payload token estimate (round(chars/4)), mirroring the
+      // collector's totalResponseTokens accounting; omitted when chars is unknown.
+      ...(typeof entry.chars === 'number' && Number.isFinite(entry.chars) && entry.chars > 0 ? { tokens: estimateTokensFromChars(entry.chars) } : {}),
       ...(name !== undefined && name !== '' ? { toolName: name } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
       at,
