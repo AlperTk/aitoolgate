@@ -6,6 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](#)
 [![Runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen)](#)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Npm Version](https://img.shields.io/npm/v/aitoolgate.svg)](https://www.npmjs.com/package/aitoolgate)
 
 `aitoolgate` is a **local tool observability and optimization proxy** for AI agents and developers building or tuning tools. Route your agent's model traffic through it to see **which tools are offered and called, their inputs and outputs, execution times, token usage, and cache-hit behavior** in one real-time dashboard.
 
@@ -77,7 +78,16 @@ Requests pass through a policy pipeline, are translated if necessary, and are fo
 
 ### 1. Install and run
 
-**Prerequisite:** Node.js with support for the built-in `node:sqlite` module, plus npm. The repository uses TypeScript 7.0.2 for development.
+**Prerequisite:** Node.js >= 22.5 (for the built-in `node:sqlite` module), plus npm.
+
+**From npm** (published as `aitoolgate`):
+
+```bash
+npm i -g aitoolgate
+aitoolgate
+```
+
+**From source:**
 
 ```bash
 npm install
@@ -85,9 +95,9 @@ npm run build
 npm start
 ```
 
-Open **http://localhost:8787** for the dashboard. The server also exposes `GET /health`.
+For development, use `npm run dev` (build then start). The repository uses TypeScript 7.0.2 for development.
 
-For development, use `npm run dev` (build then start).
+Whichever way you start it, open **http://localhost:8787** for the dashboard (the server listens on port `8787` by default; override with `PORT`). The server also exposes `GET /health`.
 
 ### 2. Configure an upstream
 
