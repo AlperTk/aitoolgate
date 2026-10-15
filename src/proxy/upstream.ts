@@ -31,6 +31,24 @@ export interface UpstreamClient {
   fetchImpl?: FetchLike;
 }
 
+/** The JSON error body returned (HTTP 503) when no upstream provider is configured — no active provider and no programmatic upstream (empty baseUrl). */
+export const UNCONFIGURED_UPSTREAM = {
+  error: 'No active upstream provider configured. Add one via the dashboard Settings or POST /api/api-providers.',
+};
+
+/** True when the upstream has no forwarding target (empty baseUrl = unconfigured). */
+export function isUnconfiguredUpstream(client: UpstreamClient): boolean {
+  return client.baseUrl === '';
+}
+
+/** A synthetic 503 `Response` for the UNCONFIGURED case on the streaming path (no fetch is ever attempted; `pipeUpstreamStream` preserves the 503 status + JSON body). */
+function unconfiguredUpstreamResponse(): Response {
+  return new Response(JSON.stringify(UNCONFIGURED_UPSTREAM), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 /** Result of forwarding a request to the upstream. */
 export interface UpstreamResult {
   status: number;
@@ -117,6 +135,7 @@ export async function forwardOpenAIRequest(
   client: UpstreamClient,
   request: OpenAIChatRequest,
 ): Promise<UpstreamResult> {
+  if (isUnconfiguredUpstream(client)) return { status: 503, ok: false, body: UNCONFIGURED_UPSTREAM };
   if (client.protocol === 'openai') {
     return postJSON(client, '/chat/completions', request);
   }
@@ -129,6 +148,7 @@ export async function forwardAnthropicRequest(
   client: UpstreamClient,
   request: AnthropicRequest,
 ): Promise<UpstreamResult> {
+  if (isUnconfiguredUpstream(client)) return { status: 503, ok: false, body: UNCONFIGURED_UPSTREAM };
   if (client.protocol === 'anthropic') {
     return postJSON(client, '/messages', request);
   }
@@ -146,6 +166,7 @@ export async function streamOpenAIRequest(
   client: UpstreamClient,
   request: OpenAIChatRequest,
 ): Promise<Response> {
+  if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
   if (client.protocol === 'openai') {
     return streamToEndpoint(client, '/chat/completions', request);
   }
@@ -161,6 +182,7 @@ export async function streamAnthropicRequest(
   client: UpstreamClient,
   request: AnthropicRequest,
 ): Promise<Response> {
+  if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
   if (client.protocol === 'anthropic') {
     return streamToEndpoint(client, '/messages', request);
   }

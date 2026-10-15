@@ -15,10 +15,12 @@
  *   (e) LIVE-APPLY-WITHOUT-RESTART: switching the active provider via REST only re-routes
  *       subsequent real proxy chat requests to a different mock upstream, zero restarts
  *
- * NOTE: `createServer` always auto-seeds exactly ONE active "default" provider row from
- * the effective upstream snapshot (see src/server/index.ts). That seeded row is the
- * auto-first ("create-first auto-active") row; any explicit POST into a non-empty store
- * is default-inactive. All assertions below reflect that actual on-disk behavior.
+ * NOTE: `createServer` seeds exactly ONE active "default" provider row from a
+ * CALLER-SUPPLIED `options.upstream` when the store is empty (see src/server/index.ts);
+ * without a caller-upstream the store starts empty and the proxy answers 503 until a
+ * provider is configured. The seeded row is the auto-first ("create-first auto-active")
+ * row; any explicit POST into a non-empty store is default-inactive. All assertions
+ * below reflect that actual behavior.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

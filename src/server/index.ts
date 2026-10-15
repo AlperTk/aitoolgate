@@ -256,16 +256,12 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
         ];
   // Single STABLE mutable upstream reference consumed per-request by the proxy (context.ts reads
   // its fields off this object each request). Mutating its fields hot-applies the active
-  // API-provider WITHOUT rebuilding any handler/closure. Initialized from the effective upstream
-  // snapshot — a caller-supplied `options.upstream` when given, else the env/config-derived
-  // default (exactly what used to be constructed inline here).
+  // API-provider WITHOUT rebuilding any handler/closure. The upstream is defined ONLY by the
+  // provider store or a programmatic `options.upstream`: when neither supplies one, the ref
+  // starts from an explicit UNCONFIGURED placeholder (empty baseUrl) so the proxy answers 503
+  // until a provider is added + activated via the dashboard Settings or POST /api/api-providers.
   const resolvedUpstream: UpstreamClient =
-    options?.upstream ?? {
-      baseUrl: config.upstream.baseUrl,
-      model: config.upstream.model,
-      protocol: config.upstream.protocol,
-      ...(config.upstream.apiKey ? { apiKey: config.upstream.apiKey } : {}),
-    };
+    options?.upstream ?? { baseUrl: '', model: '', protocol: 'openai' };
   // Immutable baseline (seed source AND reset-to-defaults target) captured before any live-apply,
   // flattened into concrete consts so the closure never touches optional properties at runtime.
   const initialUpstream: UpstreamClient = { ...resolvedUpstream };
@@ -278,11 +274,12 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
       ? initialUpstream.apiKey
       : undefined;
 
-  // Live API-provider registry backing `/api/api-providers/*`. Persisted + seeded against the
-  // shared rules DB ONLY for real env-based deployments (no caller-injected upstream) when rule
-  // persistence is enabled. Caller-injected/mock upstreams (the common test case) stay strictly
-  // in-memory so they neither pollute the shared DB across runs nor have their routing flipped by
-  // another process's seeded row — keeping pre-existing test behavior bit-for-bit unchanged.
+  // Live API-provider registry backing `/api/api-providers/*`. Persisted against the shared
+  // rules DB ONLY when rule persistence is enabled AND no caller-injected upstream is present
+  // (the store itself is then the upstream source of truth). Caller-injected/mock upstreams (the
+  // common test case) stay strictly in-memory so they neither pollute the shared DB across runs
+  // nor have their routing flipped by another process's row — keeping pre-existing test
+  // behavior bit-for-bit unchanged.
   const providersPersistent = config.rules.enabled && options?.upstream === undefined;
   let apiProviderStore: ApiProviderStore;
   if (providersPersistent) {
@@ -291,10 +288,12 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     apiProviderStore = createApiProviderStore();
   }
 
-  // Startup SEEDING: if no provider rows exist yet, auto-create exactly one from the current
-  // effective upstream snapshot, marked active — so pre-existing env-based deployments keep
-  // working unchanged without user action. add() into an empty store activates the first row.
-  if (apiProviderStore.size() === 0) {
+  // Startup SEEDING: a CALLER-SUPPLIED `options.upstream` seeds exactly one active "default"
+  // row into an empty store, so programmatic deployments keep a consistent store state. Without
+  // a caller-upstream there is NO baseline to seed from (the env-based upstream is gone), so the
+  // store starts empty and the proxy answers 503 until a provider is configured via the
+  // dashboard Settings or POST /api/api-providers. add() into an empty store activates the row.
+  if (options?.upstream !== undefined && apiProviderStore.size() === 0) {
     apiProviderStore.add({
       name: 'default',
       baseUrl: baselineBaseUrl,
@@ -307,7 +306,9 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   }
 
   // LIVE APPLY: overwrite the shared stable ref's fields with the active provider's values so the
-  // proxy forwards there immediately. With no active provider, reset back to the baseline default.
+  // proxy forwards there immediately. With no active provider, reset back to the baseline — the
+  // programmatic `options.upstream` when supplied, else the UNCONFIGURED placeholder (the proxy
+  // then answers 503 on forwarding until a provider becomes active).
   function applyActiveProvider(active?: ApiProvider): void {
     upstreamRef.baseUrl = active ? active.baseUrl : baselineBaseUrl;
     upstreamRef.model = active ? active.model : baselineModel;

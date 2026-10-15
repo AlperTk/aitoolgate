@@ -15,12 +15,6 @@ export interface RulesConfig {
 
 export interface Config {
   port: number;
-  upstream: {
-    baseUrl: string;
-    model: string;
-    apiKey?: string;
-    protocol: UpstreamProtocol;
-  };
   toolResults: ToolResultsConfig;
   rules: RulesConfig;
   /** Optional case-insensitive regex patterns (`TOOL_ERROR_PATTERNS`) that mark a tool result as a failure; additive to the built-in heuristic. */
@@ -29,11 +23,6 @@ export interface Config {
 
 const DEFAULTS: Config = {
   port: 8787,
-  upstream: {
-    baseUrl: 'http://127.0.0.1:9005/v1',
-    model: 'gpt-4o-mini',
-    protocol: 'openai',
-  },
   toolResults: {
     enabled: false,
     dbPath: 'data/tool-results.db',
@@ -58,12 +47,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return {
     port,
-    upstream: {
-      baseUrl: env.UPSTREAM_BASE_URL ?? DEFAULTS.upstream.baseUrl,
-      model: env.UPSTREAM_MODEL ?? DEFAULTS.upstream.model,
-      protocol: parseProtocol(env.UPSTREAM_PROTOCOL),
-      ...(env.UPSTREAM_API_KEY ? { apiKey: env.UPSTREAM_API_KEY } : {}),
-    },
     toolResults: {
       enabled: parseBool(env.TOOL_RESULTS_ENABLED) ?? DEFAULTS.toolResults.enabled,
       dbPath: env.TOOL_RESULTS_DB ?? DEFAULTS.toolResults.dbPath,
@@ -77,11 +60,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     toolErrorPatterns: parseStringList(env.TOOL_ERROR_PATTERNS),
   };
-}
-
-/** Interpret the `UPSTREAM_PROTOCOL` env var; anything but `anthropic` defaults to `openai`. */
-function parseProtocol(value: string | undefined): UpstreamProtocol {
-  return value === 'anthropic' ? 'anthropic' : 'openai';
 }
 
 function parseBool(value: string | undefined): boolean | undefined {

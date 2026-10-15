@@ -95,7 +95,7 @@ Open **Settings** in the dashboard, add your upstream provider (name, base URL, 
 
 The first provider is activated automatically. Later, you can switch the active provider from Settings without restarting the server.
 
-**Important:** The server starts without an upstream. Model requests return `502` until a provider is configured and active. Configure the upstream through dashboard Settings.
+**Important:** The server starts without an upstream. Model requests return `503` (a JSON error) until a provider is configured and active. Configure the upstream via the dashboard Settings overlay or `POST /api/api-providers` (fields: `name`, `baseUrl`, `model`, `protocol`, `apiKey`).
 
 ### 3. Send a request through the proxy
 
