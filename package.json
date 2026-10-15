@@ -1,8 +1,23 @@
 {
   "name": "aitoolgate",
   "version": "0.1.0",
-  "private": true,
-  "description": "A local, LiteLLM-style model proxy with a programmable tool-monitoring and interception layer over the LLM request/response stream.",
+  "description": "Local, zero-runtime-dependency LLM model proxy (OpenAI/Anthropic compatible) for AI agents: inspects and rewrites tool calls, tracks per-tool token usage and latency, applies policy rules live without restart, and ships a real-time local dashboard.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlperTk/aitoolgate.git"
+  },
+  "homepage": "https://github.com/AlperTk/aitoolgate",
+  "main": "dist/src/server/index.js",
+  "bin": {
+    "aitoolgate": "dist/src/server/index.js"
+  },
+  "files": [
+    "dist/src",
+    "dashboard",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "npm run build && node dist/src/server/index.js",
     "build": "tsc -p tsconfig.build.json",
@@ -13,5 +28,30 @@
   "devDependencies": {
     "@types/node": "^26.6.4",
     "typescript": "^7.0.2"
+  },
+  "keywords": [
+    "llm",
+    "proxy",
+    "gateway",
+    "agent",
+    "agents",
+    "openai",
+    "anthropic",
+    "tool-calls",
+    "tool-calling",
+    "token-usage",
+    "telemetry",
+    "monitoring",
+    "observability",
+    "policy",
+    "middleware",
+    "self-hosted",
+    "local"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
