@@ -36,6 +36,8 @@ When developing AI-agent tools, the model's final answer rarely explains *why* i
 
 > **How token metrics work:** Whole-turn token counts use upstream-reported usage when available, with an approximate character-based fallback otherwise. Per-tool token totals attribute a turn's usage to tools invoked in that turn; they are **not isolated token costs for individual tool executions**. Returned-content token counts are estimated from response size. Cache-hit input is reported separately when the provider supplies it; missing cache metrics do not imply zero cache usage.
 
+![Dashboard](resources/dashboard.png)
+
 ## Key capabilities
 
 **Tool observability:** live dashboard with tool-call stream, session/status/tool filters, input/output inspection, result drill-down, timing, aggregate metrics, and JSON/CSV export.
@@ -257,8 +259,3 @@ Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE).
 
 Copyright © 2026 AlperTk.
 
-## Screenshots
-
-![Dashboard](resources/dashboard.png)
-
-Live dashboard view: real-time tool-call stream, per-tool token and latency metrics, and the intervention log.
