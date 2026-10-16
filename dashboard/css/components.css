@@ -22,7 +22,7 @@
 .stream-head,
 .row-main {
   display: grid;
-  grid-template-columns: 4.5rem minmax(14.0rem, 1fr) minmax(4.5rem, auto) 4.5rem 3.5rem 3.8rem 3.8rem 3.8rem 3.8rem 1.2rem;
+  grid-template-columns: 4.5rem minmax(8.0rem, 1fr) minmax(4.5rem, 1fr) 4.5rem 3.5rem 3.8rem 3.8rem 3.8rem 3.8rem 1.2rem;
   align-items: center;
   gap:.5rem;
 }
@@ -53,7 +53,10 @@
   user-select: none;
 }
 .row-main:hover { background: rgba(255, 255, 255, 0.03); }
-.s-tool { font-weight: var(--fw-semibold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* In-progress rows nudge left so they read as still-running; drops automatically when the
+   data-status attribute flips off "pending" (set/flipped by live-view.mjs, zero JS here). */
+li[data-status="pending"] > .row-main { margin-left:-4px; }
+.s-tool { font-weight: var(--fw-semibold); justify-self: start; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* 1px smaller than the 13.5px row font so the full 30-char ID fits the 14.5rem track without ellipsis. */
 .s-session { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }

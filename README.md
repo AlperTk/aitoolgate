@@ -256,3 +256,9 @@ Tests use Node's built-in `node:test` and `node:assert/strict`. Integration test
 Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE).
 
 Copyright © 2026 AlperTk.
+
+## Screenshots
+
+![Dashboard](resources/dashboard.png)
+
+Live dashboard view: real-time tool-call stream, per-tool token and latency metrics, and the intervention log.
