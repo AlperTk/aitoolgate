@@ -271,7 +271,7 @@ test('WebSocket receives live telemetry events broadcast from the shared bus', a
   const { port, srv, atg } = await startAtgServer({ upstream: upstream(jsonFetch(CANNED_COMPLETION)) }, { ws: true });
   const client = await connectAndHandshake(port);
   try {
-    assert.ok(atg.ws.size >= 1, 'the handshaked socket counts as an open WS client');
+    assert.ok((atg.ws?.size ?? 0) >= 1, 'the handshaked socket counts as an open WS client');
     // Non-streaming request -> proxy emits tool.call + tool.result onto the shared bus.
     const res = await post(port, chatBody());
     assert.equal(res.status, 200);

@@ -1,6 +1,6 @@
 import type { Action, PolicyContext, ActionStrategy, SessionKey } from '../types';
 import type { ActionEffect } from './index';
-import type { RequestContext, ResponseContext } from '../../ports';
+import type { ChatMessage, RequestContext, ResponseContext } from '../../ports';
 import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';
 
@@ -112,13 +112,13 @@ function hideToolsFromRequest(ctx: RequestContext, toolNames: readonly string[])
 }
 
 /** Strip hidden-tool references from a message list; returns the input unchanged (same reference) when nothing matches. */
-function stripHiddenToolReferences(messages: unknown[], names: Set<string>): unknown[] {
+function stripHiddenToolReferences(messages: ChatMessage[], names: Set<string>): ChatMessage[] {
   const removedIds = new Set<string>();
   let changed = false;
   // Pass 1: drop hidden references by name, remembering each removed call's id.
-  const withoutRefs = messages.map((message): unknown => {
+  const withoutRefs = messages.map((message): ChatMessage => {
     if (!isRecord(message)) return message;
-    let next: Record<string, unknown> = message;
+    let next: ChatMessage = message;
     let localChanged = false;
     if (Array.isArray(next.tool_calls)) {
       const list = next.tool_calls as unknown[];
@@ -156,7 +156,7 @@ function stripHiddenToolReferences(messages: unknown[], names: Set<string>): unk
   });
   if (!changed) return messages;
   // Pass 2: drop tool-result references tied to a removed call id.
-  return withoutRefs.reduce<unknown[]>((out, message) => {
+  return withoutRefs.reduce<ChatMessage[]>((out, message) => {
     if (isRecord(message) && message.role === 'tool') {
       const id = typeof message.tool_call_id === 'string' ? message.tool_call_id : undefined;
       const name = typeof message.name === 'string' ? message.name : undefined;

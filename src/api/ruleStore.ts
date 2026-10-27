@@ -1,5 +1,5 @@
-import type { PolicyRule } from '../policy/ruleEngine';
-import { createCrudStore } from './crudStore';
+import type { PolicyRule, RuleRegistryEntry } from '../policy/ruleEngine';
+import { assignId } from './crudStore';
 
 export interface RuleStoreOptions {
   /** Seed rules, stored as defensive copies (mutating the array later won't corrupt the store); omitted → store starts empty. */
@@ -12,16 +12,18 @@ export type RulePatch = Partial<Omit<PolicyRule, 'matcher' | 'action'>> & {
   action?: PolicyRule['action'];
 };
 
-/** In-memory rule registry fed to the engine via `() => store.list()`; every accessor returns defensive copies (mutating a result never corrupts internal state). */
+/** In-memory rule registry fed to the engine via `() => store.list()`; every accessor returns defensive copies (mutating a result never corrupts internal state). Entries pair each rule with its optional originally-submitted spec. */
 export interface RuleStore {
   /** A fresh array copy of the current rules (not the internal reference). */
   list(): PolicyRule[];
   /** A copy of the rule at `id`, or `undefined` when absent. */
   get(id: string): PolicyRule | undefined;
-  /** Store a copy of `rule`, assigning a unique id when `rule.id` is missing/empty. Returns the stored copy (with its id). */
-  add(rule: PolicyRule): PolicyRule;
-  /** Shallow-merge `patch` into the rule at `id`; return the updated copy, or `undefined` if not found. */
-  update(id: string, patch: RulePatch): PolicyRule | undefined;
+  /** A copy of the registry entry (rule + stored spec) at `id`, or `undefined` when absent. */
+  entry(id: string): RuleRegistryEntry | undefined;
+  /** Store a copy of `rule` with its optional `spec`, assigning a unique id when `rule.id` is missing/empty. Returns the stored copy (with its id). */
+  add(rule: PolicyRule, spec?: unknown): PolicyRule;
+  /** Shallow-merge `patch` into the rule at `id`; a provided `spec` replaces the stored one (otherwise it is kept). Return the updated copy, or `undefined` if not found. */
+  update(id: string, patch: RulePatch, spec?: unknown): PolicyRule | undefined;
   /** Remove the rule at `id`. Returns `true` when a rule was removed. */
   remove(id: string): boolean;
   /** Restore the store to its `initial` state (empty when none was provided). */
@@ -29,22 +31,45 @@ export interface RuleStore {
   size(): number;
 }
 
-/** Create an in-memory rule store over `createCrudStore`; returns defensive copies throughout; hand rules to `createRuleEngine` via `() => store.list()`. */
+/** Create an in-memory rule store keyed by rule id; returns defensive copies throughout; hand rules to `createRuleEngine` via `() => store.list()`. */
 export function createRuleStore(options: RuleStoreOptions = {}): RuleStore {
-  return createCrudStore<PolicyRule, PolicyRule, RulePatch>({
-    initial: options.initial,
-    // A full rule needs no defaults; the base assigns a unique id when missing/empty.
-    toStored: (rule) => ({ ...rule }),
-    update: (id, patch, ctx) => {
-      const existing = ctx.byId.get(id);
+  const fromInitial = (): Array<[string, RuleRegistryEntry]> =>
+    (options.initial ?? []).map((rule): [string, RuleRegistryEntry] => [rule.id, { rule: { ...rule } }]);
+  const byId = new Map<string, RuleRegistryEntry>(fromInitial());
+  const copyEntry = (entry: RuleRegistryEntry): RuleRegistryEntry => ({ ...entry, rule: { ...entry.rule } });
+
+  return {
+    list: () => [...byId.values()].map((entry) => ({ ...entry.rule })),
+    get: (id) => {
+      const found = byId.get(id);
+      return found === undefined ? undefined : { ...found.rule };
+    },
+    entry: (id) => {
+      const found = byId.get(id);
+      return found === undefined ? undefined : copyEntry(found);
+    },
+    add: (rule, spec) => {
+      const id = assignId(rule.id);
+      const stored: PolicyRule = { ...rule, id };
+      byId.set(id, { spec, rule: stored });
+      return { ...stored };
+    },
+    update: (id, patch, spec) => {
+      const existing = byId.get(id);
       if (existing === undefined) return undefined;
       const { matcher, action, ...rest } = patch;
-      const updated: PolicyRule = { ...existing, ...rest };
+      const updated: PolicyRule = { ...existing.rule, ...rest };
       if (matcher !== undefined) updated.matcher = matcher;
       if (action !== undefined) updated.action = action;
-      if (updated.id !== id) ctx.byId.delete(id);
-      ctx.byId.set(updated.id, updated);
-      return ctx.copy(updated);
+      if (updated.id !== id) byId.delete(id);
+      byId.set(updated.id, { spec: spec ?? existing.spec, rule: updated });
+      return { ...updated };
     },
-  });
+    remove: (id) => byId.delete(id),
+    reset: () => {
+      byId.clear();
+      for (const [id, entry] of fromInitial()) byId.set(id, entry);
+    },
+    size: () => byId.size,
+  };
 }

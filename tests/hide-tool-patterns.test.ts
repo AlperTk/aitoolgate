@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { resolveHiddenToolNames, hideToolStrategy } from '../src/policy/actions/hideTool';
 import { validateSpec, buildAction } from '../src/api/ruleSpec';
 import type { ActionEffect } from '../src/policy/actions';
-import type { RequestContext } from '../src/ports/pipeline';
+import type { ChatMessage, RequestContext } from '../src/ports/pipeline';
 
 /**
  * Unit + action-level tests for the `hideTool` action's block-list vs
@@ -112,7 +112,7 @@ const CLIENT = { apiKey: 'sk-test', name: 'test-client', model: 'gpt-test' };
 const MODEL = { id: 'm1', baseUrl: 'http://localhost:4000/v1', model: 'gpt-test' };
 const SESSION_KEY = { fingerprint: 'fp-test' };
 
-function makeRequest(messages: unknown[], raw: unknown): RequestContext {
+function makeRequest(messages: ChatMessage[], raw: unknown): RequestContext {
   return { client: CLIENT, model: MODEL, sessionKey: SESSION_KEY, messages, raw };
 }
 

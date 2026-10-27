@@ -1,6 +1,6 @@
 import type http from 'node:http';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
-import type { Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
+import type { ChatMessage, Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
 import type { ToolMetricsTracker, TelemetryHelpers } from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
@@ -74,7 +74,7 @@ function sessionKeyFromHeaders(req: http.IncomingMessage): SessionKey {
   return typeof token === 'string' ? { fingerprint: '', token } : { fingerprint: '' };
 }
 
-function extractMessages(raw: unknown): unknown[] {
+function extractMessages(raw: unknown): ChatMessage[] {
   if (raw !== null && typeof raw === 'object') {
     const messages = (raw as { messages?: unknown }).messages;
     if (Array.isArray(messages)) return messages;

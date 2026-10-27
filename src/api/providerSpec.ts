@@ -9,7 +9,8 @@ export interface ApiProvider {
   name: string;
   /** Base URL forwarded to (e.g. http://host/v1). */
   baseUrl: string;
-  model: string;
+  /** Upstream model override; `null` = "From Request" (the client request's model is forwarded unchanged). */
+  model: string | null;
   /** Optional provider API key (`null` = none). */
   apiKey: string | null;
   protocol: ProviderProtocol;
@@ -65,9 +66,9 @@ function validateKnownField(key: KnownField, value: unknown): string | null {
       }
       break;
     case 'model':
-      // Optional: absent/empty/blank are all valid; a present value must still be a string.
-      if (value !== undefined && typeof value !== 'string') {
-        return '"model" must be a string';
+      // Optional: absent/null/empty/blank are all valid; a present value must be a string or null.
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        return '"model" must be a string or null';
       }
       break;
     case 'apiKey':

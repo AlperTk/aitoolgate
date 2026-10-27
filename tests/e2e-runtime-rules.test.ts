@@ -18,10 +18,9 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { createServer, type AtgServer } from '../src/server/index';
 import { createRuleStore } from '../src/api/ruleStore';
-import { closeAtgServer, oaiCanned } from './helpers';
+import { closeAtgServer, createFakeModel, oaiCanned } from './helpers';
 
 const HIDDEN = 'task';
 const KEPT = 'web_search';
@@ -74,31 +73,8 @@ async function startServer(
 test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart', async () => {
   // The single live rule store: REST writes here, the proxy engine reads it live.
   const ruleStore = createRuleStore();
-  const requests: unknown[] = [];
-  const upstream = http.createServer((req, res) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      if (data !== '') {
-        try {
-          requests.push(JSON.parse(data));
-        } catch {
-          /* non-JSON body: nothing to record */
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(OAI_CANNED));
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    upstream.once('error', reject);
-    upstream.listen(0, '127.0.0.1', () => resolve());
-  });
-  const upAddr = upstream.address();
-  if (upAddr === null || typeof upAddr === 'string') throw new Error('mock upstream did not bind a port');
-  const upPort = upAddr.port;
+  const upstream = await createFakeModel(OAI_CANNED);
+  const requests = upstream.requests;
 
   let srv: AtgServer | undefined;
   try {
@@ -107,7 +83,7 @@ test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart',
     // this regression guards against being a startup snapshot/copy.
     const { port, srv: startedSrv } = await startServer(
       {
-        upstream: { baseUrl: `http://127.0.0.1:${upPort}/v1`, model: 'gpt-4o-mini', protocol: 'openai' },
+        upstream: { baseUrl: `http://127.0.0.1:${upstream.port}/v1`, model: 'gpt-4o-mini', protocol: 'openai' },
       },
       { ruleStore, ws: false },
     );
@@ -153,11 +129,6 @@ test('e2e runtime rules: a rule POSTed via REST hides a tool WITHOUT a restart',
     assert.ok(names.includes(KEPT), `'${KEPT}' should still be present in the forwarded tools`);
   } finally {
     if (srv) await closeAtgServer(srv);
-    try {
-      upstream.closeAllConnections();
-    } catch {
-      /* ignore */
-    }
-    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    await upstream.close();
   }
 });

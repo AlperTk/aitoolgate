@@ -1,3 +1,6 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 export type UpstreamProtocol = 'openai' | 'anthropic';
 
 export interface ToolResultsConfig {
@@ -21,18 +24,21 @@ export interface Config {
   toolErrorPatterns: string[];
 }
 
+/** Default DB files live under the OS user home (cwd-independent). */
+const DEFAULT_DB_DIR = path.join(os.homedir(), '.aitoolgate');
+
 const DEFAULTS: Config = {
   port: 8787,
   toolResults: {
     enabled: false,
-    dbPath: 'data/tool-results.db',
+    dbPath: path.join(DEFAULT_DB_DIR, 'tool-results.db'),
     flushIntervalMs: 50,
     batchSize: 100,
     fsyncPerBatch: false,
   },
   rules: {
     enabled: true,
-    dbPath: 'data/rules.db',
+    dbPath: path.join(DEFAULT_DB_DIR, 'rules.db'),
   },
   toolErrorPatterns: [],
 };

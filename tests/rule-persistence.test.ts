@@ -202,11 +202,24 @@ test('a user rule created/updated on server A survives a restart into server B, 
   assert.ok(!persistedRules(dbPath).some((row) => row.id === id), 'the deleted rule must be gone from the DB');
 });
 
-test('default-on: no explicit rules config resolves data/rules.db and now persists via an auto-created parent dir', async () => {
-  // (i) The resolved DEFAULT rules config still points at `data/rules.db`, enabled.
+test('default DB paths resolve under os.homedir() and env overrides win', () => {
+  const defaults = loadConfig({});
+  assert.equal(defaults.rules.dbPath, path.join(os.homedir(), '.aitoolgate', 'rules.db'));
+  assert.equal(defaults.toolResults.dbPath, path.join(os.homedir(), '.aitoolgate', 'tool-results.db'));
+
+  const overridden = loadConfig({
+    RULES_DB_PATH: '/tmp/x/rules.db',
+    TOOL_RESULTS_DB: '/tmp/x/tool-results.db',
+  } as NodeJS.ProcessEnv);
+  assert.equal(overridden.rules.dbPath, '/tmp/x/rules.db');
+  assert.equal(overridden.toolResults.dbPath, '/tmp/x/tool-results.db');
+});
+
+test('default-on: no explicit rules config resolves the home-dir rules DB and now persists via an auto-created parent dir', async () => {
+  // (i) The resolved DEFAULT rules config is enabled and points at the home-dir rules DB.
   const cfg = loadConfig({});
   assert.equal(cfg.rules.enabled, true);
-  assert.equal(cfg.rules.dbPath, 'data/rules.db');
+  assert.equal(cfg.rules.dbPath, path.join(os.homedir(), '.aitoolgate', 'rules.db'));
 
   // (ii) Point RULES_DB_PATH at a unique temp NESTED path whose parent dir does NOT exist yet.
   const { dir, dbPath } = uniqueDbPath();

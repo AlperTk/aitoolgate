@@ -78,6 +78,13 @@ function buildHeaders(client: UpstreamClient): Record<string, string> {
 /** How long a NON-streaming upstream request may take before we abort it (5 min). */
 const REQUEST_TIMEOUT_MS = 300_000;
 
+// The active provider's model (when set) overrides the client-sent model on every outgoing body.
+function withUpstreamModel(client: UpstreamClient, body: unknown): unknown {
+  const model = client.model.trim();
+  if (model === '' || typeof body !== 'object' || body === null) return body;
+  return { ...body, model };
+}
+
 async function postJSON(
   client: UpstreamClient,
   path: string,
@@ -92,7 +99,7 @@ async function postJSON(
     const response = await fetchFor(client)(url, {
       method: 'POST',
       headers: buildHeaders(client),
-      body: JSON.stringify(body),
+      body: JSON.stringify(withUpstreamModel(client, body)),
       signal: controller.signal,
     });
     const text = await response.text();
@@ -126,7 +133,7 @@ async function streamToEndpoint(
   return fetchFor(client)(joinUrl(client.baseUrl, path), {
     method: 'POST',
     headers: buildHeaders(client),
-    body: JSON.stringify(body),
+    body: JSON.stringify(withUpstreamModel(client, body)),
   });
 }
 

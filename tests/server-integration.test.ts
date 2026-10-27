@@ -293,7 +293,7 @@ test('a WS client receives frames for events emitted on the SHARED bus (same bus
   const { port, atg } = await start();
   const h = await connectAndHandshake(port);
   try {
-    assert.equal(atg.ws.size, 1, 'the handshaked socket should count as an open client');
+    assert.equal(atg.ws?.size, 1, 'the handshaked socket should count as an open client');
     // Emit on the SAME shared bus the proxy handler feeds; the WS must broadcast it.
     await atg.bus.emit({
       type: 'policy.intervention',

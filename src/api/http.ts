@@ -14,6 +14,7 @@ import {
 } from './ruleSpec';
 import type { ApiProvider } from './providerSpec';
 import { validateProviderSpec, isNonEmptyString, normalizeApiKey } from './providerSpec';
+import { parseProbeBody, probeProvider } from './providerProbe';
 import type { ApiProviderStore, ProviderPatch } from './providerStore';
 
 /** The request-handler convention: `true` = handled this route, `false` = fall through. */
@@ -22,8 +23,6 @@ export type RequestHandler = (req: http.IncomingMessage, res: http.ServerRespons
 export interface ApiOptions {
   ruleStore: RuleStore;
   collector: Collector;
-  /** Originally-submitted specs keyed by rule id, for lossless serialization (a closure can't be re-described); fresh when omitted. */
-  specs?: Map<string, RuleSpec>;
   /** Optional raw-tool-result store for `GET /api/tool-results/:id`; when omitted that route returns 404. */
   toolResultStore?: ToolResultStore;
   /** Optional API-provider registry for `/api/api-providers/*`; falls through when omitted and never leaks the raw API key in list form. */
@@ -68,32 +67,38 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Create the JSON REST API handler; initializes `options.specs` to a fresh map when omitted. */
+/** Create the JSON REST API handler. */
 export function createApiHandler(options: ApiOptions): RequestHandler {
-  const specs = (options.specs ??= new Map<string, RuleSpec>());
   const { ruleStore, collector, toolResultStore, apiProviderStore } = options;
   // Hot-apply hook (optional): tracks the active provider without a restart; no-op for legacy callers.
   const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});
 
-  /** Serialize a rule: prefer its stored spec for fidelity, else a best-effort descriptor. */
-  const serialize = (rule: PolicyRule): RuleSpec => specs.get(rule.id) ?? describeRule(rule);
+  /** Serialize a rule: prefer its stored spec (re-keyed to the live id) for fidelity, else a best-effort descriptor. */
+  const serialize = (rule: PolicyRule): RuleSpec => {
+    const spec = ruleStore.entry(rule.id)?.spec as RuleSpec | undefined;
+    return spec !== undefined ? { ...spec, id: rule.id } : describeRule(rule);
+  };
 
   function applyPatch(id: string, patch: Record<string, unknown>): PatchResult {
-    if (ruleStore.get(id) === undefined) return { kind: 'not_found' };
+    const existing = ruleStore.entry(id);
+    if (existing === undefined) return { kind: 'not_found' };
     try {
-      if (specs.has(id)) {
-        const merged = { ...(specs.get(id) as RuleSpec), ...(patch as Partial<RuleSpec>) };
+      if (existing.spec !== undefined) {
+        const merged = { ...(existing.spec as RuleSpec), ...(patch as Partial<RuleSpec>) };
         const validationError = validateSpec(merged);
         if (validationError !== null) return { kind: 'invalid', error: validationError };
         const built = buildRuleFromSpec(merged);
-        specs.set(built.id, { ...merged, id: built.id });
-        const updated = ruleStore.update(id, {
-          enabled: built.enabled,
-          priority: built.priority,
-          description: built.description,
-          matcher: built.matcher,
-          action: built.action,
-        });
+        const updated = ruleStore.update(
+          id,
+          {
+            enabled: built.enabled,
+            priority: built.priority,
+            description: built.description,
+            matcher: built.matcher,
+            action: built.action,
+          },
+          { ...merged, id: built.id },
+        );
         return updated === undefined ? { kind: 'not_found' } : { kind: 'updated', rule: updated };
       }
       const rulePatch: RulePatch = {};
@@ -168,8 +173,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
         }
         const spec = parsed as RuleSpec;
         const built = buildRuleFromSpec(spec);
-        const stored = ruleStore.add(built);
-        specs.set(stored.id, { ...spec, id: stored.id });
+        const stored = ruleStore.add(built, { ...spec, id: built.id });
         sendJson(res, 201, serialize(stored));
         return true;
       }
@@ -180,7 +184,6 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
 
         if (method === 'DELETE') {
           const removed = ruleStore.remove(id);
-          specs.delete(id);
           if (!removed) {
             sendJson(res, 404, { error: 'not_found' });
             return true;
@@ -212,6 +215,28 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
           sendJson(res, 200, serialize(result.rule));
           return true;
         }
+      }
+
+      // Probe an upstream's model-list endpoint; a stored key is used server-side when `id` is given without `apiKey`.
+      if (path === '/api/api-providers/probe' && method === 'POST') {
+        const parsed = await readJsonBody(req);
+        if (parsed instanceof Error) {
+          sendJson(res, 400, { error: parsed.message });
+          return true;
+        }
+        const probeBody = parseProbeBody(parsed);
+        if (!probeBody.ok) {
+          sendJson(res, 400, { error: probeBody.error });
+          return true;
+        }
+        const stored = probeBody.id !== undefined ? apiProviderStore?.get(probeBody.id) : undefined;
+        const result = await probeProvider({
+          protocol: probeBody.protocol,
+          baseUrl: probeBody.baseUrl,
+          apiKey: probeBody.apiKey ?? stored?.apiKey ?? null,
+        });
+        sendJson(res, 200, result);
+        return true;
       }
 
       // API-provider registry (/api/api-providers/*); only reached when a live store is wired.
@@ -264,7 +289,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
             const created = apiProviderStore.add({
               name: String(body.name),
               baseUrl: String(body.baseUrl),
-              model: typeof body.model === 'string' ? body.model : '',
+              model: typeof body.model === 'string' ? body.model : null,
               protocol: typeof body.protocol === 'string' ? (body.protocol as ApiProvider['protocol']) : 'openai',
               apiKey: normalizeApiKey(body.apiKey),
             });
@@ -297,7 +322,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
             const patch: ProviderPatch = {};
             if ('name' in patchBody) patch.name = String(patchBody.name);
             if ('baseUrl' in patchBody) patch.baseUrl = String(patchBody.baseUrl);
-            if ('model' in patchBody) patch.model = String(patchBody.model);
+            if ('model' in patchBody) patch.model = patchBody.model === null ? null : String(patchBody.model);
             if ('apiKey' in patchBody) patch.apiKey = normalizeApiKey(patchBody.apiKey);
             if ('protocol' in patchBody) patch.protocol = patchBody.protocol as ApiProvider['protocol'];
             if ('isActive' in patchBody) patch.isActive = Boolean(patchBody.isActive);

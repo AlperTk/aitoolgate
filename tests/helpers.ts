@@ -5,8 +5,9 @@
  * Domain-specific fakes (e.g. `createFakeModel`, `FakeWebSocket`) and per-file fixtures are
  * intentionally left local to each test file.
  */
-import type http from 'node:http';
+import http from 'node:http';
 import { createServer, type AtgServer } from '../src/server/index';
+import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import type { FetchLike } from '../src/proxy/upstream';
 
 type ServerOpts = Parameters<typeof createServer>[1];
@@ -69,4 +70,86 @@ export function oaiCanned(id: string) {
     choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   };
+}
+
+/** Bind a server to an ephemeral TCP port (port 0); resolves once listening. */
+function listenEphemeral(server: http.Server): Promise<void> {
+  return new Promise((resolve) => {
+    if (server.listening) {
+      resolve();
+      return;
+    }
+    server.once('listening', () => resolve());
+    server.listen(0);
+  });
+}
+
+function portOfServer(server: http.Server): number {
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('server is not listening on a TCP port');
+  return address.port;
+}
+
+/** A canned upstream model: records each parsed JSON request body and replies with the current canned body. */
+export interface FakeModel {
+  server: http.Server;
+  port: number;
+  requests: unknown[];
+  setCanned(canned: unknown): void;
+  close(): Promise<void>;
+}
+
+/** Start a canned upstream on an ephemeral port. Non-JSON bodies are not recorded. */
+export async function createFakeModel(initialCanned: unknown): Promise<FakeModel> {
+  const requests: unknown[] = [];
+  let current = initialCanned;
+  const server = http.createServer((req, res) => {
+    let data = '';
+    req.on('data', (chunk: Buffer) => {
+      data += chunk;
+    });
+    req.on('end', () => {
+      if (data !== '') {
+        try {
+          requests.push(JSON.parse(data));
+        } catch {
+          /* non-JSON body: nothing to record */
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(current));
+    });
+  });
+  await listenEphemeral(server);
+  return {
+    server,
+    port: portOfServer(server),
+    requests,
+    setCanned: (canned: unknown) => {
+      current = canned;
+    },
+    close: () => closeHttpServer(server),
+  };
+}
+
+/** Start a proxy HTTP server on an ephemeral port. Unhandled requests get 404; handler errors get a generic 500. */
+export async function startProxy(options: ProxyOptions): Promise<{ server: http.Server; port: number }> {
+  const handler = createProxyHandler(options);
+  const server = http.createServer((req, res) => {
+    void handler(req, res).then(
+      (handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not_found' }));
+        }
+      },
+      () => {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+        // Never expose err.message to clients; mirrors src/server/index.ts.
+        res.end(JSON.stringify({ error: 'internal_error' }));
+      },
+    );
+  });
+  await listenEphemeral(server);
+  return { server, port: portOfServer(server) };
 }

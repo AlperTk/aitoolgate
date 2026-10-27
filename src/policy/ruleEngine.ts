@@ -22,6 +22,12 @@ export interface PolicyRule {
   action: PolicyAction;
 }
 
+/** Rule-store registry entry: the engine-facing rule plus its originally-submitted spec (opaque here; `api/ruleSpec.ts` owns the shape), kept for lossless serialization. */
+export interface RuleRegistryEntry {
+  spec?: unknown;
+  rule: PolicyRule;
+}
+
 export interface RuleEvaluationResult {
   effects: ActionEffect[];
   matches: { ruleId: string; match: Match }[];

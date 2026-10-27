@@ -45,9 +45,7 @@ language_servers:
 - java
 - csharp
 - html
-
-# the encoding used by text files in the project
-# For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
+- yaml
 encoding: "utf-8"
 
 # optional shell command to run before the language backend (LSP or JetBrains) is initialised.

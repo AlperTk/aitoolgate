@@ -6,6 +6,16 @@ import type {
   ToolResult,
 } from './domain';
 
+/** A chat message in the provider-agnostic history (structurally matches session `Message`). */
+export interface ChatMessage {
+  /** Who produced the message, e.g. `'system'`, `'user'`, `'assistant'`, `'tool'`. */
+  role: string;
+  /** Message content: a plain string, an array of content parts/blocks, or null. */
+  content?: unknown;
+  /** Any additional provider-specific fields. */
+  [key: string]: unknown;
+}
+
 /** Normalized incoming LLM request (provider-agnostic view). */
 export interface RequestContext {
   /** Client that made the request. */
@@ -15,7 +25,7 @@ export interface RequestContext {
   /** Session this request belongs to. */
   sessionKey: SessionKey;
   /** Provider-agnostic message history. */
-  messages: unknown[];
+  messages: ChatMessage[];
   /** Raw provider request (for pass-through when needed). */
   raw: unknown;
 }

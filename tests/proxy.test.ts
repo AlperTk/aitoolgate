@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type http from 'node:http';
 import { createServer } from '../src/server/index';
 import { makeMockFetch, closeHttpServer } from './helpers';
+import type { FetchLike } from '../src/proxy/upstream';
 
 
 function listen(server: http.Server): Promise<void> {
@@ -128,6 +129,70 @@ test('POST /v1/messages returns a correctly-translated Anthropic response (anthr
     assert.ok(body.content.some((b) => b.type === 'tool_use' && b.name === 'get_weather'));
     assert.equal(body.usage.input_tokens, 3);
     assert.equal(body.usage.output_tokens, 4);
+  } finally {
+    await closeHttpServer(server);
+  }
+});
+
+function capturingFetch(sent: { model?: unknown }[]): FetchLike {
+  return async (_url, init) => {
+    sent.push(JSON.parse(String(init?.body)) as { model?: unknown });
+    return new Response(JSON.stringify({ id: 'x', object: 'chat.completion', choices: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+}
+
+test('provider model overrides the client-sent model on outgoing requests', async () => {
+  const sent: { model?: unknown }[] = [];
+  const server = createServer(0, {
+    upstream: {
+      baseUrl: 'http://mock.test/v1',
+      model: 'provider-model',
+      protocol: 'openai',
+      fetchImpl: capturingFetch(sent),
+    },
+  });
+  await listen(server);
+  const port = portOf(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'client-model', messages: [{ role: 'user', content: 'Hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].model, 'provider-model');
+  } finally {
+    await closeHttpServer(server);
+  }
+});
+
+test('blank provider model forwards the client-sent model unchanged', async () => {
+  const sent: { model?: unknown }[] = [];
+  const server = createServer(0, {
+    upstream: {
+      baseUrl: 'http://mock.test/v1',
+      model: '   ',
+      protocol: 'openai',
+      fetchImpl: capturingFetch(sent),
+    },
+  });
+  await listen(server);
+  const port = portOf(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'client-model', messages: [{ role: 'user', content: 'Hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].model, 'client-model');
   } finally {
     await closeHttpServer(server);
   }

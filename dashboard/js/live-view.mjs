@@ -449,8 +449,9 @@ export async function createPolicyRule(name, spec) {
     await createRule(spec);
     await refreshRules(); // re-sync the rendered list + state.rules
     showNotice(name + ' \u2192 policy rule created');
-  } catch (_e) {
+  } catch (e) {
     // createRule already called showNotice('Rule not created: ...')
+    console.warn('createPolicyRule failed for ' + name, e);
   }
 }
 

@@ -64,10 +64,11 @@ function markActive(id: string, byId: Map<string, ApiProvider>): void {
 
 /** Safety net: collapse any accidental multi-active state down to at most one row. */
 function reconcileSingleActive(prefer: string | undefined, byId: Map<string, ApiProvider>): void {
-  let kept: string | undefined;
+  // The preferred row stays active when it is active; every other active row is cleared.
+  let kept: string | undefined = prefer !== undefined && byId.get(prefer)?.isActive ? prefer : undefined;
   for (const rec of byId.values()) {
-    if (!rec.isActive) continue;
-    if (prefer === undefined && kept === undefined) kept = rec.id;
+    if (!rec.isActive || rec.id === kept) continue;
+    if (kept === undefined) kept = rec.id;
     else rec.isActive = false;
   }
 }
@@ -81,7 +82,7 @@ export function createApiProviderStore(options: ProviderStoreOptions = {}): ApiP
       id: provider.id ?? '',
       name: provider.name ?? '',
       baseUrl: provider.baseUrl ?? '',
-      model: provider.model ?? '',
+      model: provider.model ?? null,
       apiKey: provider.apiKey ?? null,
       protocol: provider.protocol ?? 'openai',
       isActive: provider.isActive ?? false,

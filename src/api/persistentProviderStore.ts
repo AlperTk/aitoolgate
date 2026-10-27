@@ -14,14 +14,30 @@ export interface PersistentProviderStoreOptions {
 
 type Row = Record<string, unknown>;
 
+const UPSERT_PROVIDER_SQL = `INSERT INTO api_providers (id, name, base_url, model, api_key, protocol, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         base_url = excluded.base_url,
+         model = excluded.model,
+         api_key = excluded.api_key,
+         protocol = excluded.protocol,
+         is_active = excluded.is_active`;
+
+/** Storage keeps the wire `null` ("From Request") as '' (TEXT NOT NULL, no migration); see rowToProvider for the reverse. */
+function toStoredModel(model: string | null): string {
+  return model ?? '';
+}
+
 function rowToProvider(row: Row): ApiProvider {
+  const rawModel = row.model == null ? '' : String(row.model);
   const rawKey = row.api_key == null ? '' : String(row.api_key);
   const protocol: ApiProvider['protocol'] = row.protocol === 'anthropic' ? 'anthropic' : 'openai';
   return {
     id: String(row.id),
     name: String(row.name),
     baseUrl: String(row.base_url),
-    model: String(row.model),
+    model: rawModel.length === 0 ? null : rawModel,
     apiKey: rawKey.length === 0 ? null : rawKey,
     protocol,
     isActive: Number(row.is_active) === 1,
@@ -57,26 +73,46 @@ function loadExistingRows(dbFile: string): ApiProvider[] {
 function upsertRecord(dbFile: string, provider: ApiProvider): void {
   const db = openDb(dbFile);
   try {
-    db.prepare(
-      `INSERT INTO api_providers (id, name, base_url, model, api_key, protocol, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         base_url = excluded.base_url,
-         model = excluded.model,
-         api_key = excluded.api_key,
-         protocol = excluded.protocol,
-         is_active = excluded.is_active`,
-    ).run(
+    db.prepare(UPSERT_PROVIDER_SQL).run(
       provider.id,
       provider.name,
       provider.baseUrl,
-      provider.model,
+      toStoredModel(provider.model),
       provider.apiKey,
       provider.protocol,
       provider.isActive ? 1 : 0,
       provider.createdAt,
     );
+  } finally {
+    db.close();
+  }
+}
+
+/** Write every in-memory row (and delete `removedId`) in ONE transaction so the single-active flag stays consistent on disk. */
+function writeAllRows(dbFile: string, providers: ApiProvider[], removedId?: string): void {
+  const db = openDb(dbFile);
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (removedId !== undefined) db.prepare('DELETE FROM api_providers WHERE id = ?').run(removedId);
+      const stmt = db.prepare(UPSERT_PROVIDER_SQL);
+      for (const provider of providers) {
+        stmt.run(
+          provider.id,
+          provider.name,
+          provider.baseUrl,
+          toStoredModel(provider.model),
+          provider.apiKey,
+          provider.protocol,
+          provider.isActive ? 1 : 0,
+          provider.createdAt,
+        );
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   } finally {
     db.close();
   }
@@ -100,13 +136,12 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
 
   const base = createApiProviderStore({ initial: records });
 
-  const persist = (id: string): void => {
-    const current = base.get(id);
-    if (current === undefined) return;
+  // Any mutation can move the single-active flag between rows, so mirror the whole set (best-effort).
+  const persistAll = (removedId?: string): void => {
     try {
-      upsertRecord(dbFile, current);
+      writeAllRows(dbFile, base.list(), removedId);
     } catch (err) {
-      console.warn(`aitoolgate: could not persist provider ${id}:`, err);
+      console.warn(`aitoolgate: could not persist providers${removedId === undefined ? '' : ` (removed ${removedId})`}:`, err);
     }
   };
 
@@ -115,14 +150,20 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
     dbFile,
     table: 'api_providers',
     entity: 'provider',
-    persist,
-    // The provider's ≤1-active surface: getActive passthrough + setActive write-through.
+    persist: () => persistAll(),
+    // The provider's ≤1-active surface: getActive passthrough + setActive/remove write-through.
     extras: (ctx) => ({
       getActive: () => base.getActive(),
       setActive: (id: string) => {
         const activated = base.setActive(id);
         if (activated) ctx.schedulePersist(id);
         return activated;
+      },
+      remove: (id: string) => {
+        const removed = base.remove(id);
+        // Deferred like other writes; also persists any row promoted to active by the removal.
+        if (removed) queueMicrotask(() => persistAll(id));
+        return removed;
       },
     }),
   });

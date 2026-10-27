@@ -17,7 +17,7 @@
  *
  * Column = a plain string (column name) OR an object:
  *   { key; label; align='left' ('right'|'center') ; get?(row); render?(value,row)
- *     -> escapedHTMLString|node ; emptyValue='—' ; emptyTitle; headerTitle;
+ *     -> string (rendered as text)|node ; emptyValue='—' ; emptyTitle; headerTitle;
  *     sortable=true ; sortCompare?(a,b)->number ; hideInFilter=false }
  * String entries are normalized to { key:s, label:s }.
  * ========================================================================== */
@@ -164,7 +164,7 @@ export function createDataTable(options) {
       } else {
         var rendered = typeof col.render === 'function' ? col.render(v, row) : undefined;
         if (rendered == null) td.textContent = String(v);   // safe: textContent auto-escapes
-        else if (typeof rendered === 'string') td.innerHTML = rendered; // caller-provided HTML
+        else if (typeof rendered === 'string') td.textContent = rendered; // string is text, never HTML
         else td.appendChild(rendered);                        // a node
       }
       tr.appendChild(td);

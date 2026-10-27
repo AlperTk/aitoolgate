@@ -13,17 +13,13 @@
  * dashboard or the model proxy).
  */
 import type { TelemetryEvent } from './events';
+import type { TelemetryEventBus } from '../ports/telemetry';
+
+/** Re-exported so existing `telemetry/event-bus` importers keep resolving to the single port definition. */
+export type { TelemetryEventBus };
 
 /** A telemetry subscriber: invoked synchronously with each published event. */
 export type EventHandler = (event: TelemetryEvent) => void | Promise<void>;
-
-/** An in-memory, telemetry-specialized event bus. */
-export interface TelemetryEventBus {
-  /** Subscribe a handler; returns an unsubscribe function. */
-  subscribe(handler: EventHandler): () => void;
-  /** Emit an event to all current subscribers (synchronous dispatch). */
-  emit(event: TelemetryEvent): Promise<void>;
-}
 
 /**
  * Create an in-memory {@link TelemetryEventBus}.

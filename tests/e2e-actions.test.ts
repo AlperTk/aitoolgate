@@ -1,7 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import type { PolicyAction, PolicyRule } from '../src/policy/ruleEngine';
 import type { PolicyMatcher } from '../src/policy/types';
 import {
@@ -10,7 +8,7 @@ import {
   createRewriteArgsAction,
 } from '../src/policy/actions';
 import { createToolNameMatcher } from '../src/policy/matchers';
-import { closeHttpServer } from './helpers';
+import { closeHttpServer, createFakeModel, startProxy } from './helpers';
 
 /**
  * End-to-end coverage for the FOUR policy action types. Each case drives REAL HTTP
@@ -37,84 +35,6 @@ const SESSION_TOKEN = 'sess-e2e-actions';
 // ---------------------------------------------------------------------------
 // Helpers (mirror tests/e2e-hideTool.test.ts and tests/e2e-policy.test.ts)
 // ---------------------------------------------------------------------------
-
-function listen(server: http.Server): Promise<void> {
-  return new Promise((resolve) => {
-    if (server.listening) {
-      resolve();
-      return;
-    }
-    server.once('listening', () => resolve());
-    server.listen(0);
-  });
-}
-
-function portOf(server: http.Server): number {
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('server is not listening on a TCP port');
-  return address.port;
-}
-
-
-interface FakeModel {
-  server: http.Server;
-  port: number;
-  requests: unknown[];
-  setCanned(canned: unknown): void;
-  close(): Promise<void>;
-}
-
-async function createFakeModel(initialCanned: unknown): Promise<FakeModel> {
-  const requests: unknown[] = [];
-  let current = initialCanned;
-  const server = http.createServer((req, res) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      if (data !== '') {
-        try {
-          requests.push(JSON.parse(data));
-        } catch {
-          /* non-JSON body: nothing to record */
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(current));
-    });
-  });
-  await listen(server);
-  return {
-    server,
-    port: portOf(server),
-    requests,
-    setCanned: (canned: unknown) => {
-      current = canned;
-    },
-    close: () => closeHttpServer(server),
-  };
-}
-
-async function startProxy(options: ProxyOptions): Promise<{ server: http.Server; port: number }> {
-  const handler = createProxyHandler(options);
-  const server = http.createServer((req, res) => {
-    void handler(req, res).then(
-      (handled) => {
-        if (!handled) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'not_found' }));
-        }
-      },
-      (err: unknown) => {
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal_error' }));
-      },
-    );
-  });
-  await listen(server);
-  return { server, port: portOf(server) };
-}
 
 type Msg = Record<string, unknown>;
 

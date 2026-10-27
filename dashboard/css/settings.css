@@ -177,6 +177,15 @@
 .key-toggle { padding: 0.35rem 0.6rem; font-size: var(--fs-xs); }   /* tighter than default .btn, loaded last so it wins */
 .prov-foot { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 1rem; }
 
+/* Model select (From Request + probed ids): same field look as the other editor inputs. */
+.pf-model-select { font-size: var(--fs-sm); min-width: 0; }
+
+/* Inline probe result under the key field: probing / ok / fail tones. */
+.probe-result { font-size: var(--fs-sm); color: var(--muted); min-height: 1em; margin-top: 0.3rem; }
+.probe-result.is-ok { color: var(--green); }
+.probe-result.is-fail { color: var(--red); }
+.probe-result.is-probing { color: var(--muted); }
+
 /* Keyboard focus ring across the modal (the header trigger's own focus ring
    lives in styles.css alongside its base styles). */
 .settings-card button:focus-visible,

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { startAtgServer, closeAtgServer } from './helpers';
 import type { FetchLike, UpstreamClient, UpstreamResult } from '../src/proxy/upstream';
 import { resolveAndEmitToolResults, runThroughPipeline } from '../src/proxy/context';
-import type { Pipeline, PipelineStage, RequestContext, ResponseContext, ResultContext } from '../src/ports/pipeline';
+import type { ChatMessage, Pipeline, PipelineStage, RequestContext, ResponseContext, ResultContext } from '../src/ports/pipeline';
 import { createToolMetricsTracker } from '../src/telemetry/toolMetrics';
 import { createSseToolCallExtractor } from '../src/telemetry/stream-extract';
 import type { TelemetryEvent } from '../src/telemetry/events';
@@ -48,11 +48,11 @@ function seqFetch(responses: Response[]): FetchLike {
   return async () => responses[Math.min(i++, responses.length - 1)];
 }
 /** An OpenAI assistant turn that issued one tool call (history for pairing). */
-function asstCall(id: string, name: string): Record<string, unknown> {
+function asstCall(id: string, name: string): ChatMessage {
   return { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: '{}' } }] };
 }
 /** An OpenAI role:'tool' result message (the resolved artifact). */
-function toolRes(id: string, name: string, content: string): Record<string, unknown> {
+function toolRes(id: string, name: string, content: string): ChatMessage {
   return { role: 'tool', tool_call_id: id, name, content };
 }
 /** A controllable monotonic-style clock for deterministic timing. */
@@ -172,7 +172,7 @@ test('D-B: runThroughPipeline attributes exact per-call durations under an injec
     handleResult: async (ctx: ResultContext): Promise<ResultContext> => ctx,
   };
   const forward = (body: unknown) => async (): Promise<UpstreamResult> => ({ status: 200, ok: true, body });
-  const makeCtx = (messages: unknown[]): RequestContext => ({
+  const makeCtx = (messages: ChatMessage[]): RequestContext => ({
     client: { apiKey: 'user-key', name: 'default', model: 'm-dc' },
     model: { id: 'm-dc', baseUrl: 'http://upstream.test/v1', model: 'm-dc' },
     sessionKey: { fingerprint: '', token: SESS },

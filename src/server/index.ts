@@ -12,7 +12,6 @@ import { createPersistentRuleStore } from '../api/persistentRuleStore';
 import { createApiProviderStore, type ApiProviderStore } from '../api/providerStore';
 import { createPersistentProviderStore } from '../api/persistentProviderStore';
 import type { ApiProvider } from '../api/providerSpec';
-import type { RuleSpec } from '../api/ruleSpec';
 import type { UpstreamClient } from '../proxy/upstream';
 import { createToolResultStore, type ToolResultStore } from '../telemetry/toolResultStore';
 import { createSqliteToolResultPersister, type SqliteToolResultPersister } from '../telemetry/sqliteToolResultPersister';
@@ -54,8 +53,8 @@ export interface AtgServerHandle {
   toolResultPersister?: SqliteToolResultPersister;
   /** Mounted REST API request handler (`true` = handled, `false` = fall through). */
   apiHandler: RequestHandler;
-  /** Built-in WebSocket server attached to the HTTP server (broadcasts the shared bus). */
-  ws: WsServer;
+  /** Built-in WebSocket server attached to the HTTP server (broadcasts the shared bus); absent when WS is disabled via `mount.ws === false`. */
+  ws?: WsServer;
 }
 
 /** An HTTP server carrying an optional non-enumerable `.atg` test-facing handle. */
@@ -147,7 +146,7 @@ function serveStaticFile(
 }
 
 /** Ensure the parent directory of the resolved rules DB file exists before it is opened (skips bare filenames; a throwing mkdir is caught by the caller). */
-function ensureRulesDbParentDir(dbFile: string | undefined): void {
+function ensureDbParentDir(dbFile: string | undefined): void {
   if (typeof dbFile !== 'string' || dbFile.length === 0) return;
   const dir = path.dirname(dbFile);
   if (dir === '' || dir === '.') return;
@@ -158,14 +157,13 @@ function ensureRulesDbParentDir(dbFile: string | undefined): void {
 function openPersistentRuleStore(
   dbPath: string | undefined,
   initial: PolicyRule[] | undefined,
-  specs: Map<string, RuleSpec>,
 ): RuleStore {
   const baseOptions = initial ? { initial } : {};
   try {
-    ensureRulesDbParentDir(dbPath);
+    ensureDbParentDir(dbPath);
     const storage = createSqliteStorage({ file: dbPath });
     const base = createRuleStore(baseOptions);
-    return createPersistentRuleStore({ base, storage, dbFile: dbPath ?? ':memory:', specs });
+    return createPersistentRuleStore({ base, storage, dbFile: dbPath ?? ':memory:' });
   } catch (err) {
     console.warn('aitoolgate: rule persistence disabled (could not open the rules database):', err);
     return createRuleStore(baseOptions);
@@ -175,12 +173,102 @@ function openPersistentRuleStore(
 /** Build a write-through persistent `ApiProviderStore` (SQLite when enabled, else in-memory); the env-derived default row is seeded by the caller, so it applies whether or not persistence is available. */
 function openApiProviderStore(dbFile: string | undefined): ApiProviderStore {
   try {
-    ensureRulesDbParentDir(dbFile);
+    ensureDbParentDir(dbFile);
     return createPersistentProviderStore({ dbFile: dbFile ?? ':memory:' });
   } catch (err) {
     console.warn('aitoolgate: API-provider persistence disabled (could not open the provider database):', err);
     return createApiProviderStore();
   }
+}
+
+/** Shape of the upstream wiring built by {@link buildUpstreamRef}: the stable per-request ref, the immutable baseline, and the live-apply hook. */
+interface UpstreamWiring {
+  /** Stable mutable upstream reference read per-request by the proxy. */
+  upstreamRef: UpstreamClient;
+  /** Immutable baseline (seed source AND reset-to-defaults target). */
+  baseline: { baseUrl: string; model: string; protocol: UpstreamClient['protocol']; apiKey: string | undefined };
+  /** Overwrites the shared ref with the active provider's values (or the baseline when none is active). */
+  applyActiveProvider: (active?: ApiProvider) => void;
+}
+
+/** Build the single stable upstream ref and its live-apply hook. The upstream is defined ONLY by a programmatic `options.upstream` or the provider store; otherwise the ref starts from an UNCONFIGURED placeholder (empty baseUrl) so the proxy answers 503 until a provider is activated. */
+function buildUpstreamRef(options: ProxyOptions | undefined): UpstreamWiring {
+  // Single STABLE mutable upstream reference consumed per-request by the proxy (context.ts reads
+  // its fields off this object each request). Mutating its fields hot-applies the active
+  // API-provider WITHOUT rebuilding any handler/closure.
+  const resolvedUpstream: UpstreamClient =
+    options?.upstream ?? { baseUrl: '', model: '', protocol: 'openai' };
+  // Immutable baseline (seed source AND reset-to-defaults target) captured before any live-apply,
+  // flattened into concrete consts so the closure never touches optional properties at runtime.
+  const initialUpstream: UpstreamClient = { ...resolvedUpstream };
+  const upstreamRef: UpstreamClient = { ...resolvedUpstream };
+  const baselineBaseUrl = initialUpstream.baseUrl;
+  const baselineModel = initialUpstream.model;
+  const baselineProtocol = initialUpstream.protocol;
+  const baselineApiKey: string | undefined =
+    typeof initialUpstream.apiKey === 'string' && initialUpstream.apiKey.length > 0
+      ? initialUpstream.apiKey
+      : undefined;
+
+  // LIVE APPLY: overwrite the shared stable ref's fields with the active provider's values so the
+  // proxy forwards there immediately. With no active provider, reset back to the baseline.
+  function applyActiveProvider(active?: ApiProvider): void {
+    upstreamRef.baseUrl = active ? active.baseUrl : baselineBaseUrl;
+    upstreamRef.model = active ? (active.model ?? '') : baselineModel;
+    upstreamRef.protocol = active ? active.protocol : baselineProtocol;
+    upstreamRef.apiKey = active && active.apiKey !== null ? active.apiKey : (active ? undefined : baselineApiKey);
+  }
+
+  return {
+    upstreamRef,
+    baseline: { baseUrl: baselineBaseUrl, model: baselineModel, protocol: baselineProtocol, apiKey: baselineApiKey },
+    applyActiveProvider,
+  };
+}
+
+/** Build the top-level HTTP router: `/health` (200), then the REST API, dashboard static assets, the model-proxy, else 404; an error maps to a generic 500 (detail logged, never exposed). Defined once at server creation so the per-request path allocates nothing extra. */
+function createHttpRouter(deps: {
+  api: RequestHandler;
+  handleProxyRequest: ProxyHandler;
+  dashboardDir: string | undefined;
+}): http.RequestListener {
+  const { api, handleProxyRequest, dashboardDir } = deps;
+  return (req, res) => {
+    const url = (req.url ?? '/').split('?')[0] ?? '/';
+
+    void (async () => {
+      try {
+        // 1. Health check (regression guard; highest precedence).
+        if (req.method === 'GET' && url === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok' }));
+          return;
+        }
+        // 2. REST API layer (/api/*) — `true` = handled, `false` = fall through.
+        if (await api(req, res)) return;
+        // 3. Dashboard static files (any safe, allowed-asset GET path; no traversal).
+        if (req.method === 'GET') {
+          const entry = resolveDashboardAsset(url, dashboardDir);
+          if (entry !== null) {
+            serveStaticFile(res, entry, dashboardDir);
+            return;
+          }
+        }
+        // 4. Model-proxy routes (OpenAI/Anthropic pass-through).
+        if (await handleProxyRequest(req, res)) return;
+        // 5. Nothing matched this request.
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not_found' }));
+      } catch (err) {
+        console.error('aitoolgate request error:', err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+        }
+        // Never expose err.message/stack to clients; the detail is logged above.
+        res.end(JSON.stringify({ error: 'internal_error' }));
+      }
+    })();
+  };
 }
 
 /** Create the aitoolgate HTTP server, mounting the model-proxy routes + REST API (`/api/*`) + WebSocket (`/ws`) + dashboard static files; a single shared bus + collector feeds the proxy AND the API/WS layers. */
@@ -200,22 +288,21 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   // falls back to it on an in-memory cache miss.
   let toolResultPersister: SqliteToolResultPersister | undefined;
   if (config.toolResults.enabled) {
-    toolResultPersister = createSqliteToolResultPersister({
-      dbPath: config.toolResults.dbPath,
-      flushIntervalMs: config.toolResults.flushIntervalMs,
-      batchSize: config.toolResults.batchSize,
-      fsyncPerBatch: config.toolResults.fsyncPerBatch,
-    });
+    try {
+      ensureDbParentDir(config.toolResults.dbPath);
+      toolResultPersister = createSqliteToolResultPersister({
+        dbPath: config.toolResults.dbPath,
+        flushIntervalMs: config.toolResults.flushIntervalMs,
+        batchSize: config.toolResults.batchSize,
+        fsyncPerBatch: config.toolResults.fsyncPerBatch,
+      });
+    } catch (err) {
+      console.warn('aitoolgate: tool-result persistence disabled (could not open the tool-results database):', err);
+    }
   }
   const toolResultStore: ToolResultStore =
     mount?.toolResultStore ??
     createToolResultStore(toolResultPersister !== undefined ? { persister: toolResultPersister } : {});
-
-  // Shared spec registry: the REST API stores each submitted/merged {@link RuleSpec}
-  // here keyed by rule id; the persistent rule store reads it so a write-through mirrors
-  // the exact spec to SQLite losslessly (a PolicyRule's matcher/action are closures and
-  // would be dropped by JSON.stringify).
-  const ruleSpecs = new Map<string, RuleSpec>();
 
   // Live rule registry backing the REST API's rule CRUD routes AND the proxy policy
   // stage (read live via ruleStore.list()). Created BEFORE the proxy handler below so
@@ -228,7 +315,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   if (mount?.ruleStore !== undefined) {
     ruleStore = mount.ruleStore;
   } else if (config.rules.enabled) {
-    ruleStore = openPersistentRuleStore(config.rules.dbPath, mount?.initialRules, ruleSpecs);
+    ruleStore = openPersistentRuleStore(config.rules.dbPath, mount?.initialRules);
   } else {
     ruleStore = createRuleStore(mount?.initialRules ? { initial: mount.initialRules } : {});
   }
@@ -254,25 +341,8 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
           ...(Array.isArray(callerRules) ? callerRules : []),
           ...ruleStore.list(),
         ];
-  // Single STABLE mutable upstream reference consumed per-request by the proxy (context.ts reads
-  // its fields off this object each request). Mutating its fields hot-applies the active
-  // API-provider WITHOUT rebuilding any handler/closure. The upstream is defined ONLY by the
-  // provider store or a programmatic `options.upstream`: when neither supplies one, the ref
-  // starts from an explicit UNCONFIGURED placeholder (empty baseUrl) so the proxy answers 503
-  // until a provider is added + activated via the dashboard Settings or POST /api/api-providers.
-  const resolvedUpstream: UpstreamClient =
-    options?.upstream ?? { baseUrl: '', model: '', protocol: 'openai' };
-  // Immutable baseline (seed source AND reset-to-defaults target) captured before any live-apply,
-  // flattened into concrete consts so the closure never touches optional properties at runtime.
-  const initialUpstream: UpstreamClient = { ...resolvedUpstream };
-  const upstreamRef: UpstreamClient = { ...resolvedUpstream };
-  const baselineBaseUrl = initialUpstream.baseUrl;
-  const baselineModel = initialUpstream.model;
-  const baselineProtocol = initialUpstream.protocol;
-  const baselineApiKey: string | undefined =
-    typeof initialUpstream.apiKey === 'string' && initialUpstream.apiKey.length > 0
-      ? initialUpstream.apiKey
-      : undefined;
+  // Single STABLE upstream ref + live-apply hook (see buildUpstreamRef).
+  const { upstreamRef, baseline, applyActiveProvider } = buildUpstreamRef(options);
 
   // Live API-provider registry backing `/api/api-providers/*`. Persisted against the shared
   // rules DB ONLY when rule persistence is enabled AND no caller-injected upstream is present
@@ -296,25 +366,15 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   if (options?.upstream !== undefined && apiProviderStore.size() === 0) {
     apiProviderStore.add({
       name: 'default',
-      baseUrl: baselineBaseUrl,
-      model: baselineModel,
-      apiKey: baselineApiKey !== undefined ? baselineApiKey.trim() : null,
-      protocol: baselineProtocol,
+      baseUrl: baseline.baseUrl,
+      model: baseline.model,
+      apiKey: baseline.apiKey !== undefined ? baseline.apiKey.trim() : null,
+      protocol: baseline.protocol,
       isActive: true,
       createdAt: Date.now(),
     });
   }
 
-  // LIVE APPLY: overwrite the shared stable ref's fields with the active provider's values so the
-  // proxy forwards there immediately. With no active provider, reset back to the baseline — the
-  // programmatic `options.upstream` when supplied, else the UNCONFIGURED placeholder (the proxy
-  // then answers 503 on forwarding until a provider becomes active).
-  function applyActiveProvider(active?: ApiProvider): void {
-    upstreamRef.baseUrl = active ? active.baseUrl : baselineBaseUrl;
-    upstreamRef.model = active ? active.model : baselineModel;
-    upstreamRef.protocol = active ? active.protocol : baselineProtocol;
-    upstreamRef.apiKey = active && active.apiKey !== null ? active.apiKey : (active ? undefined : baselineApiKey);
-  }
   applyActiveProvider(apiProviderStore.getActive()); // initialize consistent state once after seeding
 
   // The server is the SINGLE composition root: it builds the policy stage from the
@@ -354,47 +414,12 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     ruleStore,
     collector,
     toolResultStore,
-    specs: ruleSpecs,
     apiProviderStore,
     applyActiveProvider,
   });
   const dashboardDir = resolveDashboardDir(mount?.dashboardDir);
 
-  const server = http.createServer((req, res) => {
-    const url = (req.url ?? '/').split('?')[0] ?? '/';
-
-    void (async () => {
-      try {
-        // 1. Health check (regression guard; highest precedence).
-        if (req.method === 'GET' && url === '/health') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'ok' }));
-          return;
-        }
-        // 2. REST API layer (/api/*) — `true` = handled, `false` = fall through.
-        if (await api(req, res)) return;
-        // 3. Dashboard static files (any safe, allowed-asset GET path; no traversal).
-        if (req.method === 'GET') {
-          const entry = resolveDashboardAsset(url, dashboardDir);
-          if (entry !== null) {
-            serveStaticFile(res, entry, dashboardDir);
-            return;
-          }
-        }
-        // 4. Model-proxy routes (OpenAI/Anthropic pass-through).
-        if (await handleProxyRequest(req, res)) return;
-        // 5. Nothing matched this request.
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'not_found' }));
-      } catch (err) {
-        console.error('aitoolgate request error:', err);
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-        }
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal_error' }));
-      }
-    })();
-  });
+  const server = http.createServer(createHttpRouter({ api, handleProxyRequest, dashboardDir }));
 
   // Attach the built-in WebSocket server (broadcasts the shared bus to clients),
   // unless explicitly disabled. Clean teardown: when the HTTP server closes, tear
@@ -425,7 +450,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
       toolResultStore,
       ...(toolResultPersister !== undefined ? { toolResultPersister } : {}),
       apiHandler: api,
-      ws: ws as WsServer,
+      ws,
     },
     enumerable: false,
     configurable: true,

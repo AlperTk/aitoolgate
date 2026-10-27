@@ -1,12 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { createProxyHandler, type ProxyOptions } from '../src/proxy/index';
 import { buildRuleFromSpec, buildMatcher, validateSpec, describeRule } from '../src/api/ruleSpec';
 import { createAlwaysMatcher, ALWAYS_MATCHER_BRAND } from '../src/policy/matchers';
 import type { AlwaysMatcher } from '../src/policy/matchers';
 import type { RuleSpec } from '../src/api/ruleSpec';
-import { oaiCanned } from './helpers';
+import { createFakeModel, oaiCanned, startProxy } from './helpers';
 
 /**
  * End-to-end regression tests for the unconditional "always" matcher:
@@ -54,78 +52,6 @@ test('spec: describeRule renders an always-matcher rule back as { type: "always"
 // ---------------------------------------------------------------------------
 // Helpers (mirror tests/e2e-hideTool.test.ts)
 // ---------------------------------------------------------------------------
-
-async function listen(server: http.Server): Promise<void> {
-  await new Promise<void>((resolve) => {
-    if (server.listening) return resolve();
-    server.once('listening', () => resolve());
-    server.listen(0);
-  });
-}
-
-function portOf(server: http.Server): number {
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('server is not listening on a TCP port');
-  return address.port;
-}
-
-interface FakeModel {
-  server: http.Server;
-  port: number;
-  requests: unknown[];
-  close(): Promise<void>;
-}
-
-async function createFakeModel(canned: unknown): Promise<FakeModel> {
-  const requests: unknown[] = [];
-  const server = http.createServer((req, res) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      if (data !== '') {
-        try {
-          requests.push(JSON.parse(data));
-        } catch {
-          /* non-JSON body: nothing to record */
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(canned));
-    });
-  });
-  await listen(server);
-  return {
-    server,
-    port: portOf(server),
-    requests,
-    close: async () => {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
-  };
-}
-
-async function startProxy(options: ProxyOptions): Promise<{ server: http.Server; port: number }> {
-  const handler = createProxyHandler(options);
-  const server = http.createServer((req, res) => {
-    void handler(req, res).then(
-      (handled) => {
-        if (!handled) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'not_found' }));
-        }
-      },
-      (err: unknown) => {
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal_error' }));
-      },
-    );
-  });
-  await listen(server);
-  return { server, port: portOf(server) };
-}
 
 const OAI_CANNED = oaiCanned('chatcmpl-always');
 

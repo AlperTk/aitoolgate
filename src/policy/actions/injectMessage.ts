@@ -1,6 +1,6 @@
 import type { Action, PolicyContext, ActionStrategy, SessionKey } from '../types';
 import type { ActionEffect } from './index';
-import type { RequestContext, ResponseContext } from '../../ports';
+import type { ChatMessage, RequestContext, ResponseContext } from '../../ports';
 import type { PolicyAction } from '../ruleEngine';
 import type { FeedbackMessage } from '../feedbackStore';
 import type { Message } from '../../session/session';
@@ -64,7 +64,7 @@ export const injectMessageStrategy: ActionStrategy = {
 };
 
 /** Insert messages after the system prefix / before the trailing user turn; shared by the injectMessage effect and the cross-request feedback drain. */
-export function spliceMessages(messages: unknown[], inserts: readonly Message[]): unknown[] {
+export function spliceMessages(messages: ChatMessage[], inserts: readonly Message[]): ChatMessage[] {
   if (inserts.length === 0) return messages;
   const result = [...messages];
   const at = injectionIndex(messages);

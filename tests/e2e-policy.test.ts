@@ -1,13 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { createProxyHandler } from '../src/proxy/index';
 import { flagshipLoopRule, type PolicyAction, type PolicyRule } from '../src/policy/ruleEngine';
 import { createToolNameMatcher } from '../src/policy/matchers/index';
 import { createHideToolAction } from '../src/policy/actions/index';
 import { createEventBus } from '../src/telemetry/event-bus';
 import { createCollector } from '../src/telemetry/collector';
-import { closeHttpServer } from './helpers';
+import { closeHttpServer, createFakeModel, startProxy } from './helpers';
 /** The corrective message injected by the default flagship loop rule. */
 const LOOP_CORRECTION =
   'You appear to be stuck repeating the same tool call. Stop repeating identical calls and change your approach to make progress.';
@@ -17,92 +15,6 @@ const SESSION_TOKEN = 'sess-e2e-block-s2';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function listen(server: http.Server): Promise<void> {
-  return new Promise((resolve) => {
-    if (server.listening) {
-      resolve();
-      return;
-    }
-    server.once('listening', () => resolve());
-    // Actually start the server on an ephemeral TCP port (port 0); without this
-    // the 'listening' event never fires and every caller of this helper hangs.
-    server.listen(0);
-  });
-}
-
-function portOf(server: http.Server): number {
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('server is not listening on a TCP port');
-  }
-  return address.port;
-}
-
-
-/** A fake upstream model: records each request body it receives and returns a canned OpenAI response. */
-interface FakeModel {
-  server: http.Server;
-  port: number;
-  requests: unknown[];
-  setCanned(canned: unknown): void;
-  close(): Promise<void>;
-}
-
-async function createFakeModel(initialCanned: unknown): Promise<FakeModel> {
-  const requests: unknown[] = [];
-  let current = initialCanned;
-  const server = http.createServer((req, res) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      if (data !== '') {
-        try {
-          requests.push(JSON.parse(data));
-        } catch {
-          /* non-JSON body: nothing to record */
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(current));
-    });
-  });
-  await listen(server);
-  return {
-    server,
-    port: portOf(server),
-    requests,
-    setCanned: (canned: unknown) => {
-      current = canned;
-    },
-    close: () => closeHttpServer(server),
-  };
-}
-
-async function startProxy(options: Parameters<typeof createProxyHandler>[0]): Promise<{
-  server: http.Server;
-  port: number;
-}> {
-  const handleProxyRequest = createProxyHandler(options);
-  const server = http.createServer((req, res) => {
-    void handleProxyRequest(req, res).then(
-      (handled) => {
-        if (!handled) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'not_found' }));
-        }
-      },
-      (err: unknown) => {
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal_error' }));
-      },
-    );
-  });
-  await listen(server);
-  return { server, port: portOf(server) };
-}
 
 type Msg = Record<string, unknown>;
 
