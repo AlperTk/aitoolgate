@@ -24,6 +24,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - **Inline heavy payloads into every WS broadcast** (unbounded memory).
 - **Assume multiple *concurrently-active* upstreams** — at most ONE provider is active at a time (single-active invariant); the active upstream is runtime-switchable but never load-balanced.
 - **Leak a provider's raw `apiKey`** in list responses — expose only `apiKeySet`; only the detail `GET /api/api-providers/:id` may return the raw key.
+- **Echo a raw `apiKey` or raw upstream error body from `POST /api/api-providers/probe`** — probe errors are key-redacted and upstream bodies are discarded.
 
 ## Architectural restrictions
 - Framework-agnostic contracts live in `src/ports/`; impls depend on ports, not each other. Put new abstractions in `ports/`; impls consume them.
@@ -32,6 +33,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - Dashboard CSS is **token-first** (`css/tokens.css`); don't hardcode values. `styles.css` `@import` order matters — later sheets win at equal specificity.
 
 ## Infrastructure limits
+- Provider probe timeout 10 000 ms (`PROBE_TIMEOUT_MS`); proxy upstream fetch remains unbounded.
 - `PORT` is validated as an integer 0–65535 (throws otherwise); default **8787**.
 - Upstream fetch has **no timeout** (`streamToEndpoint` = no-timeout fetch).
 - Collector caps: `maxInterventions=500`, `maxRecent=200`, `maxTokenTurns=10000`. Tool-metrics pending TTL default 300 000 ms; `maxPending` 1 000. In-memory tool-result store bounded at 1 000 entries.

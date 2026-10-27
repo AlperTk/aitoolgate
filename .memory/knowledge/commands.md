@@ -11,6 +11,7 @@ Node (with built-in `node:sqlite`) + TypeScript. **Zero runtime dependencies**; 
 ## Setup
 ```
 npm install          # installs dev deps only (typescript, @types/node)
+npm i -g aitoolgate  # published CLI (bin `aitoolgate`); same entry as `npm start`
 ```
 
 ## Build / run / test
@@ -26,9 +27,9 @@ There is **no lint or format script** in `package.json` (none observed). `main` 
 
 ## Database & migrations
 - No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=3`, idempotent, tracked in a `migrations` table).
-- Two DB files:
-  - `data/rules.db` — `rules`, `events`, `tool_calls`, `interventions`, `api_providers` (provider configs; enabled by default via `RULES_ENABLED=true`).
-  - `data/tool-results.db` — heavy `tool_results` payloads (only when `TOOL_RESULTS_ENABLED=true`, default off).
+- Two DB files (defaults under the OS user home `~/.aitoolgate/`, cwd-independent):
+  - `~/.aitoolgate/rules.db` — `rules`, `events`, `tool_calls`, `interventions`, `api_providers` (provider configs; enabled by default via `RULES_ENABLED=true`).
+  - `~/.aitoolgate/tool-results.db` — heavy `tool_results` payloads (only when `TOOL_RESULTS_ENABLED=true`, default off).
 - Delete a DB file to reset; it is regenerated at startup.
 
 ## Required env vars / local services
@@ -38,9 +39,9 @@ There is **no env-based upstream config**: the upstream target comes only from a
 |---|---|---|
 | `PORT` | `8787` | HTTP/WS/dashboard port (validated 0–65535). |
 | `RULES_ENABLED` | `true` | Persist rules + events to `RULES_DB_PATH`. |
-| `RULES_DB_PATH` | `data/rules.db` | Path of the rules/events DB. |
+| `RULES_DB_PATH` | `~/.aitoolgate/rules.db` | Path of the rules/events DB. |
 | `TOOL_RESULTS_ENABLED` | `false` | Persist raw tool-result values to `TOOL_RESULTS_DB`. |
-| `TOOL_RESULTS_DB` | `data/tool-results.db` | Path of the tool-results DB. |
+| `TOOL_RESULTS_DB` | `~/.aitoolgate/tool-results.db` | Path of the tool-results DB. |
 | `TOOL_RESULTS_FLUSH_MS` | `50` | SQLite drain flush interval. |
 | `TOOL_RESULTS_BATCH_SIZE` | `100` | SQLite drain batch size. |
 | `TOOL_RESULTS_FSYNC` | `false` | `wal_checkpoint(TRUNCATE)` per batch. |
