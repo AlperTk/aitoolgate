@@ -219,7 +219,7 @@ export function createProvidersPane(opts) {
   }
 
   // Render rows from a freshly fetched list payload ({providers:[...], activeId}).
-  // Raw keys never appear here — only the masked apiKeySet flag drives the dot.
+  // Raw keys never appear here.
   function renderProviders(data) {
     providerRows = data && Array.isArray(data.providers) ? data.providers.slice() : [];
     var list = findEl('prov-list');
@@ -245,13 +245,11 @@ export function createProvidersPane(opts) {
 
       var aux = el('span', 'prov-aux');
       var chip = el('span', 'badge proto-chip ' + (d.protocol === 'anthropic' ? 'proto-anthropic' : 'proto-openai'), d.protocolLabel.toLowerCase());
-      var dot = el('span', 'key-dot' + (d.keySet ? ' is-set' : ''));
-      dot.title = d.keySet ? 'API key configured' : 'No API key set';
       var delBtn = el('button', 'btn-ghost prov-del', '\u00D7');
       delBtn.type = 'button';
       delBtn.title = 'Delete this provider';
       delBtn.setAttribute('aria-label', 'Delete provider "' + d.name + '"');
-      aux.appendChild(chip); aux.appendChild(dot); aux.appendChild(delBtn);
+      aux.appendChild(chip); aux.appendChild(delBtn);
 
       li.appendChild(radio); li.appendChild(info); li.appendChild(aux);
       list.appendChild(li);

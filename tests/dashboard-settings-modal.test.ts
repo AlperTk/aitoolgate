@@ -255,7 +255,6 @@ function resetMountFixture(): void {
 const isHidden = (id: string): boolean => S.byId(id)!.classList.contains('is-hidden');
 
 test('M1-M7 settings providers pane end-to-end: render -> draft -> validation gate -> create -> activate -> delete -> escape', async () => {
-  const hasCls = (n: FakeEl | undefined, cls: string): boolean => n !== undefined && String(n.className ?? '').split(/\s+/).includes(cls);
   const checkedRows = (): number => S.byId('prov-list')!.children.filter((row) => row.children.some((c) => c.type === 'radio' && c.checked)).length;
 
   /* Phase A: initial authoritative list render reflects the seeded fixture exactly. */
@@ -275,8 +274,6 @@ test('M1-M7 settings providers pane end-to-end: render -> draft -> validation ga
   assert.equal(findRowRadio('prov-3')!.checked, true, 'only the activeId row renders its radio checked');
   assert.equal(findRowRadio('prov-1')!.checked, false, 'non-active rows keep their radios unchecked');
   assert.equal(findRowRadio('prov-2')!.checked, false);
-  const keyDots = listEl.children.map((row) => hasCls(descendants(row).find((c) => hasCls(c, 'key-dot')), 'is-set'));
-  assert.deepEqual(keyDots, [true, false, false], 'the key-status dot shows only where apiKeySet is true (raw keys never leak into display)');
   assert.ok(!calls.some((c) => c.method !== 'GET'), 'rendering issues no mutating request');
   assert.equal(isHidden('prov-list-view'), false, 'initial render shows the LIST sub-view by default');
   assert.equal(isHidden('prov-form-view'), true, 'the FORM sub-view is hidden on initial render');

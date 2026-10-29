@@ -140,10 +140,6 @@
 .proto-openai    { background: rgba(139, 188, 255, 0.14); color: var(--c-st-pending); border-color: rgba(139, 188, 255, 0.3); }
 .proto-anthropic { background: rgba(243, 208, 138, 0.13); color: var(--c-st-amber);    border-color: rgba(243, 208, 138, 0.3); }
 
-/* Masked-key indicator dot (driven by apiKeySet only — raw keys never render here). */
-.key-dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; border: 1.5px solid var(--text-faint); background: transparent; flex: none; }
-.key-dot.is-set { background: var(--green); border-color: var(--green); }
-
 /* Subtle per-row delete affordance (red on hover, matching .btn-danger tone). */
 .prov-del {
   background: none;
