@@ -21,6 +21,7 @@ const PROVIDERS_BASE = 'api/api-providers';          // relative base path, matc
 const PROBE_URL = PROVIDERS_BASE + '/probe';         // POST {protocol, baseUrl, apiKey?, id?} => {ok, latencyMs, models, error?}
 const DEVICE_START_URL = PROVIDERS_BASE + '/device-flow/start'; // POST => {flowId, userCode, verificationUri, interval, expiresIn}
 const DEVICE_POLL_URL = PROVIDERS_BASE + '/device-flow/poll';   // POST {flowId} => {status: pending|slow_down|expired|denied|done, ...}
+const DEVICE_CONFIRM_URL = PROVIDERS_BASE + '/device-flow/confirm'; // POST {pendingId, model|null, name?, providerId?} => {status:'done', provider}; persists once
 const DEVICE_DEFAULT_INTERVAL_S = 5;                 // fallback poll interval when the server omits one
 
 /* ---- pure helpers (unit-testable without any network or DOM) --------- */
@@ -111,7 +112,7 @@ const PROVIDER_PANE_HTML =
               '<div class="hint">Required. Endpoint base for this engine (OpenAI- or Anthropic-style).</div>' +
             '</div>' +
           '</div>' +
-          '<div class="field-row">' +
+          '<div class="field-row" id="pf-model-row">' +
             '<div class="field">' +
               '<label for="pf-model">Model</label>' +
               '<select id="pf-model" class="pf-model-select"></select>' +
@@ -129,11 +130,32 @@ const PROVIDER_PANE_HTML =
           '<div id="pf-copilot" class="copilot-login" hidden>' +
             '<div id="pf-copilot-auth" class="small muted" hidden></div>' +
             '<button type="button" class="btn btn-primary" id="pf-copilot-login">Login with GitHub Copilot</button>' +
-            '<div id="pf-copilot-device" class="copilot-device" hidden>' +
-              '<div class="copilot-code-line">Enter code <code id="pf-copilot-code" class="copilot-code"></code> at</div>' +
-              '<a id="pf-copilot-link" class="copilot-link" target="_blank" rel="noopener noreferrer"></a>' +
+            '<div id="pf-copilot-success" class="copilot-success" role="status" hidden>' +
+              '<span class="copilot-tick" aria-hidden="true">\u2713</span>' +
+              '<span class="copilot-success-label">Signed in to GitHub Copilot</span>' +
+            '</div>' +
+            '<div id="pf-copilot-popup" class="device-popup-backdrop" hidden>' +
+              '<div class="device-popup card" role="dialog" aria-modal="true" aria-labelledby="pf-copilot-popup-title" tabindex="-1">' +
+                '<h3 id="pf-copilot-popup-title" class="section-title">Sign in to GitHub Copilot</h3>' +
+                '<div id="pf-copilot-device" class="copilot-device">' +
+                  '<div class="copilot-code-line">Open this link on GitHub:</div>' +
+                  '<a id="pf-copilot-link" class="copilot-link" target="_blank" rel="noopener noreferrer"></a>' +
+                  '<div class="copilot-code-line">Then enter this code:</div>' +
+                  '<div class="device-code-row">' +
+                    '<code id="pf-copilot-code" class="copilot-code"></code>' +
+                    '<button type="button" class="btn" id="pf-copilot-copy">Copy</button>' +
+                    '<span id="pf-copilot-copy-msg" class="device-copy-msg" role="status" hidden></span>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="device-popup-foot">' +
+                  '<button type="button" class="btn" id="pf-copilot-popup-close">Close</button>' +
+                '</div>' +
+              '</div>' +
             '</div>' +
             '<div id="pf-copilot-status" class="small muted" role="status" hidden></div>' +
+            '<div id="pf-copilot-confirm" class="copilot-confirm" hidden>' +
+              '<button type="button" class="btn btn-primary" id="pf-copilot-confirm-btn">Save provider</button>' +
+            '</div>' +
           '</div>' +
           '<div id="pf-test-result" class="probe-result" role="status" hidden></div>' +
           '<div class="prov-foot">' +
@@ -167,6 +189,7 @@ export function createProvidersPane(opts) {
   var deviceSeq = 0;                  // bumped per copilot login start/finish/cancel; stale poll callbacks are ignored
   var deviceTimer = null;             // pending device-flow poll timer handle (cleared on cancel)
   var deviceBusy = false;             // a copilot login is in flight (start or polling); guards the login button
+  var pendingId = '';                 // poll 'done' token awaiting the user's model confirm ('' => nothing to confirm)
 
   function detailUrl(id) { return PROVIDERS_BASE + '/' + encodeURIComponent(id); }
 
@@ -583,14 +606,20 @@ export function createProvidersPane(opts) {
   }
 
   async function saveFromForm() {
-    if (busySave || isCopilotType()) return;   // copilot rows are created/re-logged via device login only
+    var copilot = isCopilotType();
+    if (busySave || (copilot && !isSavedRecord())) return;   // copilot adds persist only via the confirm step
     var v = readValues();
-    var check = validateClientSide(v);       // inline errors before ANY submit attempt
-    if (!check.ok) {
-      setPfError(Object.keys(check.errors).map(function (k) { return check.errors[k]; }).join(' '));
+    var errors = validateClientSide(v).errors;               // inline errors before ANY submit attempt
+    if (copilot) delete errors.baseUrl;                      // copilot rows have no base URL input
+    var msgs = Object.keys(errors).map(function (k) { return errors[k]; });
+    if (msgs.length) {
+      setPfError(msgs.join(' '));
       return;
     }
-    var payload = { name: v.name, baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey, adapterId: v.adapterId };   // model null => From Request
+    // model null => From Request; copilot (deviceOAuth) rows never send apiKey
+    var payload = copilot
+      ? { name: v.name, baseUrl: v.baseUrl, model: v.model, adapterId: v.adapterId }
+      : { name: v.name, baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey, adapterId: v.adapterId };
     busySave = true;
     try {
       var creating = !editorId;              // brand-new unsaved draft => create
@@ -612,6 +641,36 @@ export function createProvidersPane(opts) {
     }
   }
 
+  // Copilot confirm step: persists the pending login once with the chosen model (null = From Request).
+  async function confirmCopilotLogin() {
+    if (busySave || !pendingId) return;
+    busySave = true;
+    try {
+      var payload = { pendingId: pendingId, model: findEl('pf-model').value || null };
+      var typedName = String(findEl('pf-name').value).trim();
+      if (typedName) payload.name = typedName;   // blank => omit, server default applies
+      if (isSavedRecord()) payload.providerId = String(editorId);   // re-login on a saved row updates only that row; add creates a new one
+      var data = await fetchJson(DEVICE_CONFIRM_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!data || !data.provider) throw new Error('Unexpected response from server');
+      clearPendingLogin();
+      await refreshList();                   // the saved copilot row is now in the list
+      discardEditor();                       // back to the list view (clears the draft)
+    } catch (e) {
+      if (e.status === 404 || e.status === 410) {
+        clearPendingLogin();
+        setDeviceStatus('Login session expired. Click \u201CLogin with GitHub Copilot\u201D to try again.', 'fail');
+      } else {
+        setPfError('Save failed: ' + errMsg(e));
+      }
+    } finally {
+      busySave = false;
+    }
+  }
+
   /* ======================= adapter + copilot login ==================== */
   function setHiddenEl(id, hide) {
     var n = findEl(id);
@@ -623,6 +682,7 @@ export function createProvidersPane(opts) {
     return PROVIDER_TYPES.some(function (t) { return t.adapterId === v; }) ? v : 'generic-openai';
   }
   function isCopilotType() { return selectedType() === 'copilot'; }
+  function isSavedRecord() { return !!editorId && !isDraft; }
   // Wire protocol for inline probes: only generic-anthropic speaks Anthropic; the rest use openai.
   function probeProtocol() { return selectedType() === 'generic-anthropic' ? 'anthropic' : 'openai'; }
 
@@ -635,10 +695,52 @@ export function createProvidersPane(opts) {
     setHiddenEl('pf-base-url-field', copilot);
     setHiddenEl('pf-api-key-field', copilot);
     setHiddenEl('pf-copilot', !copilot);
-    setHiddenEl('pf-save', copilot);
+    setHiddenEl('pf-save', copilot && !isSavedRecord());   // copilot Save only for saved rows; adds use the confirm step
     setHiddenEl('pf-test', copilot);
     var login = findEl('pf-copilot-login');
-    if (login) login.textContent = editorId && !isDraft ? 'Re-login with GitHub Copilot' : 'Login with GitHub Copilot';
+    if (login) login.textContent = isSavedRecord() ? 'Re-login with GitHub Copilot' : 'Login with GitHub Copilot';
+    placeModelRow();
+  }
+
+  // Copilot: the model select sits under the login block and shows once signed in (pending confirm)
+  // or for a saved row. Other types keep it above the API key field.
+  function placeModelRow() {
+    var row = findEl('pf-model-row');
+    if (!row) return;
+    if (isCopilotType()) {
+      var box = findEl('pf-copilot');
+      var anchor = findEl('pf-copilot-confirm');
+      if (box && anchor) box.insertBefore(row, anchor);
+      row.hidden = !(pendingId || isSavedRecord());
+    } else {
+      var keyField = findEl('pf-api-key-field');
+      if (keyField && keyField.parentNode) keyField.parentNode.insertBefore(row, keyField);
+      row.hidden = false;
+    }
+  }
+
+  // Signed-in state of the add flow: the login button gives way to a tick + label.
+  function renderLoginSuccess(signedIn) {
+    setHiddenEl('pf-copilot-login', signedIn);
+    setHiddenEl('pf-copilot-success', !signedIn);
+  }
+
+  // Model list for the confirm step: fetched once per successful login via the probe route with pendingId.
+  // Failure is non-blocking: the select keeps "From Request" only and Save stays enabled.
+  async function loadCopilotModels(pid) {
+    try {
+      var data = await fetchJson(PROBE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingId: pid })
+      });
+      if (pid !== pendingId) return;                  // login cancelled or replaced while probing
+      renderModelOptions(data && Array.isArray(data.models) ? data.models : [], findEl('pf-model').value);
+    } catch (e) {
+      if (pid !== pendingId) return;
+      renderModelOptions([], findEl('pf-model').value);
+      setDeviceStatus('Could not load models: ' + errMsg(e) + '. Save uses From Request.', 'fail');
+    }
   }
 
   function renderLoginStatus(signedIn) {
@@ -674,9 +776,18 @@ export function createProvidersPane(opts) {
     if (deviceTimer) clearTimeout(deviceTimer);
     deviceTimer = null;
     deviceBusy = false;
+    clearPendingLogin();
     setLoginEnabled(true);
-    setHiddenEl('pf-copilot-device', true);
+    setHiddenEl('pf-copilot-popup', true);
     setDeviceStatus(null);
+  }
+
+  // Forgets the pending confirm token and hides the model/save step.
+  function clearPendingLogin() {
+    pendingId = '';
+    setHiddenEl('pf-copilot-confirm', true);
+    renderLoginSuccess(false);
+    placeModelRow();
   }
 
   // Terminal state of a login attempt: keeps the message visible, re-enables the button.
@@ -686,7 +797,52 @@ export function createProvidersPane(opts) {
     deviceTimer = null;
     deviceBusy = false;
     setLoginEnabled(true);
+    setHiddenEl('pf-copilot-popup', true);          // error/expired/denied: popup closes, message shows on the add screen
     setDeviceStatus(msg, tone);
+  }
+
+// Device-code popup: the user code + verification link live only here (never inline on the add screen).
+  function devicePopupOpen() {
+    var p = findEl('pf-copilot-popup');
+    return !!p && !p.hidden;
+  }
+
+  function openDevicePopup() {
+    setCopyMessage(null);
+    setHiddenEl('pf-copilot-popup', false);
+  }
+
+  function setCopyMessage(text, tone) {
+    var n = findEl('pf-copilot-copy-msg');
+    if (!n) return;
+    n.textContent = text || '';
+    n.className = 'device-copy-msg' + (tone ? ' is-' + tone : '');
+    n.hidden = !text;
+  }
+
+  // Close (button, backdrop, Esc) is the same as Cancel: stops polling and restores the login button.
+  function closeDevicePopup() {
+    cancelDeviceFlow();
+  }
+
+  function onPopupKeydown(ev) {
+    if (ev.key !== 'Escape' || !devicePopupOpen()) return;
+    ev.stopPropagation();                  // Esc closes only the popup, not the Settings modal behind it
+    closeDevicePopup();
+  }
+
+  function copyDeviceCode() {
+    var code = String(findEl('pf-copilot-code').textContent);
+    var clip = globalThis.navigator && globalThis.navigator.clipboard;
+    if (!clip || typeof clip.writeText !== 'function') {
+      setCopyMessage('Copy unavailable \u2014 select the code to copy it.', 'fail');
+      return;
+    }
+    Promise.resolve().then(function () { return clip.writeText(code); }).then(function () {
+      if (devicePopupOpen()) setCopyMessage('Copied', 'ok');
+    }, function (e) {
+      if (devicePopupOpen()) setCopyMessage('Copy failed: ' + errMsg(e), 'fail');
+    });
   }
 
   function renderDeviceCode(data) {
@@ -697,7 +853,7 @@ export function createProvidersPane(opts) {
       link.href = String(data.verificationUri == null ? '' : data.verificationUri);
       link.textContent = link.href;
     }
-    setHiddenEl('pf-copilot-device', false);
+    openDevicePopup();
   }
 
   function deviceIntervalMs(seconds) {
@@ -742,9 +898,17 @@ export function createProvidersPane(opts) {
     } else if (status === 'denied') {
       finishDeviceFlow('Access was denied on GitHub. Login cancelled.', 'fail');
     } else if (status === 'done') {
-      cancelDeviceFlow();
-      await refreshList();                             // provider is activated server-side; reload the list
-      discardEditor();                                 // back to the list view (also clears the draft)
+      cancelDeviceFlow();                              // stop polling; nothing is saved until the user confirms
+      if (!data || typeof data.pendingId !== 'string' || !data.pendingId) {
+        finishDeviceFlow('Unexpected login response from server.', 'fail');
+        return;
+      }
+      pendingId = data.pendingId;
+      renderLoginSuccess(true);                        // tick + label replace the login button
+      setHiddenEl('pf-copilot-confirm', false);        // model step: the model select below the login block + Save provider
+      placeModelRow();
+      setDeviceStatus('Signed in with GitHub Copilot. Choose a model, then save the provider.', 'ok');
+      loadCopilotModels(pendingId);                    // one fetch per successful login
     } else {
       finishDeviceFlow('Unexpected login response from server.', 'fail');
     }
@@ -754,8 +918,9 @@ export function createProvidersPane(opts) {
     if (deviceBusy) return;
     deviceBusy = true;
     var seq = ++deviceSeq;
+    clearPendingLogin();                               // a new login replaces any unconfirmed one
     setLoginEnabled(false);
-    setHiddenEl('pf-copilot-device', true);
+    setHiddenEl('pf-copilot-popup', true);
     setDeviceStatus('Starting GitHub login\u2026', 'probing');
     try {
       var data = await fetchJson(DEVICE_START_URL, { method: 'POST' });
@@ -777,13 +942,20 @@ export function createProvidersPane(opts) {
      'pf-api-key', 'pf-key-toggle', 'pf-save', 'pf-test', 'pf-test-result', 'pf-cancel', 'pf-reset', 'pf-error',
      'prov-list-view', 'prov-form-view',
      'pf-type', 'pf-base-url-field', 'pf-api-key-field', 'pf-copilot', 'pf-copilot-login', 'pf-copilot-auth',
-     'pf-copilot-device', 'pf-copilot-code', 'pf-copilot-link', 'pf-copilot-status']
+     'pf-copilot-device', 'pf-copilot-code', 'pf-copilot-link', 'pf-copilot-status', 'pf-copilot-confirm', 'pf-copilot-confirm-btn',
+     'pf-model-row', 'pf-copilot-success',
+     'pf-copilot-popup', 'pf-copilot-copy', 'pf-copilot-copy-msg', 'pf-copilot-popup-close']
       .forEach(function (id) { els[id] = pane.querySelector('#' + id); });
 
     // Copilot-only controls are bound null-safely so the generic form wiring never depends on them.
     var onOptional = function (id, type, fn) { var n = findEl(id); if (n) n.addEventListener(type, fn); };
     onOptional('pf-type', 'change', onTypeChange);
     onOptional('pf-copilot-login', 'click', startCopilotLogin);
+    onOptional('pf-copilot-confirm-btn', 'click', confirmCopilotLogin);
+    onOptional('pf-copilot-copy', 'click', copyDeviceCode);
+    onOptional('pf-copilot-popup-close', 'click', closeDevicePopup);
+    onOptional('pf-copilot-popup', 'click', function (ev) { if (ev.target === findEl('pf-copilot-popup')) closeDevicePopup(); });
+    document.addEventListener('keydown', onPopupKeydown, true);   // capture: Esc closes the popup before the Settings modal sees it
 
     findEl('prov-add-btn').addEventListener('click', startDraft);
     findEl('pf-cancel').addEventListener('click', discardEditor);

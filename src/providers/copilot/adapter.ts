@@ -4,6 +4,9 @@ import { createDeviceOAuthAuth, parseAuthState } from '../auth/deviceOAuth';
 /** Registry id of the Copilot adapter (GitHub Copilot chat, OpenAI chat-completions wire protocol). */
 export const COPILOT_ADAPTER_ID = 'copilot';
 
+/** OAuth app client id of the Copilot device login (owned by the Copilot provider, not the shared device-OAuth module). */
+export const COPILOT_DEVICE_CLIENT_ID = 'Ov23liUL0rlNCLgOISyz';
+
 const DEFAULT_COPILOT_BASE_URL = 'https://api.githubcopilot.com';
 const DEFAULT_GITHUB_HOST = 'github.com';
 const COPILOT_USER_AGENT = 'aitoolgate/1.0';
@@ -61,7 +64,7 @@ function hasImageContent(messages: ReadonlyArray<ChatMessage> | undefined): bool
 
 /** Copilot adapter: device-OAuth token from authState, Copilot headers, metadata-driven endpoint. */
 export function createCopilotAdapter(): ProviderAdapter {
-  const auth = createDeviceOAuthAuth();
+  const auth = createDeviceOAuthAuth({ clientId: COPILOT_DEVICE_CLIENT_ID });
   const decorateHeaders = (ctx: DecorateContext): Record<string, string> => {
     const headers = auth.resolveAuthStateHeaders(ctx.authState);
     headers['User-Agent'] = COPILOT_USER_AGENT;

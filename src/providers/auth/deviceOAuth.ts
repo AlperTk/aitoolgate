@@ -1,7 +1,5 @@
 import type { AuthCredentials, AuthStrategy } from '../../ports/auth';
 
-/** Public GitHub OAuth app client id (same value opencode uses for its Copilot device login). */
-export const DEFAULT_DEVICE_OAUTH_CLIENT_ID = 'Ov23li8tweQw6odWQebz';
 export const DEFAULT_GITHUB_DOMAIN = 'github.com';
 
 const DEVICE_SCOPE = 'read:user';
@@ -13,7 +11,7 @@ const HOST_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)*(:\d{1,5})?$/;
 export interface DeviceOAuthOptions {
   /** GitHub host (`github.com` default) or enterprise host/base URL, e.g. `company.ghe.com` or `https://company.ghe.com/`. */
   githubDomain?: string;
-  /** OAuth app client id; defaults to {@link DEFAULT_DEVICE_OAUTH_CLIENT_ID}. */
+  /** OAuth app client id; required by createDeviceOAuthAuth and owned by the calling provider adapter. */
   clientId?: string;
   /** Fetch implementation; defaults to global fetch. */
   fetch?: typeof fetch;
@@ -117,11 +115,13 @@ async function postJson(fetchImpl: typeof fetch, url: string, body: JsonRecord):
 }
 
 /** Factory for the device-code OAuth strategy (GitHub.com or enterprise host). */
-export function createDeviceOAuthAuth(options: DeviceOAuthOptions = {}): DeviceOAuthAuth {
+export function createDeviceOAuthAuth(options: DeviceOAuthOptions & { clientId: string }): DeviceOAuthAuth {
   const host = normalizeDomain(options.githubDomain ?? DEFAULT_GITHUB_DOMAIN);
-  const clientId = options.clientId ?? DEFAULT_DEVICE_OAUTH_CLIENT_ID;
+  // Non-throwing (like invalid_domain): a missing or blank client id fails start/poll with a typed error.
+  const clientId = typeof options.clientId === 'string' && options.clientId.trim().length > 0 ? options.clientId : null;
   const fetchImpl: typeof fetch = options.fetch ?? ((...args) => fetch(...args));
   const invalidDomain: DeviceOAuthError = { code: 'invalid_domain', message: 'GitHub domain is not a valid host' };
+  const invalidClientId: DeviceOAuthError = { code: 'invalid_client_id', message: 'OAuth client id is required' };
 
   return {
     kind: 'deviceOAuth',
@@ -139,6 +139,7 @@ export function createDeviceOAuthAuth(options: DeviceOAuthOptions = {}): DeviceO
 
     async startDeviceFlow(): Promise<DeviceFlowStartResult> {
       if (!host) return { ok: false, error: invalidDomain };
+      if (clientId === null) return { ok: false, error: invalidClientId };
       const res = await postJson(fetchImpl, `https://${host}/login/device/code`, {
         client_id: clientId,
         scope: DEVICE_SCOPE,
@@ -175,6 +176,7 @@ export function createDeviceOAuthAuth(options: DeviceOAuthOptions = {}): DeviceO
 
     async pollDeviceFlow(flow: DeviceFlow): Promise<DevicePollResult> {
       if (!host) return { status: 'error', error: invalidDomain };
+      if (clientId === null) return { status: 'error', error: invalidClientId };
       const res = await postJson(fetchImpl, `https://${host}/login/oauth/access_token`, {
         client_id: clientId,
         device_code: flow.deviceCode,

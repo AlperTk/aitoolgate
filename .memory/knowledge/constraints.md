@@ -23,7 +23,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - **Persist the built-in `flagship-loop-rule`** to the database.
 - **Inline heavy payloads into every WS broadcast** (unbounded memory).
 - **Assume multiple *concurrently-active* upstreams** — at most ONE provider is active at a time (single-active invariant); the active upstream is runtime-switchable but never load-balanced.
-- **Leak a provider's raw `apiKey`** in list responses — expose only `apiKeySet`; only the detail `GET /api/api-providers/:id` may return the raw key.
+- **Leak a provider's raw `apiKey`** in list responses — expose only `apiKeySet`; only the detail `GET /api/api-providers/:id` may return the raw key; `deviceOAuth` rows always return `apiKey: null`.
 - **Leak `authState` (OAuth tokens, `auth_state` column)** in any list, detail, or device-flow response; it is written only by the server-side device-flow path and is never client-writable. Device-code `device_code` values stay server-side (flow registry), never sent to the client.
 - **Echo a raw `apiKey` or raw upstream error body from `POST /api/api-providers/probe`** — probe errors are key-redacted and upstream bodies are discarded.
 
@@ -44,7 +44,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 ## External-system restrictions
 - **No env-based upstream config:** upstream target comes only from the provider store or programmatic `options.upstream`; an unconfigured proxy answers LLM routes with **503 JSON** (`UNCONFIGURED_UPSTREAM`) before any fetch — configure via dashboard Settings or `POST /api/api-providers`.
 - Single *active* upstream target (provider store or programmatic `options.upstream`); multiple persisted provider configs are allowed but only one is active at a time (no concurrent routing).
-- Persistence is Node built-in `node:sqlite` — no external DB server, no migration CLI (migrations auto-apply on open, `SCHEMA_VERSION=3`).
+- Persistence is Node built-in `node:sqlite` — no external DB server, no migration CLI (migrations auto-apply on open, `SCHEMA_VERSION=5`).
 
 ## Rules whose violation causes a production incident
 - Unwrapped telemetry emission → a request can 500 / traffic lost.

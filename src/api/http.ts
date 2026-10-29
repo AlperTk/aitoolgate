@@ -1,5 +1,6 @@
 /** JSON REST API layer over the telemetry Collector and rule/provider stores; non-`/api` paths return false without writing a response so it can chain before the proxy. */
 import type * as http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type { Collector } from '../telemetry/collector';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
 import type { RuleStore, RulePatch } from './ruleStore';
@@ -15,11 +16,12 @@ import {
 import type { ApiProvider, ProviderAuthType } from './providerSpec';
 import { validateProviderSpec, isNonEmptyString, normalizeApiKey } from './providerSpec';
 import { parseProbeBody, probeProvider, probeSavedProvider } from './providerProbe';
+import type { ProbeResult } from './providerProbe';
 import { lookupProviderAdapter } from '../providers/registry';
 import type { ApiProviderStore, ProviderPatch } from './providerStore';
 import { createDeviceOAuthAuth, checkCopilotEntitlement, serializeAuthState } from '../providers/auth/deviceOAuth';
 import type { DeviceOAuthOptions } from '../providers/auth/deviceOAuth';
-import { COPILOT_ADAPTER_ID } from '../providers/copilot/adapter';
+import { COPILOT_ADAPTER_ID, COPILOT_DEVICE_CLIENT_ID } from '../providers/copilot/adapter';
 import { createDeviceFlowRegistry } from './deviceFlowRegistry';
 import type { DeviceFlowRegistry } from './deviceFlowRegistry';
 
@@ -78,10 +80,13 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 /** Create the JSON REST API handler. */
 export function createApiHandler(options: ApiOptions): RequestHandler {
   const { ruleStore, collector, toolResultStore, apiProviderStore, deviceFlow } = options;
-  const deviceAuth = createDeviceOAuthAuth(deviceFlow);
+  const deviceAuth = createDeviceOAuthAuth({ ...deviceFlow, clientId: deviceFlow?.clientId ?? COPILOT_DEVICE_CLIENT_ID });
   const deviceFlows: DeviceFlowRegistry = deviceFlow?.registry ?? createDeviceFlowRegistry();
   // Hot-apply hook (optional): tracks the active provider without a restart; no-op for legacy callers.
   const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});
+  // Authorized-but-unsaved Copilot logins keyed by opaque pendingId; tokens never leave the server.
+  const PENDING_LOGIN_TTL_MS = 10 * 60_000;
+  const pendingLogins = new Map<string, { state: Parameters<typeof serializeAuthState>[0]; expiresAt: number }>();
 
   /** Serialize a rule: prefer its stored spec (re-keyed to the live id) for fidelity, else a best-effort descriptor. */
   const serialize = (rule: PolicyRule): RuleSpec => {
@@ -240,6 +245,39 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
           sendJson(res, 400, { error: parsed.message });
           return true;
         }
+        // Authorized-but-unsaved Copilot login: lists models with the pending token; nothing is persisted or consumed.
+        if (isRecord(parsed) && 'pendingId' in parsed) {
+          const pendingId = parsed.pendingId;
+          if (typeof pendingId !== 'string' || pendingId.length === 0) {
+            sendJson(res, 400, { error: '"pendingId" is required and must be a non-empty string' });
+            return true;
+          }
+          const pending = pendingLogins.get(pendingId);
+          if (pending === undefined) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          if (pending.expiresAt <= Date.now()) {
+            pendingLogins.delete(pendingId);
+            sendJson(res, 410, { error: 'pending_expired' });
+            return true;
+          }
+          const copilot = lookupProviderAdapter(COPILOT_ADAPTER_ID);
+          const listed: ProbeResult =
+            copilot === null
+              ? { ok: false, latencyMs: 0, models: [], error: 'unknown provider type' }
+              : await probeSavedProvider(
+                  copilot,
+                  { baseUrl: 'https://github.com', protocol: 'openai', apiKey: null },
+                  serializeAuthState(pending.state),
+                );
+          if (!listed.ok) {
+            sendJson(res, listed.status ?? 502, { error: listed.error ?? 'model list failed' });
+            return true;
+          }
+          sendJson(res, 200, { models: listed.models });
+          return true;
+        }
         const probeBody = parseProbeBody(parsed);
         if (!probeBody.ok) {
           sendJson(res, 400, { error: probeBody.error });
@@ -342,20 +380,88 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
             sendJson(res, 403, { error: entitlement.message });
             return true;
           }
-          const authState = serializeAuthState(result.state);
-          const existing = apiProviderStore.list().find((p) => p.adapterId === COPILOT_ADAPTER_ID);
+          // Authorized but unsaved: credentials stay server-side under an opaque pendingId until confirmed.
+          const now = Date.now();
+          for (const [id, entry] of pendingLogins) {
+            if (entry.expiresAt <= now) pendingLogins.delete(id);
+          }
+          const pendingId = randomUUID();
+          pendingLogins.set(pendingId, { state: result.state, expiresAt: now + PENDING_LOGIN_TTL_MS });
+          sendJson(res, 200, { status: 'done', pendingId, expiresIn: PENDING_LOGIN_TTL_MS / 1000 });
+          return true;
+        }
+
+        // Persists an authorized pending Copilot login with the model the user chose; fires live-apply once.
+        if (method === 'POST' && path === '/api/api-providers/device-flow/confirm') {
+          const parsed = await readJsonBody(req);
+          if (parsed instanceof Error) {
+            sendJson(res, 400, { error: parsed.message });
+            return true;
+          }
+          if (!isRecord(parsed)) {
+            sendJson(res, 400, { error: 'body must be a JSON object' });
+            return true;
+          }
+          const pendingId = parsed.pendingId;
+          if (typeof pendingId !== 'string' || pendingId.length === 0) {
+            sendJson(res, 400, { error: '"pendingId" is required and must be a non-empty string' });
+            return true;
+          }
+          if ('apiKey' in parsed && parsed.apiKey !== null) {
+            sendJson(res, 400, { error: '"apiKey" cannot be set on a deviceOAuth provider' });
+            return true;
+          }
+          const specError = validateProviderSpec({ model: parsed.model ?? null });
+          if (specError !== null) {
+            sendJson(res, 400, { error: specError });
+            return true;
+          }
+          if ('name' in parsed && typeof parsed.name !== 'string') {
+            sendJson(res, 400, { error: '"name" must be a string when provided' });
+            return true;
+          }
+          if ('providerId' in parsed && (typeof parsed.providerId !== 'string' || parsed.providerId.length === 0)) {
+            sendJson(res, 400, { error: '"providerId" must be a non-empty string when provided' });
+            return true;
+          }
+          const customName = typeof parsed.name === 'string' && parsed.name.trim().length > 0 ? parsed.name.trim() : undefined;
+          const model = typeof parsed.model === 'string' ? parsed.model : null;
+          const pending = pendingLogins.get(pendingId);
+          if (pending === undefined) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          // Explicit providerId = re-login on that saved deviceOAuth row; absent = always add a new provider.
+          const targetId = typeof parsed.providerId === 'string' ? parsed.providerId : undefined;
+          const target = targetId === undefined ? undefined : apiProviderStore.get(targetId);
+          if (targetId !== undefined && (target === undefined || target.authType !== 'deviceOAuth')) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          pendingLogins.delete(pendingId);
+          if (pending.expiresAt <= Date.now()) {
+            sendJson(res, 410, { error: 'pending_expired' });
+            return true;
+          }
+          const authState = serializeAuthState(pending.state);
           const row =
-            existing === undefined
+            target === undefined
               ? apiProviderStore.add({
-                  name: 'GitHub Copilot',
+                  name: customName ?? 'GitHub Copilot',
                   baseUrl: 'https://github.com',
-                  model: null,
+                  model,
                   adapterId: COPILOT_ADAPTER_ID,
                   authType: 'deviceOAuth',
                   authState,
                   isActive: true,
                 })
-              : apiProviderStore.update(existing.id, { authType: 'deviceOAuth', authState, isActive: true });
+              : apiProviderStore.update(target.id, {
+                  model,
+                  authType: 'deviceOAuth',
+                  authState,
+                  isActive: true,
+                  ...(customName !== undefined ? { name: customName } : {}),
+                });
           if (row === undefined) {
             sendJson(res, 404, { error: 'not_found' });
             return true;

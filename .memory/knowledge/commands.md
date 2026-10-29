@@ -26,7 +26,7 @@ npm i -g aitoolgate  # published CLI (bin `aitoolgate`); same entry as `npm star
 There is **no lint or format script** in `package.json` (none observed). `main` and `bin` (`aitoolgate`) both point at `dist/src/server/index.js`; published `files` = `["dist/src","dist/config","dashboard","README.md","LICENSE"]` (tarball verified self-sufficient via `npm pack` + extracted smoke test); `engines` `node >=22.5` (required for `node:sqlite`); `publishConfig.access=public`.
 
 ## Database & migrations
-- No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=3`, idempotent, tracked in a `migrations` table).
+- No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=5`, idempotent, tracked in a `migrations` table).
 - Two DB files (defaults under the OS user home `~/.aitoolgate/`, cwd-independent):
   - `~/.aitoolgate/rules.db` — `rules`, `events`, `tool_calls`, `interventions`, `api_providers` (provider configs; enabled by default via `RULES_ENABLED=true`).
   - `~/.aitoolgate/tool-results.db` — heavy `tool_results` payloads (only when `TOOL_RESULTS_ENABLED=true`, default off).
