@@ -307,15 +307,14 @@ export function createSseToolCallExtractor(
         const delta = parsed.delta;
         if (!isRecord(delta)) return;
         // Response-TEXT fragments count toward the whole-turn OUTPUT token estimate.
-        const textDelta = delta.text_delta;
-        if (isRecord(textDelta) && typeof textDelta.text === 'string') streamedTextChars += textDelta.text.length;
-        const jsonDelta = delta.input_json_delta;
-        if (isRecord(jsonDelta) && typeof jsonDelta.partial_json === 'string') {
+        // Anthropic wire: the delta object itself carries its `type` plus `text` / `partial_json`.
+        if (delta.type === 'text_delta' && typeof delta.text === 'string') streamedTextChars += delta.text.length;
+        if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
           const index = typeof parsed.index === 'number' ? parsed.index : -1;
           const acc = byIndex.get(index);
           if (acc !== undefined) {
             if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
-            acc.args += jsonDelta.partial_json;
+            acc.args += delta.partial_json;
           }
         }
         break;
@@ -345,8 +344,10 @@ export function createSseToolCallExtractor(
     // location and MERGED across frames so split input/output numbers collapse into ONE
     // turn-level usage shared by every emitted call (or none when no usage is present).
     const nestedUsage = isRecord(parsed.message) ? parsed.message.usage : undefined;
-    const usage = normalizeUsage(parsed.usage ?? nestedUsage);
-    if (usage !== undefined) streamUsage = mergeUsage(streamUsage, usage);
+    const rawUsage = parsed.usage ?? nestedUsage;
+    const usage = normalizeUsage(rawUsage);
+    // A frame without any cache signal (e.g. Anthropic message_delta) must not overwrite an earlier cache-hit value with 0.
+    if (usage !== undefined) streamUsage = mergeUsage(streamUsage, carriesCacheSignal(rawUsage) ? usage : { ...usage, cacheHitInput: undefined });
     // OpenAI-shaped streaming tool-call fragments.
     const choices = parsed.choices;
     if (Array.isArray(choices)) {
@@ -411,6 +412,14 @@ export function createSseToolCallExtractor(
  * both input and output are known, `total` is recomputed as input+cacheHitInput+output so the
  * merged (and `finish()`-emitted) total always reconciles with the final field values.
  */
+/** True when a raw usage object reports cache fields (Anthropic cache_* or OpenAI prompt_tokens_details). */
+function carriesCacheSignal(raw: unknown): boolean {
+  return (
+    isRecord(raw) &&
+    ('cache_read_input_tokens' in raw || 'cache_creation_input_tokens' in raw || 'prompt_tokens_details' in raw)
+  );
+}
+
 function mergeUsage(prev: NormalizedUsage | undefined, next: NormalizedUsage): NormalizedUsage {
   const out: NormalizedUsage = { ...(prev ?? {}) };
   // Each numeric field is independently last-reported-value-wins: the most recent frame that

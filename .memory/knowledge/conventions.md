@@ -50,6 +50,7 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 | New action | `src/policy/actions/<name>.ts` (contributing an `ActionStrategy`) + one entry in `actions/index.ts` `ACTION_STRATEGIES` | `dashboard/js/rule-schema.mjs` (ruleSpec is registry-driven; no per-kind switch to edit) |
 | New pipeline stage | `src/policy/` or `src/proxy/` | mount via `.use()` in the composition root |
 | New port/contract | `src/ports/<name>.ts` | impl consumes it; no cross-impl imports |
+| New wire protocol (e.g. another vendor's chat format) | `src/protocols/<id>/` (factory `createXxxProtocol` implementing `Protocol` from `src/ports/protocol.ts`, index.ts export) | add parity tests against `translate.ts` output in `tests/protocols-parity.test.ts`; reasoning handling per domain.md; do not import it from proxy code except via `translate.ts` |
 | New REST route | `src/api/http.ts` (+ wiring via API options) | dashboard consumer if UI-visible |
 | New provider concept (mirrors rules) | `src/api/providerSpec.ts` (pure shape+validation) + `providerStore.ts` (in-memory) + `persistentProviderStore.ts` (SQLite write-through) | mirror the rule files (`ruleSpec`/`ruleStore`/`persistentRuleStore`); keep the pure validator separate from the store (store never parses input); register a dashboard section under `dashboard/js/settings.mjs` |
 | New provider adapter (e.g. another vendor) | `src/providers/<id>/adapter.ts` (`ProviderAdapter` from `src/ports/provider.ts`) + one entry in `src/providers/registry.ts` `PROVIDER_ADAPTERS` | reuse auth strategies (`createApiKeyAuth` in `src/providers/generic/apiKeyAuth.ts`, `createDeviceOAuthAuth` in `src/providers/auth/deviceOAuth.ts`); add tests under `tests/<id>-adapter.test.ts`; dashboard adapter option in `settings-providers.mjs`; no proxy/upstream edits |
@@ -63,4 +64,6 @@ description: Coding patterns, naming, where new code goes, error-handling and te
 4. Add a unit test + an `e2e-*` test; run `npm run build && npm test`.
 
 ## Repo hygiene
+- `tmp/` (repo root) is gitignored. External projects brought in for study (e.g. a local copy of opencode) live there and must never be committed or treated as aitoolgate source.
+- Scratch handoff files for multi-step chains go in `.memory/tmp/` and are deleted when the chain finishes.
 - Browser verification screenshots are taken at repo root during UI checks and deleted before committing; `.playwright-mcp/` is gitignored.

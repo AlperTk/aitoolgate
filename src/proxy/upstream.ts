@@ -1,6 +1,9 @@
 import type http from 'node:http';
 import { Readable, type Transform } from 'node:stream';
 import type { UpstreamProtocol } from '../../config/config';
+import type { CommonResponse, LLMEvent } from '../ports/llm';
+import type { Protocol } from '../ports/protocol';
+import { clientErrorBody, type ProtocolId, protocolRegistration, WIRE_PROTOCOL_IDS } from '../protocols/registry';
 import {
   anthropicResponseToOpenAI,
   anthropicToOpenAIRequest,
@@ -187,18 +190,24 @@ export async function forwardAnthropicRequest(
 /**
  * POST an OpenAI client request to the upstream and return the raw `Response` without
  * consuming its body, so the caller can stream it. Same-protocol requests hit
- * `/chat/completions`; cross-protocol requests are translated first (the route handler
- * only invokes this on same-protocol streams — see that file).
+ * `/chat/completions`; cross-protocol requests are translated first.
  */
 export async function streamOpenAIRequest(
   client: UpstreamClient,
   request: OpenAIChatRequest,
+  tap?: Transform,
 ): Promise<Response> {
   if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
-  if (client.protocol === 'openai') {
-    return streamToEndpoint(client, '/chat/completions', request);
-  }
-  return streamToEndpoint(client, '/messages', openaiToAnthropicRequest(request));
+  return streamForClient(
+    client,
+    WIRE_PROTOCOL_IDS.openai,
+    request,
+    {
+      'openai-chat': (body) => body,
+      'anthropic-messages': (body) => openaiToAnthropicRequest(body as OpenAIChatRequest),
+    },
+    tap,
+  );
 }
 
 /**
@@ -209,12 +218,194 @@ export async function streamOpenAIRequest(
 export async function streamAnthropicRequest(
   client: UpstreamClient,
   request: AnthropicRequest,
+  tap?: Transform,
 ): Promise<Response> {
   if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
-  if (client.protocol === 'anthropic') {
-    return streamToEndpoint(client, '/messages', request);
+  return streamForClient(
+    client,
+    WIRE_PROTOCOL_IDS.anthropic,
+    request,
+    {
+      'anthropic-messages': (body) => body,
+      'openai-chat': (body) => anthropicToOpenAIRequest(body as AnthropicRequest),
+    },
+    tap,
+  );
+}
+
+/** Client→upstream request body translation, per upstream protocol id. */
+type BodyTranslators = Readonly<Record<ProtocolId, (body: unknown) => unknown>>;
+
+/**
+ * Streams from the upstream in the registry-resolved protocol. Every stream goes upstream SSE →
+ * decodeStream → LLMEvent → encodeStream (client protocol), including same-protocol streams.
+ */
+// TEMPORARY debug tap (DEBUG_UPSTREAM_SSE=1): logs raw upstream chunks to stderr; the client gets the original chunks.
+function debugTapUpstream(upstream: Response): Response {
+  if (process.env.DEBUG_UPSTREAM_SSE !== '1' || upstream.body === null) return upstream;
+  const decoder = new TextDecoder();
+  const logger = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      try {
+        process.stderr.write(`[debug-upstream-sse] ${decoder.decode(chunk, { stream: true })}`);
+      } catch {
+        // Debug logging must never affect the stream.
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  return new Response(upstream.body.pipeThrough(logger), {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+async function streamForClient(
+  client: UpstreamClient,
+  clientId: ProtocolId,
+  request: unknown,
+  translators: BodyTranslators,
+  tap?: Transform,
+): Promise<Response> {
+  const upstreamId = WIRE_PROTOCOL_IDS[client.protocol];
+  const { streamPath } = protocolRegistration(upstreamId);
+  const upstream = debugTapUpstream(await streamToEndpoint(client, streamPath, translators[upstreamId](request)));
+  return bridgeStream(upstream, protocolRegistration(upstreamId).create(), protocolRegistration(clientId).create(), tap);
+}
+
+/** Re-encodes an upstream SSE body: decode (upstream protocol) → LLMEvent → encode (client protocol). Non-2xx bodies pass through unchanged. */
+async function bridgeStream(upstream: Response, from: Protocol, to: Protocol, tap?: Transform): Promise<Response> {
+  if (!upstream.ok || upstream.body === null) return upstream;
+  if (isEventStream(upstream)) {
+    const frames = to.encodeStream(from.decodeStream(sseTextChunks(upstream.body, tap)));
+    return new Response(byteStreamOf(frames), { status: upstream.status });
   }
-  return streamToEndpoint(client, '/chat/completions', anthropicToOpenAIRequest(request));
+  // A non-SSE 2xx body (e.g. JSON) is read whole so it can be decoded as a response.
+  let raw = '';
+  for await (const text of sseTextChunks(upstream.body, tap)) raw += text;
+  const events = await eventsOfBody(raw, from);
+  if (events.length === 0) return rawResponse(upstream, raw);
+  if (!events.some(carriesContent)) return clientErrorResponse(to, NO_CONTENT_MESSAGE);
+  return new Response(byteStreamOf(to.encodeStream(events)), { status: upstream.status });
+}
+
+const NO_CONTENT_MESSAGE = 'upstream returned a non-streaming response without content';
+
+/** Step-start and usage events are metadata; any other event (text, tool, reasoning, finish) is content. */
+function carriesContent(event: LLMEvent): boolean {
+  return event.type !== 'step-start' && event.type !== 'usage';
+}
+
+/** 502 JSON error in the client protocol's own error shape. */
+function clientErrorResponse(client: Protocol, message: string): Response {
+  return new Response(JSON.stringify(clientErrorBody(client.id, message)), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function isEventStream(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').includes('text/event-stream');
+}
+
+/** Events for a fully buffered body: a decodable JSON response is synthesised; otherwise the body is read as SSE. */
+async function eventsOfBody(raw: string, from: Protocol): Promise<LLMEvent[]> {
+  const wire = parseJSON(raw);
+  if (wire !== undefined) {
+    const response = from.decodeResponse(wire);
+    return response === undefined ? [] : responseEvents(response);
+  }
+  const events: LLMEvent[] = [];
+  for await (const event of from.decodeStream([raw])) events.push(event);
+  return events;
+}
+
+function parseJSON(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Synthetic event stream for a decoded non-streaming response. */
+function responseEvents(response: CommonResponse): LLMEvent[] {
+  const events: LLMEvent[] = [
+    {
+      type: 'step-start',
+      ...(response.id !== undefined ? { id: response.id } : {}),
+      ...(response.model !== undefined ? { model: response.model } : {}),
+    },
+  ];
+  events.push(...response.message.parts);
+  if (response.usage !== undefined) events.push({ type: 'usage', usage: response.usage });
+  if (response.finishReason !== undefined) events.push({ type: 'finish', finishReason: response.finishReason });
+  return events;
+}
+
+/** The upstream body unchanged; only headers that no longer describe the decoded text are dropped. */
+function rawResponse(upstream: Response, raw: string): Response {
+  const headers = new Headers(upstream.headers);
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  return new Response(raw, { status: upstream.status, headers });
+}
+
+/**
+ * Decode the upstream SSE into text. When a telemetry `tap` is given, the RAW upstream bytes are
+ * mirrored into it; the tap is drained and any tap failure is swallowed so the client stream is never affected.
+ */
+async function* sseTextChunks(body: NonNullable<Response['body']>, tap?: Transform): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  if (tap !== undefined) {
+    tap.on('error', () => {});
+    tap.resume();
+  }
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (tap !== undefined) {
+        try {
+          tap.write(value);
+        } catch {
+          // Best-effort telemetry: a throwing tap must never break the client stream.
+        }
+      }
+      yield decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // An upstream read failure ends the stream (mirrors pipeUpstreamStream's error handling).
+  }
+  if (tap !== undefined) {
+    try {
+      tap.end();
+    } catch {
+      // Best-effort telemetry finalisation.
+    }
+  }
+  yield decoder.decode();
+}
+
+function byteStreamOf(frames: AsyncIterable<string>): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const iterator = frames[Symbol.asyncIterator]();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done === true) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      } catch {
+        controller.close();
+      }
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
 }
 
 /**

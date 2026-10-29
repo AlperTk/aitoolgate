@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import type { Transform } from 'node:stream';
 import type { Pipeline, RequestContext } from '../ports/pipeline';
 import type { OpenAIChatRequest, OpenAIModelListResponse } from './types';
 import {
@@ -58,8 +59,8 @@ export async function handleOpenAIRoute(
   if (req.method === 'POST' && url === '/v1/chat/completions') {
     const raw = await readJSONBody(req);
 
-    // Same-protocol streaming: pipe the upstream SSE straight through; cross-protocol streams keep the buffer-and-translate path.
-    if (isStreamRequest(raw) && deps.upstream.protocol === 'openai') {
+    // Streaming (same- or cross-protocol) is served by streamSameProtocol; only non-stream requests use the buffered pipeline.
+    if (isStreamRequest(raw)) {
       await streamSameProtocol(req, res, deps, raw);
       return true;
     }
@@ -94,7 +95,7 @@ function isStreamRequest(raw: unknown): boolean {
   );
 }
 
-/** Stream a same-protocol OpenAI request as raw SSE; only the request-phase pipeline runs (response phases can't run on a raw pass-through). */
+/** Stream an OpenAI request as SSE re-encoded from LLMEvents; only the request-phase pipeline runs (response phases can't run on a stream). */
 async function streamSameProtocol(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -108,20 +109,26 @@ async function streamSameProtocol(
   resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage, deps.toolErrorPatterns);
   // Ask the upstream to include per-turn usage so the SSE carries a trailing `usage` chunk (preserves client `stream_options`).
   ensureStreamUsage(processed.raw);
-  const upstreamResponse = await streamOpenAIRequest(deps.upstream, processed.raw as OpenAIChatRequest);
-  // Pipe the raw SSE through a passthrough extractor that captures tool telemetry onto the bus without altering forwarded bytes.
-  const extractor = deps.sseExtractor(
-    deps.bus,
-    toSessionKeyString(requestCtx.sessionKey),
-    toClientId(requestCtx.client),
-    deps.tracker,
-    // Precomputed estimated input-token mass, so a usage-less streamed turn still emits an honest `turn.usage`.
-    undefined,
-    deps.usage.estimateInputTokens(requestCtx.messages),
-    // The request's raw body (carrying `tools`), so each streamed tool.call carries the request-provided description.
-    requestCtx.raw,
-  );
-  pipeUpstreamStream(res, upstreamResponse, extractor);
+  // Telemetry extractor: non-throwing; a factory failure only disables the tap, never the stream.
+  let extractor: Transform | undefined;
+  try {
+    extractor = deps.sseExtractor(
+      deps.bus,
+      toSessionKeyString(requestCtx.sessionKey),
+      toClientId(requestCtx.client),
+      deps.tracker,
+      // Precomputed estimated input-token mass, so a usage-less streamed turn still emits an honest `turn.usage`.
+      undefined,
+      deps.usage.estimateInputTokens(requestCtx.messages),
+      // The request's raw body (carrying `tools`), so each streamed tool.call carries the request-provided description.
+      requestCtx.raw,
+    );
+  } catch {
+    extractor = undefined;
+  }
+  // The extractor taps the UPSTREAM bytes inside the bridge; the client receives SSE encoded from LLMEvents.
+  const upstreamResponse = await streamOpenAIRequest(deps.upstream, processed.raw as OpenAIChatRequest, extractor);
+  pipeUpstreamStream(res, upstreamResponse);
 }
 
 /** Reflect provider-agnostic message edits onto the raw wire body's `messages` field; no-op when there is none or it's untouched. */

@@ -8,8 +8,13 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 ## MUST
 - **Runtime dependencies allowed when justified.** Provider SDKs / npm runtime packages may be added (user decision, 2026-10-29). Prefer Node stdlib (`node:http`, `node:sqlite`, global `fetch`) first; add a package only when it clearly pays off.
 - **Wrap all telemetry emission in `safeEmit`** (or equivalent try/catch) so a telemetry failure never fails an LLM request; bus handlers are isolated.
-- **Route OpenAI↔Anthropic conversion through `src/proxy/translate.ts`** (request + response rehydration). Don't scatter translation.
-- **Keep domain/proxy ops non-throwing** — return `null`/`undefined` for not-found/no-match. Only `readJSONBody` throws (invalid API input).
+- **Route OpenAI↔Anthropic conversion through `src/proxy/translate.ts`** (entry point for request + response conversion). Don't scatter translation. Conversion logic itself belongs in `src/protocols/<id>/` behind `src/ports/protocol.ts`; `translate.ts` delegates to it (tool-call rewrite via `Protocol.applyToolCalls`; the change-gate stays in `translate.ts`).
+- **`translate.ts` output is stable** unless there is an explicit behavior decision. Exception (user-approved): malformed upstream responses no longer use the HEAD fallback mappers; protocols keep id/model/usage, and `translate.ts` uses an `EMPTY_RESPONSE` default.
+- **Protocol parity is the contract:** `tests/protocols-parity.test.ts` and the pinned malformed-response tests define expected output; change them only with an explicit behavior decision (the approved HEAD-fallback removal is such a decision).
+- **Error bodies come from the protocol registry** (`ProtocolRegistration.errorBody` / `clientErrorBody` in `src/protocols/registry.ts`); `upstream.ts` must not import protocol modules.
+- **All streaming goes through `LLMEvent`:** every upstream SSE stream, same-protocol or cross-protocol, is decoded (`decodeStream`) to `LLMEvent` and re-encoded (`encodeStream`) for the client via `streamForClient`/`bridgeStream`. Do not forward SSE bytes unchanged. (Retired: the former same-protocol byte-identical stream bypass; the 3 tests that pin it are open, see handoff.md.)
+- **Metadata-only JSON-200 (2xx, no message content) → client-protocol HTTP 502** `upstream returned a non-streaming response without content` (user-approved). Content-bearing JSON-200 → synthetic SSE; undecodable JSON → raw passthrough.
+- **Keep domain/proxy/protocol ops non-throwing** — return `null`/`undefined` for not-found/no-match. Only `readJSONBody` throws (invalid API input).
 - **Build before test** — tests run against compiled `dist/`; `npm run build` must precede `npm test`.
 - **Store large tool-result values out-of-band** (in-memory keyed by id + optional async SQLite), never inline in `TelemetryEvent`/WS frames.
 - **Keep per-session state in the policy STAGE** (`SessionFeedbackStore`); rules are stateless (the flagship rule is deliberately stateless).
@@ -20,6 +25,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - **Validate provider input strictly:** `POST /api/api-providers` requires non-empty `name` and `baseUrl`; `adapterId` must be a catalog type (`generic-openai`, `generic-anthropic`, `copilot`); the wire `protocol` is derived from the type and ignored if sent by the client; `apiKey` must be string-or-null (forbidden for `copilot`, whose `authType` is forced to `deviceOAuth`); unknown extra fields are ignored.
 
 ## MUST NOT
+- **Mutate protocol inputs** — protocol ops (e.g. `Protocol.applyToolCalls`) MUST NOT mutate their input; they return a copy.
 - **Persist the built-in `flagship-loop-rule`** to the database.
 - **Inline heavy payloads into every WS broadcast** (unbounded memory).
 - **Assume multiple *concurrently-active* upstreams** — at most ONE provider is active at a time (single-active invariant); the active upstream is runtime-switchable but never load-balanced.
