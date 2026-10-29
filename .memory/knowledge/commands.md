@@ -46,6 +46,7 @@ There is **no env-based upstream config**: the upstream target comes only from a
 | `TOOL_RESULTS_BATCH_SIZE` | `100` | SQLite drain batch size. |
 | `TOOL_RESULTS_FSYNC` | `false` | `wal_checkpoint(TRUNCATE)` per batch. |
 | `TOOL_ERROR_PATTERNS` | *(none)* | Comma-separated case-insensitive regex patterns; a tool result whose content matches is flagged as an error (additive to the built-in content heuristic). |
+| `COPILOT_DEVICE_CLIENT_ID` | built-in GitHub OAuth app id | Client id for Copilot device login (used when the device-flow request omits `clientId`). |
 
 ## Debugging / dev shortcuts
 - `GET /health` → `{status:"ok"}` liveness check.
