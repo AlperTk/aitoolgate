@@ -39,6 +39,8 @@ export interface ApiOptions {
   applyActiveProvider?: (active: ApiProvider | undefined) => void;
   /** Copilot device-login options (GitHub domain, client id, fetch) plus an optional pending-flow registry; defaults to github.com. */
   deviceFlow?: DeviceOAuthOptions & { registry?: DeviceFlowRegistry };
+  /** Config-provided Copilot device-flow client ID; used when `deviceFlow.clientId` is absent (falls back to the built-in constant). */
+  copilotClientId?: string;
 }
 
 type PatchResult =
@@ -79,8 +81,11 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 
 /** Create the JSON REST API handler. */
 export function createApiHandler(options: ApiOptions): RequestHandler {
-  const { ruleStore, collector, toolResultStore, apiProviderStore, deviceFlow } = options;
-  const deviceAuth = createDeviceOAuthAuth({ ...deviceFlow, clientId: deviceFlow?.clientId ?? COPILOT_DEVICE_CLIENT_ID });
+  const { ruleStore, collector, toolResultStore, apiProviderStore, deviceFlow, copilotClientId } = options;
+  const deviceAuth = createDeviceOAuthAuth({
+    ...deviceFlow,
+    clientId: deviceFlow?.clientId ?? copilotClientId ?? COPILOT_DEVICE_CLIENT_ID,
+  });
   const deviceFlows: DeviceFlowRegistry = deviceFlow?.registry ?? createDeviceFlowRegistry();
   // Hot-apply hook (optional): tracks the active provider without a restart; no-op for legacy callers.
   const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});

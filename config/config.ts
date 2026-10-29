@@ -22,6 +22,8 @@ export interface Config {
   rules: RulesConfig;
   /** Optional case-insensitive regex patterns (`TOOL_ERROR_PATTERNS`) that mark a tool result as a failure; additive to the built-in heuristic. */
   toolErrorPatterns: string[];
+  /** GitHub OAuth app client id for Copilot device login (`COPILOT_DEVICE_CLIENT_ID`). */
+  copilotDeviceClientId: string;
 }
 
 /** Default DB files live under the OS user home (cwd-independent). */
@@ -41,6 +43,7 @@ const DEFAULTS: Config = {
     dbPath: path.join(DEFAULT_DB_DIR, 'rules.db'),
   },
   toolErrorPatterns: [],
+  copilotDeviceClientId: 'Ov23liUL0rlNCLgOISyz',
 };
 
 /** Build a Config from environment variables, falling back to DEFAULTS for anything unset. */
@@ -65,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       dbPath: env.RULES_DB_PATH ?? DEFAULTS.rules.dbPath,
     },
     toolErrorPatterns: parseStringList(env.TOOL_ERROR_PATTERNS),
+    copilotDeviceClientId: env.COPILOT_DEVICE_CLIENT_ID || DEFAULTS.copilotDeviceClientId,
   };
 }
 

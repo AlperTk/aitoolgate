@@ -449,6 +449,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
     toolResultStore,
     apiProviderStore,
     applyActiveProvider,
+    copilotClientId: config.copilotDeviceClientId,
   });
   const dashboardDir = resolveDashboardDir(mount?.dashboardDir);
 
