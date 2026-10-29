@@ -1,4 +1,5 @@
 /** Probe an upstream provider's model-list endpoint (reachability, auth, model ids); upstream failures are returned as `ok:false`, never thrown. */
+import type { ModelListRequest, ProviderAdapter, ProviderConfig } from '../ports/provider';
 import type { ProviderProtocol } from './providerSpec';
 import { isNonEmptyString, normalizeApiKey } from './providerSpec';
 
@@ -22,15 +23,24 @@ export interface ProbeResult {
 
 export type ProbeBodyResult =
   | { ok: true; protocol: ProviderProtocol; baseUrl: string; apiKey: string | null; id?: string }
+  | { ok: true; id: string }
   | { ok: false; error: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Validate a `POST /api/api-providers/probe` body; `protocol` and `baseUrl` are required, `apiKey`/`id` optional. */
+/**
+ * Validate a `POST /api/api-providers/probe` body.
+ * `{ id }` alone probes a saved provider (credentials resolved server-side; body keys are ignored).
+ * Otherwise an inline draft requires `protocol` and `baseUrl`; `apiKey`/`id` optional.
+ */
 export function parseProbeBody(input: unknown): ProbeBodyResult {
   if (!isRecord(input)) return { ok: false, error: 'body must be a JSON object' };
+  if (typeof input.id === 'string' && input.protocol === undefined && input.baseUrl === undefined) {
+    if (input.id.trim().length === 0) return { ok: false, error: '"id" must be a non-empty string' };
+    return { ok: true, id: input.id };
+  }
   if (input.protocol !== 'openai' && input.protocol !== 'anthropic') {
     return { ok: false, error: '"protocol" must be exactly "openai" or "anthropic"' };
   }
@@ -76,9 +86,13 @@ function buildHeaders(protocol: ProviderProtocol, apiKey: string | null): Record
   return apiKey !== null ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
-/** Strip any occurrence of the raw key from text so it never reaches a response. */
-function redact(text: string, apiKey: string | null): string {
-  return apiKey !== null && apiKey.length > 0 ? text.split(apiKey).join('***') : text;
+/** Strip every credential value from text so it never reaches a response. */
+function redact(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret.length > 0) out = out.split(secret).join('***');
+  }
+  return out;
 }
 
 function describeError(error: unknown, timeoutMs: number): string {
@@ -98,30 +112,70 @@ function extractModelIds(payload: unknown): string[] {
   return [...ids].sort();
 }
 
-/** Probe the model-list endpoint; never throws on upstream failure. */
-export async function probeProvider(
-  request: ProbeRequest,
-  fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs: number = PROBE_TIMEOUT_MS,
+/** Send a prepared model-list request; never throws on upstream failure. */
+async function probeModelList(
+  request: ModelListRequest,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
 ): Promise<ProbeResult> {
   const started = Date.now();
-  const { apiKey } = request;
   const latency = (): number => Date.now() - started;
   try {
-    const response = await fetchImpl(buildModelsUrl(request.baseUrl), {
+    const response = await fetchImpl(request.url, {
       method: 'GET',
-      headers: { Accept: 'application/json', ...buildHeaders(request.protocol, apiKey) },
+      headers: { Accept: 'application/json', ...request.headers },
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
       // Upstream body is discarded so no provider-echoed text can reach the caller.
       void response.body?.cancel().catch(() => undefined);
-      const hint = apiKey === null ? ' (no API key sent)' : '';
+      const hint = request.secrets.length === 0 ? ' (no API key sent)' : '';
       return { ok: false, status: response.status, latencyMs: latency(), models: [], error: `upstream responded ${response.status}${hint}` };
     }
     const models = extractModelIds(await response.json());
     return { ok: true, status: response.status, latencyMs: latency(), models };
   } catch (error) {
-    return { ok: false, latencyMs: latency(), models: [], error: redact(describeError(error, timeoutMs), apiKey) };
+    return { ok: false, latencyMs: latency(), models: [], error: redact(describeError(error, timeoutMs), request.secrets) };
   }
+}
+
+/** Probe an inline draft's model-list endpoint with the protocol's auth headers; never throws on upstream failure. */
+export async function probeProvider(
+  request: ProbeRequest,
+  fetchImpl: typeof fetch = globalThis.fetch,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<ProbeResult> {
+  const { apiKey } = request;
+  return probeModelList(
+    {
+      url: buildModelsUrl(request.baseUrl),
+      headers: buildHeaders(request.protocol, apiKey),
+      secrets: apiKey !== null && apiKey.length > 0 ? [apiKey] : [],
+    },
+    fetchImpl,
+    timeoutMs,
+  );
+}
+
+/**
+ * Probe a saved provider. Adapters with `listModels` build their own request from the stored config and authState
+ * (credentials never leave the server); other adapters use the stored apiKey with the protocol's auth headers.
+ */
+export async function probeSavedProvider(
+  adapter: ProviderAdapter,
+  config: ProviderConfig,
+  authState: string | null | undefined,
+  fetchImpl: typeof fetch = globalThis.fetch,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<ProbeResult> {
+  if (adapter.listModels === undefined) {
+    return probeProvider(
+      { protocol: config.protocol, baseUrl: config.baseUrl, apiKey: normalizeApiKey(config.apiKey) },
+      fetchImpl,
+      timeoutMs,
+    );
+  }
+  const request = adapter.listModels(config, authState);
+  if (request === null) return { ok: false, latencyMs: 0, models: [], error: 'no stored credential for this provider' };
+  return probeModelList(request, fetchImpl, timeoutMs);
 }

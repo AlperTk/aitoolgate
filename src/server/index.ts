@@ -13,6 +13,9 @@ import { createApiProviderStore, type ApiProviderStore } from '../api/providerSt
 import { createPersistentProviderStore } from '../api/persistentProviderStore';
 import type { ApiProvider } from '../api/providerSpec';
 import type { UpstreamClient } from '../proxy/upstream';
+import type { ProviderAdapter } from '../ports/provider';
+import { DEFAULT_PROVIDER_ADAPTER_ID, lookupProviderAdapter } from '../providers/registry';
+import { GENERIC_ANTHROPIC_ADAPTER_ID } from '../providers/generic/adapter';
 import { createToolResultStore, type ToolResultStore } from '../telemetry/toolResultStore';
 import { createSqliteToolResultPersister, type SqliteToolResultPersister } from '../telemetry/sqliteToolResultPersister';
 import { createEventBus, type TelemetryEventBus } from '../telemetry/event-bus';
@@ -33,6 +36,8 @@ export interface MountOptions {
   dashboardDir?: string;
   /** Attach the built-in WebSocket server (default: `true`; set `false` to disable). */
   ws?: boolean;
+  /** Caller-supplied API-provider store (default: in-memory or persistent per config). */
+  apiProviderStore?: ApiProviderStore;
 }
 
 /** Test-facing handle describing what {@link createServer} wired together. */
@@ -210,13 +215,39 @@ function buildUpstreamRef(options: ProxyOptions | undefined): UpstreamWiring {
       ? initialUpstream.apiKey
       : undefined;
 
+  const defaultLookup = lookupProviderAdapter(DEFAULT_PROVIDER_ADAPTER_ID);
+  if (defaultLookup === null) throw new Error(`provider adapter "${DEFAULT_PROVIDER_ADAPTER_ID}" is not registered`);
+  const defaultAdapter: ProviderAdapter = defaultLookup;
+
   // LIVE APPLY: overwrite the shared stable ref's fields with the active provider's values so the
   // proxy forwards there immediately. With no active provider, reset back to the baseline.
+  // The adapter is picked by the active row's adapterId; an unregistered id falls back to generic.
+  // Endpoint and auth headers are resolved through the adapter so the proxy only sees the result.
   function applyActiveProvider(active?: ApiProvider): void {
+    // With no active provider the baseline's protocol selects the matching generic type.
+    const typeId = active ? active.adapterId : (baselineProtocol === 'anthropic' ? GENERIC_ANTHROPIC_ADAPTER_ID : DEFAULT_PROVIDER_ADAPTER_ID);
+    const selected: ProviderAdapter | null = lookupProviderAdapter(typeId);
+    const adapter: ProviderAdapter = selected ?? defaultAdapter;
     upstreamRef.baseUrl = active ? active.baseUrl : baselineBaseUrl;
     upstreamRef.model = active ? (active.model ?? '') : baselineModel;
-    upstreamRef.protocol = active ? active.protocol : baselineProtocol;
     upstreamRef.apiKey = active && active.apiKey !== null ? active.apiKey : (active ? undefined : baselineApiKey);
+    // The protocol comes only from the adapter's endpoint resolution (derived from the type).
+    const endpoint = adapter.resolveEndpoint({
+      baseUrl: upstreamRef.baseUrl,
+      protocol: adapter.wireProtocol,
+      apiKey: upstreamRef.apiKey,
+    });
+    upstreamRef.baseUrl = endpoint.baseUrl;
+    upstreamRef.protocol = endpoint.protocol;
+    const staticHeaders = adapter.auth.resolveHeaders({ apiKey: upstreamRef.apiKey });
+    upstreamRef.headers = staticHeaders;
+    const decorate = adapter.decorateHeaders;
+    const protocol = endpoint.protocol;
+    const authState = active?.authState ?? null;
+    upstreamRef.decorateRequest =
+      decorate === undefined
+        ? undefined
+        : (messages) => decorate.call(adapter, { headers: staticHeaders, protocol, messages, authState });
   }
 
   return {
@@ -352,7 +383,9 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
   // behavior bit-for-bit unchanged.
   const providersPersistent = config.rules.enabled && options?.upstream === undefined;
   let apiProviderStore: ApiProviderStore;
-  if (providersPersistent) {
+  if (mount?.apiProviderStore !== undefined) {
+    apiProviderStore = mount.apiProviderStore;
+  } else if (providersPersistent) {
     apiProviderStore = openApiProviderStore(config.rules.dbPath);
   } else {
     apiProviderStore = createApiProviderStore();
@@ -369,7 +402,7 @@ export function createServer(port?: number, options?: ProxyOptions, mount?: Moun
       baseUrl: baseline.baseUrl,
       model: baseline.model,
       apiKey: baseline.apiKey !== undefined ? baseline.apiKey.trim() : null,
-      protocol: baseline.protocol,
+      adapterId: baseline.protocol === 'anthropic' ? GENERIC_ANTHROPIC_ADAPTER_ID : DEFAULT_PROVIDER_ADAPTER_ID,
       isActive: true,
       createdAt: Date.now(),
     });

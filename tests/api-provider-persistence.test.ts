@@ -28,7 +28,7 @@ function withTempDb(run: (dbFile: string) => Promise<void>): Promise<void> {
   return run(join(dir, 'rules.db')).finally(() => rmSync(dir, { recursive: true, force: true }));
 }
 
-const sample = (name: string) => ({ name, baseUrl: `http://${name}.local`, model: 'm', protocol: 'openai' as const });
+const sample = (name: string) => ({ name, baseUrl: `http://${name}.local`, model: 'm' });
 
 test('persisted active switch survives restart with exactly one active row in DB', () =>
   withTempDb(async (dbFile) => {

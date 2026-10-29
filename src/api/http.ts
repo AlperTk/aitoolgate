@@ -12,10 +12,16 @@ import {
   describeRule,
   validateSpec,
 } from './ruleSpec';
-import type { ApiProvider } from './providerSpec';
+import type { ApiProvider, ProviderAuthType } from './providerSpec';
 import { validateProviderSpec, isNonEmptyString, normalizeApiKey } from './providerSpec';
-import { parseProbeBody, probeProvider } from './providerProbe';
+import { parseProbeBody, probeProvider, probeSavedProvider } from './providerProbe';
+import { lookupProviderAdapter } from '../providers/registry';
 import type { ApiProviderStore, ProviderPatch } from './providerStore';
+import { createDeviceOAuthAuth, checkCopilotEntitlement, serializeAuthState } from '../providers/auth/deviceOAuth';
+import type { DeviceOAuthOptions } from '../providers/auth/deviceOAuth';
+import { COPILOT_ADAPTER_ID } from '../providers/copilot/adapter';
+import { createDeviceFlowRegistry } from './deviceFlowRegistry';
+import type { DeviceFlowRegistry } from './deviceFlowRegistry';
 
 /** The request-handler convention: `true` = handled this route, `false` = fall through. */
 export type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
@@ -29,6 +35,8 @@ export interface ApiOptions {
   apiProviderStore?: ApiProviderStore;
   /** Invoked once after each provider mutation and at boot to hot-apply the active provider without a restart; no-op when omitted. */
   applyActiveProvider?: (active: ApiProvider | undefined) => void;
+  /** Copilot device-login options (GitHub domain, client id, fetch) plus an optional pending-flow registry; defaults to github.com. */
+  deviceFlow?: DeviceOAuthOptions & { registry?: DeviceFlowRegistry };
 }
 
 type PatchResult =
@@ -69,7 +77,9 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 
 /** Create the JSON REST API handler. */
 export function createApiHandler(options: ApiOptions): RequestHandler {
-  const { ruleStore, collector, toolResultStore, apiProviderStore } = options;
+  const { ruleStore, collector, toolResultStore, apiProviderStore, deviceFlow } = options;
+  const deviceAuth = createDeviceOAuthAuth(deviceFlow);
+  const deviceFlows: DeviceFlowRegistry = deviceFlow?.registry ?? createDeviceFlowRegistry();
   // Hot-apply hook (optional): tracks the active provider without a restart; no-op for legacy callers.
   const liveApply: (active: ApiProvider | undefined) => void = options.applyActiveProvider ?? (() => {});
 
@@ -130,8 +140,14 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
       const method = req.method ?? 'GET';
 
       // Serialize a provider without its raw API key (only an `apiKeySet` flag) so the list route never leaks secrets.
+      // `authState` is opaque adapter credential state and is never returned by any provider route.
+      // deviceOAuth rows never expose any credential: authState is dropped and apiKey is forced to null.
+      const withoutAuthState = (provider: ApiProvider): Omit<ApiProvider, 'authState'> => {
+        const { authState: _authState, ...rest } = provider;
+        return rest.authType === 'deviceOAuth' ? { ...rest, apiKey: null } : rest;
+      };
       const serializePublic = (provider: ApiProvider): Record<string, unknown> => {
-        const { apiKey, ...rest } = provider;
+        const { apiKey, ...rest } = withoutAuthState(provider);
         return { ...rest, apiKeySet: apiKey !== null };
       };
       // Fire the hot-apply hook once against the current active provider (no-op if not wired).
@@ -229,6 +245,29 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
           sendJson(res, 400, { error: probeBody.error });
           return true;
         }
+        if (!('protocol' in probeBody)) {
+          // Saved provider: config and credentials are resolved here; the token never leaves the server.
+          const saved = apiProviderStore?.get(probeBody.id);
+          if (saved === undefined) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          const adapter = lookupProviderAdapter(saved.adapterId);
+          const savedResult =
+            adapter === null
+              ? { ok: false, latencyMs: 0, models: [], error: 'unknown provider type' }
+              : await probeSavedProvider(
+                  adapter,
+                  {
+                    baseUrl: saved.baseUrl,
+                    protocol: saved.protocol,
+                    apiKey: saved.authType === 'deviceOAuth' ? null : saved.apiKey,
+                  },
+                  saved.authState,
+                );
+          sendJson(res, 200, savedResult);
+          return true;
+        }
         const stored = probeBody.id !== undefined ? apiProviderStore?.get(probeBody.id) : undefined;
         const result = await probeProvider({
           protocol: probeBody.protocol,
@@ -241,6 +280,91 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
 
       // API-provider registry (/api/api-providers/*); only reached when a live store is wired.
       if (apiProviderStore !== undefined) {
+        // Copilot device login: the device_code stays server-side, referenced by an opaque flowId.
+        if (method === 'POST' && path === '/api/api-providers/device-flow/start') {
+          const started = await deviceAuth.startDeviceFlow();
+          if (!started.ok) {
+            sendJson(res, started.error.code === 'invalid_domain' ? 400 : 502, { error: started.error.message });
+            return true;
+          }
+          const flow = started.flow;
+          const flowId = deviceFlows.start(flow);
+          sendJson(res, 200, {
+            flowId,
+            userCode: flow.userCode,
+            verificationUri: flow.verificationUri,
+            interval: flow.interval,
+            expiresIn: flow.expiresIn,
+          });
+          return true;
+        }
+
+        if (method === 'POST' && path === '/api/api-providers/device-flow/poll') {
+          const parsed = await readJsonBody(req);
+          if (parsed instanceof Error) {
+            sendJson(res, 400, { error: parsed.message });
+            return true;
+          }
+          const flowId = isRecord(parsed) ? parsed.flowId : undefined;
+          if (typeof flowId !== 'string' || flowId.length === 0) {
+            sendJson(res, 400, { error: '"flowId" is required and must be a non-empty string' });
+            return true;
+          }
+          const flow = deviceFlows.get(flowId);
+          if (flow === undefined) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          const result = await deviceAuth.pollDeviceFlow(flow);
+          switch (result.status) {
+            case 'pending':
+              sendJson(res, 200, { status: 'pending', interval: result.interval });
+              return true;
+            case 'slow_down':
+              deviceFlows.setInterval(flowId, result.interval);
+              sendJson(res, 200, { status: 'slow_down', interval: result.interval });
+              return true;
+            case 'expired':
+            case 'denied':
+              deviceFlows.delete(flowId);
+              sendJson(res, 200, { status: result.status });
+              return true;
+            case 'error':
+              sendJson(res, 502, { error: result.error.message });
+              return true;
+            case 'done':
+              break;
+          }
+          // Entitlement gates activation; a blocked account never gets a provider row.
+          const entitlement = await checkCopilotEntitlement(result.state.accessToken, deviceFlow);
+          deviceFlows.delete(flowId);
+          if (entitlement.status === 'blocked') {
+            sendJson(res, 403, { error: entitlement.message });
+            return true;
+          }
+          const authState = serializeAuthState(result.state);
+          const existing = apiProviderStore.list().find((p) => p.adapterId === COPILOT_ADAPTER_ID);
+          const row =
+            existing === undefined
+              ? apiProviderStore.add({
+                  name: 'GitHub Copilot',
+                  baseUrl: 'https://github.com',
+                  model: null,
+                  adapterId: COPILOT_ADAPTER_ID,
+                  authType: 'deviceOAuth',
+                  authState,
+                  isActive: true,
+                })
+              : apiProviderStore.update(existing.id, { authType: 'deviceOAuth', authState, isActive: true });
+          if (row === undefined) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          fireLiveApply();
+          sendJson(res, 200, { status: 'done', provider: serializePublic(row) });
+          return true;
+        }
+
         const providerPath = /^\/api\/api-providers(?:\/([^/]+))?$/.exec(path);
         if (providerPath) {
           const segment = providerPath[1] === undefined ? undefined : decodeURIComponent(providerPath[1]);
@@ -259,7 +383,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
               sendJson(res, 404, { error: 'not_found' });
               return true;
             }
-            sendJson(res, 200, found);
+            sendJson(res, 200, withoutAuthState(found));
             return true;
           }
 
@@ -280,6 +404,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
               return true;
             }
             const body = parsed as Record<string, unknown>;
+            const isCopilot = body.adapterId === COPILOT_ADAPTER_ID;
             for (const field of ['name', 'baseUrl'] as const) {
               if (!isNonEmptyString(body[field])) {
                 sendJson(res, 400, { error: `"${field}" is required and must be a non-empty string` });
@@ -290,17 +415,21 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
               name: String(body.name),
               baseUrl: String(body.baseUrl),
               model: typeof body.model === 'string' ? body.model : null,
-              protocol: typeof body.protocol === 'string' ? (body.protocol as ApiProvider['protocol']) : 'openai',
               apiKey: normalizeApiKey(body.apiKey),
+              adapterId: typeof body.adapterId === 'string' ? body.adapterId : undefined,
+              authType: isCopilot
+                ? 'deviceOAuth'
+                : typeof body.authType === 'string' ? (body.authType as ProviderAuthType) : undefined,
             });
             fireLiveApply();
-            sendJson(res, 201, created);
+            sendJson(res, 201, withoutAuthState(created));
             return true;
           }
 
           // PATCH update known fields only (requires an id). Enforces single-active.
           if (method === 'PATCH' && segment !== undefined) {
-            if (apiProviderStore.get(segment) === undefined) {
+            const existing = apiProviderStore.get(segment);
+            if (existing === undefined) {
               sendJson(res, 404, { error: 'not_found' });
               return true;
             }
@@ -313,18 +442,23 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
               sendJson(res, 400, { error: 'body must be a JSON object' });
               return true;
             }
-            const specError = validateProviderSpec(parsed);
+            const specError = validateProviderSpec(parsed, { adapterId: existing.adapterId, authType: existing.authType });
             if (specError !== null) {
               sendJson(res, 400, { error: specError });
               return true;
             }
             const patchBody = parsed as Record<string, unknown>;
+            if ('apiKey' in patchBody && existing.authType === 'deviceOAuth') {
+              sendJson(res, 400, { error: '"apiKey" cannot be set on a deviceOAuth provider' });
+              return true;
+            }
             const patch: ProviderPatch = {};
             if ('name' in patchBody) patch.name = String(patchBody.name);
             if ('baseUrl' in patchBody) patch.baseUrl = String(patchBody.baseUrl);
             if ('model' in patchBody) patch.model = patchBody.model === null ? null : String(patchBody.model);
             if ('apiKey' in patchBody) patch.apiKey = normalizeApiKey(patchBody.apiKey);
-            if ('protocol' in patchBody) patch.protocol = patchBody.protocol as ApiProvider['protocol'];
+            if ('adapterId' in patchBody) patch.adapterId = String(patchBody.adapterId);
+            if ('authType' in patchBody) patch.authType = patchBody.authType as ProviderAuthType;
             if ('isActive' in patchBody) patch.isActive = Boolean(patchBody.isActive);
             const updated = apiProviderStore.update(segment, patch);
             if (updated === undefined) {
@@ -332,7 +466,7 @@ export function createApiHandler(options: ApiOptions): RequestHandler {
               return true;
             }
             fireLiveApply();
-            sendJson(res, 200, updated);
+            sendJson(res, 200, withoutAuthState(updated));
             return true;
           }
 

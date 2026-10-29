@@ -38,7 +38,7 @@ S.el('settings-panel', 'main');
 ['prov-editor-title', 'pf-error', 'pf-test-result', 'prov-status', 'prov-empty', 'prov-error', 'prov-editor'].forEach((id) => S.el(id, 'div'));
 S.el('prov-form', 'form');
 ['pf-name', 'pf-base-url', 'pf-model', 'pf-api-key'].forEach((id) => S.el(id, 'input'));
-S.el('pf-protocol', 'select');
+S.el('pf-type', 'select');
 ['prov-list-view', 'prov-form-view'].forEach((id) => S.el(id, 'section'));
 
 let M: any;
@@ -84,7 +84,7 @@ before(async () => {
   (FakeEl.prototype as any).querySelector = function querySelector(sel: string) {
     if (typeof sel === 'string' && sel.startsWith('#')) {
       const id = sel.slice(1);
-      if (id !== 'pf-protocol') return null;   // force all other ids down the shared registry ($) path
+      if (id !== 'pf-type') return null;   // force all other ids down the shared registry ($) path
       return S.byId?.(id) ?? null;             // only the protocol select resolves here directly
     }
     return null;
@@ -226,7 +226,7 @@ test('formatProviderRow masks raw keys and reflects apiKeySet accurately', async
   assert.equal(withoutKey.keySet, false, 'apiKeySet false -> keySet false');
   assert.equal(withoutKey.active, false, 'non-active row mirrored as inactive');
   assert.doesNotMatch(JSON.stringify(withoutKey), /OTHER-secret/, 'raw key still hidden when apiKeySet is false');
-  assert.match(withoutKey.protocolLabel, /OpenAI/i, 'protocol label derives from openai default');
+  assert.equal(withoutKey.typeLabel, 'OpenAI-compatible', 'type label derives from openai default');
 });
 
 /* ==========================================================================
@@ -313,21 +313,21 @@ test('M1-M7 settings providers pane end-to-end: render -> draft -> validation ga
   S.byId('pf-base-url')!.value = 'http://localhost:9000/v1';
   S.byId('pf-model')!.value = 'gpt-4o-mini';
   S.byId('pf-api-key')!.value = 'sk-fresh-KEY';
-  (S.byId('pf-protocol') as any).value = 'openai';
+  (S.byId('pf-type') as any).value = 'generic-openai';
   const L0 = calls.length;
   fireOn(S.byId('prov-form')!, 'submit');
   await flush();
   const postCalls = calls.slice(L0);
-  assert.equal(postCalls.length, 2, 'a successful save yields exactly two requests (one write + one authoritative reload)');
+  assert.equal(postCalls.length, 3, 'a successful save yields one write, one saved-model probe (populateForm on existing record), then one authoritative reload');
   assert.equal(postCalls[0].method, 'POST', 'the create request uses POST');
   assert.equal(postCalls[0].url, 'api/api-providers', 'create targets the collection base path (not a detail url)');
   assert.deepEqual(
     postCalls[0].body,
-    { name: 'Local Engine', baseUrl: 'http://localhost:9000/v1', model: 'gpt-4o-mini', apiKey: 'sk-fresh-KEY', protocol: 'openai' },
+    { name: 'Local Engine', baseUrl: 'http://localhost:9000/v1', model: 'gpt-4o-mini', apiKey: 'sk-fresh-KEY', adapterId: 'generic-openai' },
     'request body char-shape matches the REST contract precisely',
   );
-  assert.equal(postCalls[1].method, 'GET', 'an authoritative full-list reload follows immediately');
-  assert.equal(postCalls[1].url, 'api/api-providers');
+  assert.equal(postCalls[2].method, 'GET', 'an authoritative full-list reload follows immediately');
+  assert.equal(postCalls[2].url, 'api/api-providers');
   assert.equal(S.byId('pf-reset')!.hidden, false, 'edit state now tracks an existing saved record (reset-to-saved revealed)');
   assert.match(String(S.byId('prov-editor-title')!.textContent), /^Edit /, 'title reflects editing the just-created provider');
   assert.equal(isHidden('prov-form-view'), true, 'a successful save returns to the LIST sub-view');
@@ -343,13 +343,13 @@ test('M1-M7 settings providers pane end-to-end: render -> draft -> validation ga
   fireOn(S.byId('prov-list')!, 'click', { target: infoCell });
   await flush();
   const editCalls = calls.slice(Ld2);
-  assert.equal(editCalls.length, 1, 'opening the editor for an existing provider issues exactly one request (no create/update)');
+  assert.equal(editCalls.length, 2, 'opening the editor for an existing provider issues one detail GET plus one saved-model probe (no create/update)');
   assert.equal(editCalls[0].method, 'GET', 'edit prefill uses the GET detail endpoint (full record incl raw key)');
   assert.equal(editCalls[0].url, 'api/api-providers/prov-1', 'GET targets the specific provider id');
   assert.equal(S.byId('pf-name')!.value, 'Beta Engine', 'name prefilled from the saved record');
   assert.equal(S.byId('pf-base-url')!.value, 'http://beta.local/v1', 'base URL prefilled from the saved record');
   assert.equal(S.byId('pf-model')!.value, 'beta-model', 'model prefilled from the saved record');
-  assert.equal((S.byId('pf-protocol') as any).value, 'anthropic', 'protocol prefilled from the saved record');
+  assert.equal((S.byId('pf-type') as any).value, 'generic-anthropic', 'type prefilled from the saved record');
   assert.equal(S.byId('pf-api-key')!.value, '', 'a provider with no stored key leaves the key field blank');
   assert.equal(S.byId('pf-reset')!.hidden, false, 'edit mode reveals reset-to-saved for the existing record');
   assert.match(String(S.byId('prov-editor-title')!.textContent), /^Edit /, 'title reflects editing the existing provider');

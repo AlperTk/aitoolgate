@@ -23,10 +23,14 @@ export interface UpstreamClient {
   baseUrl: string;
   /** Configured model name (returned by `GET /v1/models`). */
   model: string;
-  /** Optional provider API key. */
+  /** Resolved provider API key — model metadata only; request headers come from `headers`. */
   apiKey?: string;
+  /** Resolved auth/provider headers attached to every upstream POST (supplied by the composition root). */
+  headers?: Record<string, string>;
   /** Protocol the upstream speaks. */
   protocol: UpstreamProtocol;
+  /** Optional per-request header decorator (e.g. Copilot); receives the outgoing request messages. Must not throw. */
+  decorateRequest?: (messages: ReadonlyArray<{ role: string; content?: unknown }> | undefined) => Record<string, string>;
   /** Injectable fetch (defaults to the global fetch) — used by tests. */
   fetchImpl?: FetchLike;
 }
@@ -65,14 +69,31 @@ function joinUrl(baseUrl: string, path: string): string {
   return baseUrl.replace(/\/+$/, '') + path;
 }
 
-/** HTTP headers shared by every upstream POST (auth applied only when a key is set). */
-function buildHeaders(client: UpstreamClient): Record<string, string> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (client.apiKey) {
-    headers.Authorization = `Bearer ${client.apiKey}`;
-    headers['x-api-key'] = client.apiKey;
+/** HTTP headers shared by every upstream POST: JSON content type plus the resolved provider headers. */
+/** Legacy auth rule (pre-T1): Bearer + x-api-key for both protocols when a key is set. */
+function legacyAuthHeaders(apiKey: string | undefined): Record<string, string> {
+  if (!apiKey) return {};
+  return { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
+}
+
+function requestMessagesOf(body: unknown): ReadonlyArray<{ role: string; content?: unknown }> | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const messages = (body as { messages?: unknown }).messages;
+  return Array.isArray(messages) ? (messages as ReadonlyArray<{ role: string; content?: unknown }>) : undefined;
+}
+
+/** Static resolved headers, plus per-request decoration (when the active adapter supplies one). Never throws. */
+function buildHeaders(client: UpstreamClient, body: unknown): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(client.headers ?? legacyAuthHeaders(client.apiKey)),
+  };
+  if (client.decorateRequest === undefined) return headers;
+  try {
+    return { ...headers, ...client.decorateRequest(requestMessagesOf(body)) };
+  } catch {
+    return headers;
   }
-  return headers;
 }
 
 /** How long a NON-streaming upstream request may take before we abort it (5 min). */
@@ -98,7 +119,7 @@ async function postJSON(
   try {
     const response = await fetchFor(client)(url, {
       method: 'POST',
-      headers: buildHeaders(client),
+      headers: buildHeaders(client, body),
       body: JSON.stringify(withUpstreamModel(client, body)),
       signal: controller.signal,
     });
@@ -132,7 +153,7 @@ async function streamToEndpoint(
   // upstream to close the connection (the caller owns the read + teardown).
   return fetchFor(client)(joinUrl(client.baseUrl, path), {
     method: 'POST',
-    headers: buildHeaders(client),
+    headers: buildHeaders(client, body),
     body: JSON.stringify(withUpstreamModel(client, body)),
   });
 }

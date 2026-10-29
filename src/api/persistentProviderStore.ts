@@ -4,6 +4,7 @@ import type { ApiProvider } from './providerSpec';
 import type { ApiProviderStore } from './providerStore';
 import { createApiProviderStore } from './providerStore';
 import { createPersistentStore, openDb } from './crudStore';
+import { DEFAULT_PROVIDER_ADAPTER_ID, wireProtocolFor } from '../providers/registry';
 
 export interface PersistentProviderStoreOptions {
   /** Resolved DB file path (same file as the rules database). Defaults to `':memory:'`. */
@@ -14,14 +15,17 @@ export interface PersistentProviderStoreOptions {
 
 type Row = Record<string, unknown>;
 
-const UPSERT_PROVIDER_SQL = `INSERT INTO api_providers (id, name, base_url, model, api_key, protocol, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+const UPSERT_PROVIDER_SQL = `INSERT INTO api_providers (id, name, base_url, model, api_key, protocol, adapter_id, auth_type, auth_state, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          base_url = excluded.base_url,
          model = excluded.model,
          api_key = excluded.api_key,
          protocol = excluded.protocol,
+         adapter_id = excluded.adapter_id,
+         auth_type = excluded.auth_type,
+         auth_state = excluded.auth_state,
          is_active = excluded.is_active`;
 
 /** Storage keeps the wire `null` ("From Request") as '' (TEXT NOT NULL, no migration); see rowToProvider for the reverse. */
@@ -29,17 +33,38 @@ function toStoredModel(model: string | null): string {
   return model ?? '';
 }
 
+/** Positional parameters for {@linkcode UPSERT_PROVIDER_SQL}. */
+function providerParams(provider: ApiProvider): (string | number | null)[] {
+  return [
+    provider.id,
+    provider.name,
+    provider.baseUrl,
+    toStoredModel(provider.model),
+    provider.apiKey,
+    wireProtocolFor(provider.adapterId), // derived from the type; never stored from client input
+    provider.adapterId,
+    provider.authType,
+    provider.authState,
+    provider.isActive ? 1 : 0,
+    provider.createdAt,
+  ];
+}
+
 function rowToProvider(row: Row): ApiProvider {
   const rawModel = row.model == null ? '' : String(row.model);
   const rawKey = row.api_key == null ? '' : String(row.api_key);
-  const protocol: ApiProvider['protocol'] = row.protocol === 'anthropic' ? 'anthropic' : 'openai';
+  const authType: ApiProvider['authType'] = row.auth_type === 'deviceOAuth' ? 'deviceOAuth' : 'apiKey';
+  const adapterId = row.adapter_id == null ? DEFAULT_PROVIDER_ADAPTER_ID : String(row.adapter_id);
   return {
     id: String(row.id),
     name: String(row.name),
     baseUrl: String(row.base_url),
     model: rawModel.length === 0 ? null : rawModel,
     apiKey: rawKey.length === 0 ? null : rawKey,
-    protocol,
+    protocol: wireProtocolFor(adapterId),
+    adapterId,
+    authType,
+    authState: row.auth_state == null ? null : String(row.auth_state),
     isActive: Number(row.is_active) === 1,
     createdAt: Number(row.created_at),
   };
@@ -51,7 +76,7 @@ function loadExistingRows(dbFile: string): ApiProvider[] {
   try {
     const rows = db
       .prepare(
-        'SELECT id, name, base_url, model, api_key, protocol, is_active, created_at FROM api_providers ORDER BY created_at ASC, id ASC',
+        'SELECT id, name, base_url, model, api_key, protocol, adapter_id, auth_type, auth_state, is_active, created_at FROM api_providers ORDER BY created_at ASC, id ASC',
       )
       .all() as Row[];
     let activeSeen = false;
@@ -73,16 +98,7 @@ function loadExistingRows(dbFile: string): ApiProvider[] {
 function upsertRecord(dbFile: string, provider: ApiProvider): void {
   const db = openDb(dbFile);
   try {
-    db.prepare(UPSERT_PROVIDER_SQL).run(
-      provider.id,
-      provider.name,
-      provider.baseUrl,
-      toStoredModel(provider.model),
-      provider.apiKey,
-      provider.protocol,
-      provider.isActive ? 1 : 0,
-      provider.createdAt,
-    );
+    db.prepare(UPSERT_PROVIDER_SQL).run(...providerParams(provider));
   } finally {
     db.close();
   }
@@ -97,16 +113,7 @@ function writeAllRows(dbFile: string, providers: ApiProvider[], removedId?: stri
       if (removedId !== undefined) db.prepare('DELETE FROM api_providers WHERE id = ?').run(removedId);
       const stmt = db.prepare(UPSERT_PROVIDER_SQL);
       for (const provider of providers) {
-        stmt.run(
-          provider.id,
-          provider.name,
-          provider.baseUrl,
-          toStoredModel(provider.model),
-          provider.apiKey,
-          provider.protocol,
-          provider.isActive ? 1 : 0,
-          provider.createdAt,
-        );
+        stmt.run(...providerParams(provider));
       }
       db.exec('COMMIT');
     } catch (err) {
@@ -121,7 +128,7 @@ function writeAllRows(dbFile: string, providers: ApiProvider[], removedId?: stri
 export function createPersistentProviderStore(options: PersistentProviderStoreOptions = {}): ApiProviderStore {
   const dbFile = options.dbFile ?? ':memory:';
 
-  // Ensure the schema (incl. the v3 api_providers table) exists; idempotent, runs even if rule persistence never opened it.
+  // Ensure the schema (incl. the api_providers table and v4 columns) exists; idempotent, runs even if rule persistence never opened it.
   const ensureDb = openDb(dbFile);
   applyMigrations(ensureDb);
   ensureDb.close();
@@ -129,7 +136,12 @@ export function createPersistentProviderStore(options: PersistentProviderStoreOp
   let records = loadExistingRows(dbFile);
   // Startup seeding: an empty table + supplied env-derived default becomes the sole auto-active row.
   if (records.length === 0 && options.seedFallback !== undefined) {
-    const seeded: ApiProvider = { ...options.seedFallback, createdAt: Date.now(), isActive: true };
+    const seeded: ApiProvider = {
+      ...options.seedFallback,
+      protocol: wireProtocolFor(options.seedFallback.adapterId),
+      createdAt: Date.now(),
+      isActive: true,
+    };
     records = [seeded];
     upsertRecord(dbFile, seeded); // persist immediately so the seed survives without a runtime mutation
   }

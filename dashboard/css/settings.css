@@ -182,6 +182,33 @@
 .probe-result.is-fail { color: var(--red); }
 .probe-result.is-probing { color: var(--muted); }
 
+/* GitHub Copilot device-login block (adapter = copilot): login button, user code,
+   verification link, and the poll status line. Hidden state wins over display rules. */
+.copilot-login[hidden], .copilot-device[hidden], .copilot-status[hidden] { display: none; }
+.copilot-login { display: flex; flex-direction: column; align-items: flex-start; gap: 0.6rem; margin-bottom: 0.9rem; }
+.copilot-device {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.copilot-code-line { color: var(--muted); font-size: var(--fs-sm); }
+.copilot-code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.08em;
+  user-select: all;                                 /* one click selects the code for copying */
+}
+.copilot-link { color: var(--accent); font-size: var(--fs-sm); word-break: break-all; }
+.copilot-status { font-size: var(--fs-sm); }
+.copilot-status.is-fail { color: var(--red); }
+.copilot-status.is-probing { color: var(--muted); }
+
 /* Keyboard focus ring across the modal (the header trigger's own focus ring
    lives in styles.css alongside its base styles). */
 .settings-card button:focus-visible,

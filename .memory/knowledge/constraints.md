@@ -6,7 +6,7 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 # Constraints
 
 ## MUST
-- **Keep zero runtime dependencies.** Node stdlib only (`node:http`, `node:sqlite`, hand-written WebSocket). Do not add npm runtime packages; dev deps are `typescript` + `@types/node` only.
+- **Runtime dependencies allowed when justified.** Provider SDKs / npm runtime packages may be added (user decision, 2026-10-29). Prefer Node stdlib (`node:http`, `node:sqlite`, global `fetch`) first; add a package only when it clearly pays off.
 - **Wrap all telemetry emission in `safeEmit`** (or equivalent try/catch) so a telemetry failure never fails an LLM request; bus handlers are isolated.
 - **Route OpenAI↔Anthropic conversion through `src/proxy/translate.ts`** (request + response rehydration). Don't scatter translation.
 - **Keep domain/proxy ops non-throwing** — return `null`/`undefined` for not-found/no-match. Only `readJSONBody` throws (invalid API input).
@@ -17,13 +17,14 @@ description: MUST / MUST NOT rules, architectural restrictions, infrastructure l
 - **Keep `RuleSpec` ↔ engine factories consistent with `dashboard/js/rule-schema.mjs`** (form schemas are synced to `src/api/ruleSpec.ts`).
 - **Gate opt-in features via config/options:** storage via server options (`options.telemetry.storage`); tool-result persistence via `config.toolResults.enabled` (default off).
 - **Keep provider persistence best-effort** — a failing open/read/write logs a warning and leaves the in-memory provider store untouched; the server still boots (in-memory fallback if the DB can't open).
-- **Validate provider input strictly:** `POST /api/api-providers` requires non-empty `name` and `baseUrl`; `protocol` must be exactly `openai` or `anthropic`; `apiKey` must be string-or-null; unknown extra fields are ignored.
+- **Validate provider input strictly:** `POST /api/api-providers` requires non-empty `name` and `baseUrl`; `adapterId` must be a catalog type (`generic-openai`, `generic-anthropic`, `copilot`); the wire `protocol` is derived from the type and ignored if sent by the client; `apiKey` must be string-or-null (forbidden for `copilot`, whose `authType` is forced to `deviceOAuth`); unknown extra fields are ignored.
 
 ## MUST NOT
 - **Persist the built-in `flagship-loop-rule`** to the database.
 - **Inline heavy payloads into every WS broadcast** (unbounded memory).
 - **Assume multiple *concurrently-active* upstreams** — at most ONE provider is active at a time (single-active invariant); the active upstream is runtime-switchable but never load-balanced.
 - **Leak a provider's raw `apiKey`** in list responses — expose only `apiKeySet`; only the detail `GET /api/api-providers/:id` may return the raw key.
+- **Leak `authState` (OAuth tokens, `auth_state` column)** in any list, detail, or device-flow response; it is written only by the server-side device-flow path and is never client-writable. Device-code `device_code` values stay server-side (flow registry), never sent to the client.
 - **Echo a raw `apiKey` or raw upstream error body from `POST /api/api-providers/probe`** — probe errors are key-redacted and upstream bodies are discarded.
 
 ## Architectural restrictions

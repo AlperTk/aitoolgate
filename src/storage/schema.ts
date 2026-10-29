@@ -12,7 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** The highest migration version applied by {@link applyMigrations}. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 export interface Migration {
   /** Monotonically increasing, unique, ascending version number. */
@@ -81,6 +81,28 @@ export const MIGRATIONS: readonly Migration[] = [
         is_active INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL
       );
+    `,
+  },
+  {
+    // Version 4 adds the adapter id, auth type and an opaque auth-state JSON string to
+    // api_providers. Existing rows take the defaults ('generic' / 'apiKey'); auth_state
+    // stays NULL until a device-OAuth flow populates it.
+    version: 4,
+    sql: `
+      ALTER TABLE api_providers ADD COLUMN adapter_id TEXT NOT NULL DEFAULT 'generic';
+      ALTER TABLE api_providers ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'apiKey';
+      ALTER TABLE api_providers ADD COLUMN auth_state TEXT;
+    `,
+  },
+  {
+    // Version 5 makes the provider type (adapter_id) the source of truth: the legacy 'generic'
+    // type splits into generic-anthropic (stored protocol anthropic) or generic-openai, and the
+    // protocol column is re-derived from the type (copilot and generic-openai → openai).
+    version: 5,
+    sql: `
+      UPDATE api_providers SET adapter_id = CASE WHEN protocol = 'anthropic' THEN 'generic-anthropic' ELSE 'generic-openai' END
+        WHERE adapter_id = 'generic';
+      UPDATE api_providers SET protocol = CASE WHEN adapter_id = 'generic-anthropic' THEN 'anthropic' ELSE 'openai' END;
     `,
   },
 ];

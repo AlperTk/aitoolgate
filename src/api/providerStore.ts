@@ -1,5 +1,6 @@
 import type { ApiProvider } from './providerSpec';
 import { createCrudStore, type CrudCtx } from './crudStore';
+import { DEFAULT_PROVIDER_ADAPTER_ID, wireProtocolFor } from '../providers/registry';
 
 export interface ProviderStoreOptions {
   /** Seed providers, stored as defensive copies preserving each row's `isActive` so seeding never re-triggers auto-first activation (only brand-new inserts into an empty store do); omitted → store starts empty. */
@@ -8,7 +9,7 @@ export interface ProviderStoreOptions {
 
 /** A patch over the updatable fields of a stored provider (shallow-merge semantics). */
 export type ProviderPatch = Partial<
-  Pick<ApiProvider, 'name' | 'baseUrl' | 'model' | 'apiKey' | 'protocol' | 'isActive'>
+  Pick<ApiProvider, 'name' | 'baseUrl' | 'model' | 'apiKey' | 'adapterId' | 'authType' | 'authState' | 'isActive'>
 >;
 
 /** In-memory provider registry read live per-request; enforces the hard invariant that at most one row is `isActive` (add auto-activates into an empty store, setActive/update clear others, removing the active row promotes the lowest-id row); every accessor returns defensive copies; field-presence validation lives in the HTTP layer (`./providerSpec`). */
@@ -47,7 +48,10 @@ function mergePatch(existing: ApiProvider, patch: ProviderPatch): ApiProvider {
   if (patch.baseUrl !== undefined) merged.baseUrl = patch.baseUrl;
   if (patch.model !== undefined) merged.model = patch.model;
   if (patch.apiKey !== undefined) merged.apiKey = patch.apiKey;
-  if (patch.protocol !== undefined) merged.protocol = patch.protocol;
+  if (patch.adapterId !== undefined) merged.adapterId = patch.adapterId;
+  merged.protocol = wireProtocolFor(merged.adapterId); // protocol always follows the type
+  if (patch.authType !== undefined) merged.authType = patch.authType;
+  if (patch.authState !== undefined) merged.authState = patch.authState;
   if (patch.isActive !== undefined) merged.isActive = patch.isActive;
   return merged;
 }
@@ -78,16 +82,22 @@ export function createApiProviderStore(options: ProviderStoreOptions = {}): ApiP
   return createCrudStore<ApiProvider, Partial<ApiProvider>, ProviderPatch, ProviderStoreExtras>({
     initial: options.initial,
     // Apply the provider defaults (a full record); the base assigns a unique id when missing/empty.
-    toStored: (provider) => ({
-      id: provider.id ?? '',
-      name: provider.name ?? '',
-      baseUrl: provider.baseUrl ?? '',
-      model: provider.model ?? null,
-      apiKey: provider.apiKey ?? null,
-      protocol: provider.protocol ?? 'openai',
-      isActive: provider.isActive ?? false,
-      createdAt: provider.createdAt ?? Date.now(),
-    }),
+    toStored: (provider) => {
+      const adapterId = provider.adapterId ?? DEFAULT_PROVIDER_ADAPTER_ID;
+      return {
+        id: provider.id ?? '',
+        name: provider.name ?? '',
+        baseUrl: provider.baseUrl ?? '',
+        model: provider.model ?? null,
+        apiKey: provider.apiKey ?? null,
+        protocol: wireProtocolFor(adapterId), // any client-supplied protocol is ignored
+        adapterId,
+        authType: provider.authType ?? 'apiKey',
+        authState: provider.authState ?? null,
+        isActive: provider.isActive ?? false,
+        createdAt: provider.createdAt ?? Date.now(),
+      };
+    },
     // Auto-first activation OR an explicit request makes this row THE active one.
     afterStore: (stored, wasEmpty, ctx) => {
       if (wasEmpty || stored.isActive) markActive(stored.id, ctx.byId);

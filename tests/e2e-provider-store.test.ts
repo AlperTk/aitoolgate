@@ -221,14 +221,14 @@ test('e2e API Providers REST: full CRUD + single-active invariant + hot-apply ro
     assert.equal(patchUnknownRes.status, 404, 'patching an unknown provider id returns HTTP 404');
     assert.deepEqual(patchUnknownRes.body, { error: 'not_found' });
 
-    // POST with an invalid protocol value → 400 spec validation failure mentioning "protocol".
-    const postBadProtoRes = await api('/api/api-providers', {
+    // A client-sent protocol is ignored: the create succeeds and the protocol derives from the type (generic-openai → openai).
+    const postIgnoredProtoRes = await api('/api/api-providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Invalid Proto Engine', baseUrl: 'http://invalid-host/v1', model: 'model-x', protocol: 'gpt35-turbo' }),
+      body: JSON.stringify({ name: 'Ignored Proto Engine', baseUrl: 'http://invalid-host/v1', model: 'model-x', protocol: 'gpt35-turbo' }),
     });
-    assert.equal(postBadProtoRes.status, 400, 'unknown protocol value in a create request is rejected by the spec validator with HTTP 400');
-    assert.match(String((postBadProtoRes.body as any).error ?? ''), /protocol/i, 'spec-validation error message references the offending field name ("protocol")');
+    assert.equal(postIgnoredProtoRes.status, 201, 'a client-sent protocol is ignored and does not cause a 400');
+    assert.equal((postIgnoredProtoRes.body as any).protocol, 'openai', 'protocol is derived from the adapter type, not the client value');
 
   } finally {
     await stopServer(srv);

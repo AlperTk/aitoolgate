@@ -10,10 +10,18 @@
  * ==================================================================== */
 import { $, el, errMsg } from './dom.mjs';
 
-const PROVIDER_PROTOCOLS = ['openai', 'anthropic'];
+// Provider TYPES offered by the form; adapterId is what the server stores.
+const PROVIDER_TYPES = [
+  { adapterId: 'generic-openai', label: 'OpenAI-compatible' },
+  { adapterId: 'generic-anthropic', label: 'Anthropic' },
+  { adapterId: 'copilot', label: 'GitHub Copilot' }
+];
 const ACTIVE_RADIO_NAME = 'settings-provider-active'; // native radio group: one checked at most in the DOM too
 const PROVIDERS_BASE = 'api/api-providers';          // relative base path, matching the dashboard convention
 const PROBE_URL = PROVIDERS_BASE + '/probe';         // POST {protocol, baseUrl, apiKey?, id?} => {ok, latencyMs, models, error?}
+const DEVICE_START_URL = PROVIDERS_BASE + '/device-flow/start'; // POST => {flowId, userCode, verificationUri, interval, expiresIn}
+const DEVICE_POLL_URL = PROVIDERS_BASE + '/device-flow/poll';   // POST {flowId} => {status: pending|slow_down|expired|denied|done, ...}
+const DEVICE_DEFAULT_INTERVAL_S = 5;                 // fallback poll interval when the server omits one
 
 /* ---- pure helpers (unit-testable without any network or DOM) --------- */
 /* Client-side validation mirroring the server rules (non-empty name/baseUrl;
@@ -27,19 +35,33 @@ export function validateClientSide(input) {
   return { ok: Object.keys(errors).length === 0, errors: errors };
 }
 
+/* Provider type (adapterId) of a record: copilot for device-login rows, otherwise the
+ * generic adapter matching the stored adapterId, falling back to the wire protocol. */
+function providerTypeOf(p) {
+  var rec = p || {};
+  var adapterId = String(rec.adapterId == null ? '' : rec.adapterId);
+  if (adapterId === 'copilot' || rec.authType === 'deviceOAuth') return 'copilot';
+  if (adapterId === 'generic-openai' || adapterId === 'generic-anthropic') return adapterId;
+  return rec.protocol === 'anthropic' ? 'generic-anthropic' : 'generic-openai';
+}
+function typeLabelOf(adapterId) {
+  var hit = PROVIDER_TYPES.filter(function (t) { return t.adapterId === adapterId; })[0];
+  return hit ? hit.label : PROVIDER_TYPES[0].label;
+}
+
 /* Display-only projection of a provider row record (list items show masked
  * key status via apiKeySet; raw keys are NEVER rendered here). */
 export function formatProviderRow(provider) {
   var p = provider || {};
   var name = String(p.name == null ? '' : p.name);
-  var protocol = String(p.protocol == null ? '' : p.protocol);
+  var typeId = providerTypeOf(p);
   return {
     id: p.id != null ? String(p.id) : '',
     name: name || '(unnamed)',
     baseUrl: String(p.baseUrl == null ? '' : p.baseUrl),
     model: String(p.model == null ? '' : p.model),
-    protocol: protocol,
-    protocolLabel: protocol === 'anthropic' ? 'Anthropic' : 'OpenAI',
+    typeId: typeId,
+    typeLabel: typeLabelOf(typeId),
     keySet: !!p.apiKeySet,
     active: !!p.isActive
   };
@@ -67,12 +89,23 @@ const PROVIDER_PANE_HTML =
         '<h3 id="prov-editor-title" class="section-title">Provider</h3>' +
         '<form id="prov-form" novalidate>' +
           '<div class="field-row">' +
+            '<div class="field" id="pf-type-field">' +
+              '<label for="pf-type">Type</label>' +
+              '<select id="pf-type">' +
+                '<option value="generic-openai">OpenAI-compatible</option>' +
+                '<option value="generic-anthropic">Anthropic</option>' +
+                '<option value="copilot">GitHub Copilot</option>' +
+              '</select>' +
+              '<div class="hint">GitHub Copilot signs in with a device code; no base URL or API key is needed.</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="field-row">' +
             '<div class="field">' +
               '<label for="pf-name">Name</label>' +
               '<input id="pf-name" type="text" placeholder="e.g. OpenAI local" />' +
               '<div class="hint">Required. Shown as the provider label in the list.</div>' +
             '</div>' +
-            '<div class="field">' +
+            '<div class="field" id="pf-base-url-field">' +
               '<label for="pf-base-url">Base URL</label>' +
               '<input id="pf-base-url" type="text" placeholder="https://host.example/v1" />' +
               '<div class="hint">Required. Endpoint base for this engine (OpenAI- or Anthropic-style).</div>' +
@@ -84,19 +117,23 @@ const PROVIDER_PANE_HTML =
               '<select id="pf-model" class="pf-model-select"></select>' +
               '<div class="hint">\u201CFrom Request\u201D routes each request to the model the client asks for. Test or change the Base URL to list models.</div>' +
             '</div>' +
-            '<div class="field">' +
-              '<label for="pf-protocol">Protocol</label>' +
-              '<select id="pf-protocol"></select>' +
-              '<div class="hint">Wire protocol used when calling this endpoint.</div>' +
-            '</div>' +
           '</div>' +
-          '<div class="field field-key">' +
+          '<div class="field field-key" id="pf-api-key-field">' +
             '<label for="pf-api-key">API key</label>' +
             '<div class="key-line">' +
               '<input id="pf-api-key" class="pf-password" type="password" autocomplete="off" spellcheck="false" />' +
               '<button type="button" class="btn key-toggle" id="pf-key-toggle">Reveal</button>' +
             '</div>' +
             '<div class="hint">Optional. Leave blank for no key; saving an empty value clears any stored key.</div>' +
+          '</div>' +
+          '<div id="pf-copilot" class="copilot-login" hidden>' +
+            '<div id="pf-copilot-auth" class="small muted" hidden></div>' +
+            '<button type="button" class="btn btn-primary" id="pf-copilot-login">Login with GitHub Copilot</button>' +
+            '<div id="pf-copilot-device" class="copilot-device" hidden>' +
+              '<div class="copilot-code-line">Enter code <code id="pf-copilot-code" class="copilot-code"></code> at</div>' +
+              '<a id="pf-copilot-link" class="copilot-link" target="_blank" rel="noopener noreferrer"></a>' +
+            '</div>' +
+            '<div id="pf-copilot-status" class="small muted" role="status" hidden></div>' +
           '</div>' +
           '<div id="pf-test-result" class="probe-result" role="status" hidden></div>' +
           '<div class="prov-foot">' +
@@ -127,6 +164,9 @@ export function createProvidersPane(opts) {
   var probeSeq = 0;                   // bumped per probe start/reset; responses from older probes are ignored
   var probeTimer = null;              // debounce timer for input-driven auto-probes
   var resultKey = null;               // inputsKey() of the last applied probe result (blur re-probes only when inputs differ)
+  var deviceSeq = 0;                  // bumped per copilot login start/finish/cancel; stale poll callbacks are ignored
+  var deviceTimer = null;             // pending device-flow poll timer handle (cleared on cancel)
+  var deviceBusy = false;             // a copilot login is in flight (start or polling); guards the login button
 
   function detailUrl(id) { return PROVIDERS_BASE + '/' + encodeURIComponent(id); }
 
@@ -153,22 +193,10 @@ export function createProvidersPane(opts) {
   }
   function findEl(id) { return els[id] || $(id); }
 
-  // Fill the protocol select from the contract's fixed protocol set (default openai).
-  function initProtocolSelect(select) {
-    select.textContent = '';
-    PROVIDER_PROTOCOLS.forEach(function (proto) {
-      var o = el('option', null, proto);
-      o.value = proto;
-      if (proto === 'openai') o.selected = true; // spec default
-      select.appendChild(o);
-    });
-  }
-
   function providersPane() {
     var tpl = document.createElement('template');
     tpl.innerHTML = PROVIDER_PANE_HTML.trim();
     var pane = tpl.content.firstElementChild;   // not yet connected: resolve ids from the pane itself
-    initProtocolSelect(pane.querySelector('#pf-protocol'));
     bindProvidersEvents(pane);
     return pane;
   }
@@ -244,7 +272,8 @@ export function createProvidersPane(opts) {
       info.appendChild(el('span', 'provider-meta', (d.baseUrl || '\u2014') + ' \u00B7 ' + (d.model || '\u2014')));
 
       var aux = el('span', 'prov-aux');
-      var chip = el('span', 'badge proto-chip ' + (d.protocol === 'anthropic' ? 'proto-anthropic' : 'proto-openai'), d.protocolLabel.toLowerCase());
+      var chipClass = d.typeId === 'copilot' ? 'proto-copilot' : (d.typeId === 'generic-anthropic' ? 'proto-anthropic' : 'proto-openai');
+      var chip = el('span', 'badge proto-chip ' + chipClass, d.typeLabel);
       var delBtn = el('button', 'btn-ghost prov-del', '\u00D7');
       delBtn.type = 'button';
       delBtn.title = 'Delete this provider';
@@ -315,7 +344,8 @@ export function createProvidersPane(opts) {
     savedModel = '';
     renderModelOptions([], '');
     findEl('pf-api-key').value = '';
-    findEl('pf-protocol').value = 'openai';       // spec default for fresh drafts
+    findEl('pf-type').value = 'generic-openai';   // default type for fresh drafts
+    renderLoginStatus(false);
     ensureKeyHidden();
     setPfError(null);
     resetProbeState();
@@ -343,7 +373,7 @@ export function createProvidersPane(opts) {
   // Key over the probe inputs; a result is applied only if this still matches at response time.
   function inputsKey() {
     return JSON.stringify([
-      String(findEl('pf-protocol').value),
+      probeProtocol(),
       String(findEl('pf-base-url').value).trim(),
       String(findEl('pf-api-key').value).trim(),
       editorId
@@ -368,8 +398,9 @@ export function createProvidersPane(opts) {
 
   // Probe the current form values. manual=true (Test button) always runs; auto probes
   // run only for a non-blank Base URL. Sends id (not a key) when the key field is blank on an
-  // existing provider so the server uses the stored key.
+  // existing provider so the server uses the stored key. Copilot rows have no inline endpoint.
   async function runProbe(manual) {
+    if (isCopilotType()) return;
     var baseUrl = String(findEl('pf-base-url').value).trim();
     var apiKey = String(findEl('pf-api-key').value).trim();
     if (!baseUrl) {
@@ -379,10 +410,19 @@ export function createProvidersPane(opts) {
       setProbeResult(manual ? 'Enter a Base URL to test.' : null, manual ? 'fail' : null);
       return;
     }
-    var key = inputsKey();
-    var seq = ++probeSeq;
-    var body = { protocol: String(findEl('pf-protocol').value), baseUrl: baseUrl, apiKey: apiKey || null };
+    var body = { protocol: probeProtocol(), baseUrl: baseUrl, apiKey: apiKey || null };
     if (!apiKey && editorId) body.id = String(editorId);
+    requestProbe(body, inputsKey());
+  }
+
+  // Saved rows are probed by id only: the server resolves the stored credentials.
+  function probeSavedModels(id) {
+    requestProbe({ id: String(id) }, inputsKey());
+  }
+
+  // Sends one probe. Its result applies only while the inputs key and probe sequence are still current.
+  async function requestProbe(body, key) {
+    var seq = ++probeSeq;
     setProbeResult('Probing\u2026', 'probing');
     try {
       var data = await fetchJson(PROBE_URL, {
@@ -392,16 +432,7 @@ export function createProvidersPane(opts) {
       });
       if (seq !== probeSeq || key !== inputsKey()) return;   // stale: inputs or a newer probe superseded this one
       resultKey = key;
-      var ms = Math.round(Number(data && data.latencyMs) || 0);
-      if (data && data.ok) {
-        var models = Array.isArray(data.models) ? data.models : [];
-        renderModelOptions(models, findEl('pf-model').value);
-        setProbeResult('Connected \u00B7 ' + models.length + (models.length === 1 ? ' model' : ' models') + ' \u00B7 ' + ms + ' ms', 'ok');
-      } else {
-        renderModelOptions([], findEl('pf-model').value);
-        var detail = data && typeof data.error === 'string' && data.error ? data.error : 'unknown error';
-        setProbeResult('Probe failed' + (data && data.status ? ' (HTTP ' + data.status + ')' : '') + ': ' + detail + ' \u00B7 ' + ms + ' ms', 'fail');
-      }
+      applyProbeData(data);
     } catch (e) {
       if (seq !== probeSeq || key !== inputsKey()) return;
       renderModelOptions([], findEl('pf-model').value);
@@ -409,7 +440,20 @@ export function createProvidersPane(opts) {
     }
   }
 
-  // Debounced auto-probe on Base URL / protocol / API key input.
+  function applyProbeData(data) {
+    var ms = Math.round(Number(data && data.latencyMs) || 0);
+    if (data && data.ok) {
+      var models = Array.isArray(data.models) ? data.models : [];
+      renderModelOptions(models, findEl('pf-model').value);
+      setProbeResult('Connected \u00B7 ' + models.length + (models.length === 1 ? ' model' : ' models') + ' \u00B7 ' + ms + ' ms', 'ok');
+    } else {
+      renderModelOptions([], findEl('pf-model').value);
+      var detail = data && typeof data.error === 'string' && data.error ? data.error : 'unknown error';
+      setProbeResult('Probe failed' + (data && data.status ? ' (HTTP ' + data.status + ')' : '') + ': ' + detail + ' \u00B7 ' + ms + ' ms', 'fail');
+    }
+  }
+
+  // Debounced auto-probe on Base URL / type / API key input.
   function onProbeInput() {
     if (probeTimer) clearTimeout(probeTimer);
     probeTimer = setTimeout(function () { probeTimer = null; runProbe(false); }, 600);
@@ -446,9 +490,11 @@ export function createProvidersPane(opts) {
     findEl('pf-base-url').value = String(rec.baseUrl == null ? '' : rec.baseUrl);
     savedModel = rec.model == null ? '' : String(rec.model).trim();   // null => From Request
     renderModelOptions([], savedModel);
-    findEl('pf-api-key').value = typeof rec.apiKey === 'string' ? rec.apiKey : '';   // raw key from GET detail / created+updated record
-    var proto = String(rec.protocol || 'openai');
-    findEl('pf-protocol').value = PROVIDER_PROTOCOLS.indexOf(proto) !== -1 ? proto : 'openai';
+    var typeId = providerTypeOf(rec);
+    var device = typeId === 'copilot';
+    findEl('pf-type').value = typeId;
+    // Device-login rows never show a key in the form, even if the server returned one.
+    findEl('pf-api-key').value = !device && typeof rec.apiKey === 'string' ? rec.apiKey : '';
     ensureKeyHidden();
     setPfError(null);
     resetProbeState();
@@ -458,12 +504,16 @@ export function createProvidersPane(opts) {
       showReset(true);
     }
     updateEditorTitle(formatProviderRow(rec).name);
+    syncAdapterView();
+    renderLoginStatus(!!asExisting && device);
     updateLoadedMarkers();
+    if (asExisting && editorId) probeSavedModels(editorId);
   }
 
   // Clicking a row body loads that provider's FULL record (raw apiKey included)
   // via the GET detail endpoint and switches the form to existing-record mode.
   async function loadEditorFor(id) {
+    cancelDeviceFlow();
     try {
       var rec = await fetchJson(detailUrl(id));
       populateForm(rec, true);
@@ -479,11 +529,13 @@ export function createProvidersPane(opts) {
   }
 
   function startDraft() {
+    cancelDeviceFlow();
     clearForm();
     editorId = '';                           // unsaved draft until Save succeeds
     isDraft = true;
     showReset(false);
     updateEditorTitle('');
+    syncAdapterView();
     showFormView();                          // enter the FORM sub-view (new / unsaved-draft mode)
     findEl('prov-editor').scrollIntoView({ block: 'nearest' });
     findEl('pf-name').focus();
@@ -491,11 +543,13 @@ export function createProvidersPane(opts) {
 
   // Cancel: discard any unsaved draft/edits locally — no network call.
   function discardEditor() {
+    cancelDeviceFlow();
     clearForm();
     editorId = '';
     isDraft = false;
     showReset(false);
     updateEditorTitle('');
+    syncAdapterView();
     updateLoadedMarkers();
     showListView();                          // return to the LIST sub-view, discarding the draft
   }
@@ -524,19 +578,19 @@ export function createProvidersPane(opts) {
       baseUrl: String(findEl('pf-base-url').value).trim(),
       model: findEl('pf-model').value || null,            // From Request ('') => null
       apiKey: String(findEl('pf-api-key').value).trim(),   // '' => unset/null per contract
-      protocol: PROVIDER_PROTOCOLS.indexOf(String(findEl('pf-protocol').value)) !== -1 ? findEl('pf-protocol').value : 'openai'
+      adapterId: selectedType()
     };
   }
 
   async function saveFromForm() {
-    if (busySave) return;
+    if (busySave || isCopilotType()) return;   // copilot rows are created/re-logged via device login only
     var v = readValues();
     var check = validateClientSide(v);       // inline errors before ANY submit attempt
     if (!check.ok) {
       setPfError(Object.keys(check.errors).map(function (k) { return check.errors[k]; }).join(' '));
       return;
     }
-    var payload = { name: v.name, baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey, protocol: v.protocol };   // model null => From Request
+    var payload = { name: v.name, baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey, adapterId: v.adapterId };   // model null => From Request
     busySave = true;
     try {
       var creating = !editorId;              // brand-new unsaved draft => create
@@ -558,13 +612,178 @@ export function createProvidersPane(opts) {
     }
   }
 
+  /* ======================= adapter + copilot login ==================== */
+  function setHiddenEl(id, hide) {
+    var n = findEl(id);
+    if (n) n.hidden = !!hide;
+  }
+
+  function selectedType() {
+    var v = String(findEl('pf-type').value);
+    return PROVIDER_TYPES.some(function (t) { return t.adapterId === v; }) ? v : 'generic-openai';
+  }
+  function isCopilotType() { return selectedType() === 'copilot'; }
+  // Wire protocol for inline probes: only generic-anthropic speaks Anthropic; the rest use openai.
+  function probeProtocol() { return selectedType() === 'generic-anthropic' ? 'anthropic' : 'openai'; }
+
+  // The type select is editable for NEW drafts only; saved rows show their stored type.
+  // The copilot type hides the generic base URL/API key inputs and Save/Test (login creates the row).
+  function syncAdapterView() {
+    var copilot = isCopilotType();
+    var sel = findEl('pf-type');
+    if (sel) sel.disabled = !isDraft;
+    setHiddenEl('pf-base-url-field', copilot);
+    setHiddenEl('pf-api-key-field', copilot);
+    setHiddenEl('pf-copilot', !copilot);
+    setHiddenEl('pf-save', copilot);
+    setHiddenEl('pf-test', copilot);
+    var login = findEl('pf-copilot-login');
+    if (login) login.textContent = editorId && !isDraft ? 'Re-login with GitHub Copilot' : 'Login with GitHub Copilot';
+  }
+
+  function renderLoginStatus(signedIn) {
+    var n = findEl('pf-copilot-auth');
+    if (!n) return;
+    n.textContent = signedIn ? 'Signed in with GitHub Copilot.' : '';
+    n.hidden = !signedIn;
+  }
+
+  // Changing the type keeps the name and base URL; generic types re-probe their endpoint.
+  function onTypeChange() {
+    cancelDeviceFlow();
+    syncAdapterView();
+    if (!isCopilotType()) onProbeInput();
+  }
+
+  function setDeviceStatus(text, tone) {
+    var n = findEl('pf-copilot-status');
+    if (!n) return;
+    n.textContent = text || '';
+    n.className = 'small copilot-status' + (tone ? ' is-' + tone : ' muted');
+    n.hidden = !text;
+  }
+
+  function setLoginEnabled(on) {
+    var b = findEl('pf-copilot-login');
+    if (b) b.disabled = !on;
+  }
+
+  // Drops any in-flight login: stale poll callbacks see a bumped deviceSeq and return.
+  function cancelDeviceFlow() {
+    deviceSeq++;
+    if (deviceTimer) clearTimeout(deviceTimer);
+    deviceTimer = null;
+    deviceBusy = false;
+    setLoginEnabled(true);
+    setHiddenEl('pf-copilot-device', true);
+    setDeviceStatus(null);
+  }
+
+  // Terminal state of a login attempt: keeps the message visible, re-enables the button.
+  function finishDeviceFlow(msg, tone) {
+    deviceSeq++;
+    if (deviceTimer) clearTimeout(deviceTimer);
+    deviceTimer = null;
+    deviceBusy = false;
+    setLoginEnabled(true);
+    setDeviceStatus(msg, tone);
+  }
+
+  function renderDeviceCode(data) {
+    var code = findEl('pf-copilot-code');
+    if (code) code.textContent = String(data.userCode == null ? '' : data.userCode);
+    var link = findEl('pf-copilot-link');
+    if (link) {
+      link.href = String(data.verificationUri == null ? '' : data.verificationUri);
+      link.textContent = link.href;
+    }
+    setHiddenEl('pf-copilot-device', false);
+  }
+
+  function deviceIntervalMs(seconds) {
+    var n = Number(seconds);
+    return (n > 0 ? n : DEVICE_DEFAULT_INTERVAL_S) * 1000;
+  }
+
+  function schedulePoll(flow) {
+    deviceTimer = setTimeout(function () { deviceTimer = null; pollDevice(flow); }, flow.ms);
+  }
+
+  // One poll tick. flow = {flowId, seq, ms}; ms is the current server-given interval.
+  async function pollDevice(flow) {
+    if (flow.seq !== deviceSeq) return;
+    var data;
+    try {
+      data = await fetchJson(DEVICE_POLL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flowId: flow.flowId })
+      });
+    } catch (e) {
+      if (flow.seq !== deviceSeq) return;
+      if (e.status === 502) {                          // transient GitHub error: keep polling until TTL
+        setDeviceStatus('GitHub did not respond; retrying\u2026', 'probing');
+        schedulePoll(flow);
+        return;
+      }
+      if (e.status === 404) finishDeviceFlow('Login session expired. Click \u201CLogin with GitHub Copilot\u201D to try again.', 'fail');
+      else finishDeviceFlow('Login failed: ' + errMsg(e), 'fail');
+      return;
+    }
+    if (flow.seq !== deviceSeq) return;
+    var status = data && data.status;
+    if (status === 'pending') {
+      schedulePoll(flow);
+    } else if (status === 'slow_down') {
+      flow.ms = deviceIntervalMs(data.interval);
+      schedulePoll(flow);
+    } else if (status === 'expired') {
+      finishDeviceFlow('Login code expired. Click \u201CLogin with GitHub Copilot\u201D to get a new code.', 'fail');
+    } else if (status === 'denied') {
+      finishDeviceFlow('Access was denied on GitHub. Login cancelled.', 'fail');
+    } else if (status === 'done') {
+      cancelDeviceFlow();
+      await refreshList();                             // provider is activated server-side; reload the list
+      discardEditor();                                 // back to the list view (also clears the draft)
+    } else {
+      finishDeviceFlow('Unexpected login response from server.', 'fail');
+    }
+  }
+
+  async function startCopilotLogin() {
+    if (deviceBusy) return;
+    deviceBusy = true;
+    var seq = ++deviceSeq;
+    setLoginEnabled(false);
+    setHiddenEl('pf-copilot-device', true);
+    setDeviceStatus('Starting GitHub login\u2026', 'probing');
+    try {
+      var data = await fetchJson(DEVICE_START_URL, { method: 'POST' });
+      if (seq !== deviceSeq) return;                   // cancelled while starting
+      if (!data || typeof data.flowId !== 'string' || !data.flowId) throw new Error('Unexpected response from server');
+      renderDeviceCode(data);
+      setDeviceStatus('Waiting for authorization on GitHub\u2026', 'probing');
+      schedulePoll({ flowId: data.flowId, seq: seq, ms: deviceIntervalMs(data.interval) });
+    } catch (e) {
+      if (seq !== deviceSeq) return;
+      finishDeviceFlow('Login failed: ' + errMsg(e), 'fail');
+    }
+  }
+
   /* ============================ event wiring ========================== */
   function bindProvidersEvents(pane) {
     ['prov-add-btn', 'prov-list', 'prov-empty', 'prov-status', 'prov-error',
      'prov-editor-title', 'prov-form', 'pf-name', 'pf-base-url', 'pf-model',
-     'pf-api-key', 'pf-key-toggle', 'pf-protocol', 'pf-save', 'pf-test', 'pf-test-result', 'pf-cancel', 'pf-reset', 'pf-error',
-     'prov-list-view', 'prov-form-view']
+     'pf-api-key', 'pf-key-toggle', 'pf-save', 'pf-test', 'pf-test-result', 'pf-cancel', 'pf-reset', 'pf-error',
+     'prov-list-view', 'prov-form-view',
+     'pf-type', 'pf-base-url-field', 'pf-api-key-field', 'pf-copilot', 'pf-copilot-login', 'pf-copilot-auth',
+     'pf-copilot-device', 'pf-copilot-code', 'pf-copilot-link', 'pf-copilot-status']
       .forEach(function (id) { els[id] = pane.querySelector('#' + id); });
+
+    // Copilot-only controls are bound null-safely so the generic form wiring never depends on them.
+    var onOptional = function (id, type, fn) { var n = findEl(id); if (n) n.addEventListener(type, fn); };
+    onOptional('pf-type', 'change', onTypeChange);
+    onOptional('pf-copilot-login', 'click', startCopilotLogin);
 
     findEl('prov-add-btn').addEventListener('click', startDraft);
     findEl('pf-cancel').addEventListener('click', discardEditor);
@@ -573,8 +792,7 @@ export function createProvidersPane(opts) {
     findEl('pf-test').addEventListener('click', function () { runProbe(true); });
     findEl('pf-base-url').addEventListener('input', onProbeInput);
     findEl('pf-api-key').addEventListener('input', onProbeInput);
-    findEl('pf-protocol').addEventListener('change', onProbeInput);
-    ['pf-base-url', 'pf-api-key', 'pf-protocol'].forEach(function (id) {
+    ['pf-base-url', 'pf-api-key'].forEach(function (id) {
       findEl(id).addEventListener('blur', onProbeBlur);
     });
     findEl('prov-form').addEventListener('submit', function (ev) { ev.preventDefault(); saveFromForm(); });
@@ -601,6 +819,6 @@ export function createProvidersPane(opts) {
 
   return {
     buildPane: providersPane,
-    onShow: function () { showListView(); refreshList(); }
+    onShow: function () { cancelDeviceFlow(); showListView(); refreshList(); }
   };
 }
