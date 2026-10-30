@@ -59,8 +59,9 @@ test('POST /v1/chat/completions returns the upstream response (openai → openai
       }),
     });
     assert.equal(res.status, 200);
-    const body: unknown = await res.json();
-    assert.deepEqual(body, upstreamCanned);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(typeof body.created, 'number');
+    assert.deepEqual({ ...body, created: upstreamCanned.created }, upstreamCanned);
   } finally {
     await closeHttpServer(server);
   }

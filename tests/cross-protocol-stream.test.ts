@@ -205,12 +205,12 @@ describe('cross-protocol stream: JSON-200 upstream bodies', () => {
     assert.deepEqual(events.at(-1), { type: 'finish', finishReason: 'stop' });
   });
 
-  it('forwards an undecodable JSON-200 body raw', async () => {
+  it('returns a 502 client-protocol error for an undecodable JSON-200 body', async () => {
     const body = '{"type":"error","error":{"message":"nope"}}';
     const res = await streamForClient(clientOf('anthropic', jsonResponse(body)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), body);
+    assert.equal(res.status, 502);
+    assert.ok((JSON.parse(await res.text()) as { error?: unknown }).error !== undefined);
   });
 });

@@ -28,7 +28,7 @@ Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Coverage: partial — OpenAI
 2. `handleOpenAIRoute` (openai.ts) matches route, reads JSON body (`readJSONBody`), detects stream (`isStreamRequest`).
 3. `buildRequestContext` (context.ts) builds the internal request.
 4. `runThroughPipeline`: `SessionTokenPipeline.handleRequest` → `syncRequestMessages` → `resolveAndEmitToolResults` → `forwardRequest`.
-5. `forwardRequest` (upstream.ts): unconfigured upstream → 503; `reencodeRequest` to upstream protocol; `postJSON`; `conformResult`; `convertResponse` when protocols differ.
+5. `forwardRequest` (upstream.ts): unconfigured upstream → 503; `reencodeRequest` to upstream protocol (undecodable request → 400, no upstream call); `postJSON`; `conformResult` always decodes the upstream body to internal and re-encodes to the client protocol (`translate.ts::encodeConvertedResponse`), including when protocols are the same.
 6. `runThroughPipeline` continues: `summarizeResponse` → `handleResponse` → `syncResponseBody` → `emitResponseTelemetry` → `sendJSON`.
 
 ## Flow B — streaming request (same protocol)
@@ -40,10 +40,12 @@ Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Coverage: partial — OpenAI
 - No active upstream → 503 (`unconfiguredUpstreamResponse`).
 - Upstream timeout → 504 `upstream_timeout` (`upstream.ts`, enclosing symbol unverified).
 - Upstream error body → `upstreamErrorResponse` → `clientErrorResponse` in the client's protocol.
-- Empty upstream content → 502 with `NO_CONTENT_MESSAGE` (`upstream.ts`, enclosing symbol unverified).
+- Empty or undecodable upstream content → 502 with `NO_CONTENT_MESSAGE` / client-protocol error (`upstream.ts`).
 - Telemetry/storage failures are caught and do not affect the response.
 
 ## Invariants (observed)
+- Every message passes decode → internal → encode, including same-protocol requests, non-stream responses, SSE streams, and non-SSE 2xx bodies. No raw upstream bytes reach the client.
+- Undecodable upstream body → 502 in the client protocol; undecodable client request → 400, no upstream call.
 - Policy stage runs in both request and response phases through the same pipeline.
 - Telemetry failures are isolated; the client stream must not depend on them.
 - Session token is set before route handling (`handleProxyRequest`).

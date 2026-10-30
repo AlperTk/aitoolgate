@@ -435,7 +435,7 @@ async function* encodeStream(events: AsyncIterable<InternalLLMEvent> | Iterable<
   if (textOpen) yield frame('content_block_stop', { index });
   yield frame('message_delta', {
     delta: { stop_reason: encodeAnthropicStopReason(finishReason), stop_sequence: null },
-    usage: encodeAnthropicUsage(usage),
+    ...(usage === undefined ? {} : { usage: encodeAnthropicUsage(usage) }),
   });
   yield frame('message_stop', {});
 }
@@ -685,7 +685,7 @@ export function createAnthropicMessagesProtocol(): Protocol {
         model: response.model,
         content: encodeAnthropicContent(response.message.parts),
         stop_reason: encodeAnthropicStopReason(response.finishReason),
-        usage: encodeAnthropicUsage(response.usage),
+        ...(response.usage === undefined ? {} : { usage: encodeAnthropicUsage(response.usage) }),
       };
     },
   };

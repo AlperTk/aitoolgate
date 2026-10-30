@@ -587,7 +587,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
     });
   });
 
-  it('openai response with empty choices and no usage yields zero usage', () => {
+  it('openai response with empty choices and no usage omits usage', () => {
     const out = convertResponse('openai-chat', 'anthropic-messages', { id: 'chatcmpl-m2', choices: [] } as unknown as OpenAIChatResponse);
     assert.deepStrictEqual(out, {
       id: 'chatcmpl-m2',
@@ -596,8 +596,8 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
       model: undefined,
       content: [{ type: 'text', text: '' }],
       stop_reason: 'end_turn',
-      usage: { input_tokens: 0, output_tokens: 0 },
     });
+    assert.ok(!('usage' in (out as object)));
   });
 
   it('anthropic response without content yields null content and created from Date.now', () => {
@@ -639,7 +639,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
     });
   });
 
-  it('openai response with content but missing usage yields zero usage', () => {
+  it('openai response with content but missing usage omits usage', () => {
     const out = convertResponse('openai-chat', 'anthropic-messages', {
       id: 'chatcmpl-m3',
       object: 'chat.completion',
@@ -653,7 +653,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
       model: 'gpt-x',
       content: [{ type: 'text', text: 'hi' }],
       stop_reason: 'end_turn',
-      usage: { input_tokens: 0, output_tokens: 0 },
     });
+    assert.ok(!('usage' in (out as object)));
   });
 });

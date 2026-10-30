@@ -20,13 +20,18 @@ Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Coverage: partial — factor
 | `CODECS` | src/proxy/translate.ts | Maps protocol ids to codecs for proxy use |
 
 ## Flow (from proxy)
-Client body decoded to internal request → `reencodeRequest` to upstream protocol → response `convertResponse` back to client protocol when they differ. Helper names live in `src/proxy/translate.ts`.
+Client body decoded to internal request → `reencodeRequest` to upstream protocol → response always decoded to internal and encoded to client protocol (`convertResponse` / `encodeConvertedResponse`), including same protocol. Helper names live in `src/proxy/translate.ts`.
 
 ## Change recipe — add a protocol
 1. Implement `Protocol` under `src/protocols/<name>/`, modeled on the two existing factories.
 2. Register in `src/protocols/registry.ts` and add a `CODECS` entry in `src/proxy/translate.ts`.
 3. Add `WireProtocol` id in `src/ports/provider.ts` if providers must reference it.
 4. Verify with cross-protocol tests (`tests/cross-protocol-*.test.ts`) and 13 `protocols-*.test.ts` files.
+
+## Usage field rule
+- When the upstream provides no usage (internal `usage` undefined), the client-facing response omits `usage`: OpenAI non-stream and stream, Anthropic non-stream and `message_delta`. Telemetry reads the encoded body, so no tokens are recorded.
+- Exception (decided): Anthropic `message_start` keeps a zero placeholder (`input_tokens`/`output_tokens`), because it is sent before usage is known and removing it would break the stream schema.
+- Scope note: the Anthropic omission was accepted while only OpenAI-compatible clients are in use.
 
 ## Unknowns
 - Exact decode/encode steps and streaming event mapping are not verified in this bootstrap.

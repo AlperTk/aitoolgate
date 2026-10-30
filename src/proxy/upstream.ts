@@ -10,7 +10,7 @@ import {
   upstreamErrorMessage,
   WIRE_PROTOCOL_IDS,
 } from '../protocols/registry';
-import { convertResponse, reencodeRequest } from './translate';
+import { encodeConvertedResponse, reencodeRequest } from './translate';
 
 /** A fetch-compatible function (defaults to the global `fetch`). */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -165,9 +165,8 @@ export async function forwardRequest(client: UpstreamClient, clientId: ProtocolI
   const upstreamId = WIRE_PROTOCOL_IDS[client.protocol];
   const { streamPath } = protocolRegistration(upstreamId);
   const body = reencodeRequest(clientId, upstreamId, request, client.model);
-  const result = conformResult(await postJSON(client, streamPath, body), upstreamId, clientId);
-  if (!result.ok || upstreamId === clientId) return result;
-  return { ...result, body: convertResponse(upstreamId, clientId, result.body) };
+  if (body === undefined) return { status: 400, ok: false, body: clientErrorBody(clientId, UNDECODABLE_REQUEST_MESSAGE) };
+  return conformResult(await postJSON(client, streamPath, body), upstreamId, clientId);
 }
 
 /**
@@ -180,10 +179,10 @@ function conformResult(result: UpstreamResult, upstream: ProtocolId, client: Pro
     return { ...result, body: clientErrorBody(client, message) };
   }
   const response = protocolRegistration(upstream).create().decodeResponse(result.body);
-  if (response !== undefined && !responseEvents(response).some(carriesContent)) {
+  if (response === undefined || !responseEvents(response).some(carriesContent)) {
     return { status: 502, ok: false, body: clientErrorBody(client, NO_CONTENT_MESSAGE) };
   }
-  return result;
+  return { ...result, body: encodeConvertedResponse(client, response) };
 }
 
 /**
@@ -223,6 +222,7 @@ export async function streamForClient(
   const upstreamId = WIRE_PROTOCOL_IDS[client.protocol];
   const { streamPath } = protocolRegistration(upstreamId);
   const body = reencodeRequest(clientId, upstreamId, request, client.model);
+  if (body === undefined) return clientErrorResponse(protocolRegistration(clientId).create(), UNDECODABLE_REQUEST_MESSAGE, 400);
   const upstream = debugTapUpstream(await streamToEndpoint(client, streamPath, body));
   return bridgeStream(upstream, protocolRegistration(upstreamId).create(), protocolRegistration(clientId).create(), tap);
 }
@@ -240,14 +240,9 @@ async function bridgeStream(upstream: Response, from: Protocol, to: Protocol, ta
   let raw = '';
   for await (const text of sseTextChunks(upstream.body)) raw += text;
   const events = await eventsOfBody(raw, from);
-  if (events.length === 0) {
-    // Undecodable passthrough: the raw bytes are the only telemetry source left.
-    tapWrite(tap, Buffer.from(raw));
-    tapEnd(tap);
-    return rawResponse(upstream, raw);
-  }
   for (const event of events) tapWrite(tap, event);
   tapEnd(tap);
+  // Undecodable or content-less bodies (events empty or metadata-only) become a client-protocol 502.
   if (!events.some(carriesContent)) return clientErrorResponse(to, NO_CONTENT_MESSAGE);
   return new Response(byteStreamOf(to.encodeStream(events)), { status: upstream.status });
 }
@@ -300,6 +295,7 @@ async function upstreamErrorResponse(upstream: Response, to: Protocol): Promise<
 }
 
 const NO_CONTENT_MESSAGE = 'upstream returned a non-streaming response without content';
+const UNDECODABLE_REQUEST_MESSAGE = 'request body could not be decoded';
 
 /** Step-start and usage events are metadata; any other event (text, tool, reasoning, finish) is content. */
 function carriesContent(event: InternalLLMEvent): boolean {
@@ -358,14 +354,6 @@ function responseEvents(response: InternalResponse): InternalLLMEvent[] {
   if (response.usage !== undefined) events.push({ type: 'usage', usage: response.usage });
   if (response.finishReason !== undefined) events.push({ type: 'finish', finishReason: response.finishReason });
   return events;
-}
-
-/** The upstream body unchanged; only headers that no longer describe the decoded text are dropped. */
-function rawResponse(upstream: Response, raw: string): Response {
-  const headers = new Headers(upstream.headers);
-  headers.delete('content-length');
-  headers.delete('content-encoding');
-  return new Response(raw, { status: upstream.status, headers });
 }
 
 /** Decode the upstream SSE bytes into text chunks (telemetry is taken from the decoded events, not these bytes). */

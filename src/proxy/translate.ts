@@ -15,12 +15,14 @@ const EMPTY_RESPONSE: InternalResponse = { message: { role: 'assistant', parts: 
 
 /**
  * Generic request conversion keyed by protocol ids: decode with the client protocol, apply the
- * optional model override, encode with the upstream protocol. Same-protocol calls keep opaque fields.
+ * optional model override, encode with the upstream protocol. Returns `undefined` when the client
+ * request cannot be decoded (nothing is encoded, so no messages are silently dropped).
  */
 export function reencodeRequest(clientId: ProtocolId, upstreamId: ProtocolId, request: unknown, model?: string): unknown {
   const source = CODECS[clientId];
   const target = CODECS[upstreamId];
-  const common = source.decodeRequest(request) ?? { model: (request as { model: string }).model, messages: [] };
+  const common = source.decodeRequest(request);
+  if (common === undefined) return undefined;
   return target.encodeRequest(model === undefined ? common : withModelOverride(common, model));
 }
 
@@ -30,10 +32,14 @@ function withModelOverride(common: InternalRequest, model: string): InternalRequ
   return override === '' ? common : { ...common, model: override };
 }
 
-/** Generic response conversion keyed by protocol ids; same-protocol responses pass through unchanged. */
+/** Generic response conversion keyed by protocol ids: decode with the upstream protocol, encode with the client protocol (same-protocol included). */
 export function convertResponse(upstreamId: ProtocolId, clientId: ProtocolId, response: unknown): unknown {
-  if (upstreamId === clientId) return response;
   const common = CODECS[upstreamId].decodeResponse(response) ?? EMPTY_RESPONSE;
+  return encodeConvertedResponse(clientId, common);
+}
+
+/** Encode an already-decoded internal response with the client protocol (no second decode). */
+export function encodeConvertedResponse(clientId: ProtocolId, common: InternalResponse): unknown {
   return CODECS[clientId].encodeResponse(common);
 }
 

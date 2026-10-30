@@ -305,13 +305,14 @@ test('Anthropic client + OpenAI JSON-200 upstream: synthesises an Anthropic SSE 
   assert.equal(text, 'Hello');
 });
 
-test('OpenAI client + Anthropic JSON-200 upstream with undecodable body: raw body is forwarded unchanged', async () => {
+test('OpenAI client + Anthropic JSON-200 upstream with undecodable body: returns a 502 OpenAI error body', async () => {
   const log: Captured[] = [];
   const raw = '{"unexpected":true}';
   const res = await postStream({ protocol: 'anthropic', fetchImpl: upstreamFetch(raw, log, 'application/json') }, '/v1/chat/completions', OAI_CLIENT);
 
-  assert.equal(res.status, 200);
-  assert.equal(res.body, raw);
+  assert.equal(res.status, 502);
+  assert.notEqual(res.body, raw);
+  assert.ok((JSON.parse(res.body) as { error?: unknown }).error !== undefined);
 });
 
 test('same-protocol JSON-200 upstream is re-encoded as an OpenAI SSE stream', async () => {

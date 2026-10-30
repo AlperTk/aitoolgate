@@ -42,7 +42,7 @@ Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Basis key: doc = README, cod
 | Hexagonal layout; `src/server/index.ts` is the sole composition root | README "Architecture"; `src/server/index.ts::createServer` | doc, code |
 | Telemetry failures must not break the proxied request | README "How it works"; `createEventBus` try/catch | doc, code |
 | Exactly one active upstream provider at a time; no load balancing | README "Security and limitations"; `src/api/providerStore.ts` (`markActive`, `reconcileSingleActive`) | doc, code |
-| Streaming always goes decode → internal event → encode; no same-protocol bypass | README "Streaming and reasoning" | doc |
+| All messages (request, non-stream response, SSE stream, non-SSE 2xx) go decode → internal → encode; no same-protocol bypass | README "Streaming and reasoning"; `src/proxy/upstream.ts::forwardRequest`, `::bridgeStream`; `src/proxy/translate.ts::reencodeRequest` | doc, code |
 | Built-in `flagship-loop-rule` is never persisted | `src/api/persistentRuleStore.ts` (`FLAGSHIP_RULE_ID`, `persistId`, `seedFromDb`); README "Policy engine" | code, doc |
 | Dashboard is vanilla JS with no CDN or framework | README "Dashboard" | doc |
 | Rule store returns defensive copies | `src/api/ruleStore.ts` (doc comment; list/get/add/update return copies) | code |
@@ -54,6 +54,7 @@ Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Basis key: doc = README, cod
 | Zero third-party runtime dependencies; Node stdlib only | README "Technical choices"; `package.json` (no `dependencies`) | doc |
 | Anthropic unsigned thinking blocks are dropped (open decision, not settled) | README "Streaming and reasoning" | doc |
 | Non-SSE JSON response with no content → 502 | README "Non-SSE JSON responses"; `src/proxy/upstream.ts` (`NO_CONTENT_MESSAGE`) | doc, code |
+| `usage` omitted from client response when upstream provides none (OpenAI; Anthropic non-stream and `message_delta`); Anthropic `message_start` keeps zero placeholder. Anthropic omission accepted while only OpenAI-compatible clients are used | `src/protocols/openai-chat/protocol.ts::encodeResponse`; `src/protocols/anthropic-messages/protocol.ts::encodeResponse`, `::encodeStream` | code, test |
 
 ## External systems
 | Constraint | Anchor | Basis |

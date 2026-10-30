@@ -519,7 +519,7 @@ export function createOpenAIChatProtocol(): Protocol {
             finish_reason: encodeOpenAIFinishReason(response.finishReason),
           },
         ],
-        usage: encodeOpenAIUsage(response.usage),
+        ...(response.usage === undefined ? {} : { usage: encodeOpenAIUsage(response.usage) }),
       };
     },
   };
