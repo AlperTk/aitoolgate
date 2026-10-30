@@ -2,7 +2,7 @@
 
 **Observe, debug, and optimize AI agent tool usage — locally.**
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue)](#)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue)](#)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](#)
 [![Runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen)](#)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -97,17 +97,17 @@ npm run build
 npm start
 ```
 
-For development, use `npm run dev` (build then start). The repository uses TypeScript 7.0.2 for development.
+For development, use `npm run dev` (build then start). The repository uses TypeScript ^7.0.2 for development.
 
 Whichever way you start it, open **http://localhost:8787** for the dashboard (the server listens on port `8787` by default; override with `PORT`). The server also exposes `GET /health`.
 
 ### 2. Configure an upstream
 
-Open **Settings** in the dashboard, add your upstream provider (name, base URL, model, protocol, and API key if required), and activate it.
+Open **Settings** in the dashboard, add your upstream provider (name, base URL, model, and API key if required), and activate it.
 
 The first provider is activated automatically. Later, you can switch the active provider from Settings without restarting the server.
 
-**Important:** The server starts without an upstream. Model requests return `503` (a JSON error) until a provider is configured and active. Configure the upstream via the dashboard Settings overlay or `POST /api/api-providers` (fields: `name`, `baseUrl`, `model`, `protocol`, `apiKey`).
+**Important:** The server starts without an upstream. Model requests return `503` (a JSON error) until a provider is configured and active. Configure the upstream via the dashboard Settings overlay or `POST /api/api-providers` (fields: `name` and `baseUrl` required; optional `model`, `apiKey`, `adapterId`, `authType`). See [Upstream providers](#upstream-providers).
 
 ### 3. Send a request through the proxy
 
@@ -127,6 +127,15 @@ The proxy also accepts Anthropic-format requests at `POST /v1/messages`. Streami
 ### 4. Inspect activity and configure rules
 
 Use the dashboard to watch tool calls and results, inspect tool inputs and outputs, compare per-tool token and timing metrics, filter by tool/session/status/time, inspect interventions, and create rules through the matcher/action editor. Rules created through the dashboard take effect without a restart.
+
+## Upstream providers
+
+| Provider | Auth | Wire protocol | Notes |
+| --- | --- | --- | --- |
+| `generic-openai` (Generic OpenAI-compatible) | API key | `openai` | Base URL used as configured. |
+| `generic-anthropic` (Generic Anthropic-compatible) | API key | `anthropic` | Base URL used as configured. |
+| `copilot` (GitHub Copilot) | Device OAuth | `openai` | Maps the host to `api.githubcopilot.com` (default) or `copilot-api.<host>` (enterprise). |
+
 
 ## Policy engine
 
