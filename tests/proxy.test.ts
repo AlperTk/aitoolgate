@@ -59,8 +59,9 @@ test('POST /v1/chat/completions returns the upstream response (openai → openai
       }),
     });
     assert.equal(res.status, 200);
-    const body: unknown = await res.json();
-    assert.deepEqual(body, upstreamCanned);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(typeof body.created, 'number');
+    assert.deepEqual({ ...body, created: upstreamCanned.created }, upstreamCanned);
   } finally {
     await closeHttpServer(server);
   }
@@ -137,7 +138,12 @@ test('POST /v1/messages returns a correctly-translated Anthropic response (anthr
 function capturingFetch(sent: { model?: unknown }[]): FetchLike {
   return async (_url, init) => {
     sent.push(JSON.parse(String(init?.body)) as { model?: unknown });
-    return new Response(JSON.stringify({ id: 'x', object: 'chat.completion', choices: [] }), {
+    const body = {
+      id: 'x',
+      object: 'chat.completion',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    };
+    return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

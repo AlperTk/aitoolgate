@@ -140,14 +140,15 @@ export function normalizeUsage(usage: unknown): NormalizedUsage | undefined {
     const out: NormalizedUsage = {};
     const prompt = isNumber(usage.prompt_tokens) ? usage.prompt_tokens : undefined;
     const details = isRecord(usage.prompt_tokens_details) ? usage.prompt_tokens_details : undefined;
-    const cached = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : 0;
-    out.cacheHitInput = cached;
-    if (prompt !== undefined) out.input = Math.max(0, prompt - cached);
-    else if (cached > 0) out.input = 0;
+    // cacheHitInput stays undefined unless the provider reported cached_tokens (presence semantics).
+    const cached = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : undefined;
+    if (cached !== undefined) out.cacheHitInput = cached;
+    if (prompt !== undefined) out.input = Math.max(0, prompt - (cached ?? 0));
+    else if (cached !== undefined && cached > 0) out.input = 0;
     if (isNumber(usage.completion_tokens)) out.output = usage.completion_tokens;
     if (isNumber(usage.total_tokens)) out.total = usage.total_tokens;
     else if (out.input !== undefined || out.output !== undefined) {
-      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
+      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
     }
     return hasAnyValue(out) ? out : undefined;
   }
@@ -155,14 +156,14 @@ export function normalizeUsage(usage: unknown): NormalizedUsage | undefined {
   if (isNumber(usage.input_tokens) || isNumber(usage.output_tokens)) {
     const out: NormalizedUsage = {};
     const input = isNumber(usage.input_tokens) ? usage.input_tokens : undefined;
-    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : 0;
+    const cacheRead = isNumber(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : undefined;
     const cacheCreation = isNumber(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0;
     // base input and cacheHitInput are clamped >= 0 so a negative cache field can never leak a negative total.
-    out.cacheHitInput = Math.max(0, cacheRead);
+    if (cacheRead !== undefined) out.cacheHitInput = Math.max(0, cacheRead);
     if (input !== undefined) out.input = Math.max(0, input + cacheCreation);
     if (isNumber(usage.output_tokens)) out.output = usage.output_tokens;
     if (out.input !== undefined || out.output !== undefined) {
-      out.total = (out.input ?? 0) + out.cacheHitInput + (out.output ?? 0);
+      out.total = (out.input ?? 0) + (out.cacheHitInput ?? 0) + (out.output ?? 0);
     }
     return hasAnyValue(out) ? out : undefined;
   }

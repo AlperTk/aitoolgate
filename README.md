@@ -2,7 +2,7 @@
 
 **Observe, debug, and optimize AI agent tool usage — locally.**
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue)](#)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue)](#)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](#)
 [![Runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen)](#)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -74,7 +74,7 @@ When developing AI-agent tools, the model's final answer rarely explains *why* i
           AI client response             +--> Optional SQLite storage
 ```
 
-Requests pass through a policy pipeline, are translated if necessary, and are forwarded to the currently active provider. Responses are returned in the client's protocol. Tool activity and interventions are published to a shared telemetry bus. Telemetry failures are isolated from proxied requests.
+Requests pass through a policy pipeline, are converted to the active provider's protocol, and are forwarded. Every streaming response is decoded from the upstream protocol into an internal `LLMEvent` stream and re-encoded into the client's protocol. There is no same-protocol bypass for streaming. See [Streaming and reasoning](#streaming-and-reasoning). Tool activity and interventions are published to a shared telemetry bus. Telemetry failures are isolated from proxied requests.
 
 ## Quick start
 
@@ -97,17 +97,17 @@ npm run build
 npm start
 ```
 
-For development, use `npm run dev` (build then start). The repository uses TypeScript 7.0.2 for development.
+For development, use `npm run dev` (build then start). The repository uses TypeScript ^7.0.2 for development.
 
 Whichever way you start it, open **http://localhost:8787** for the dashboard (the server listens on port `8787` by default; override with `PORT`). The server also exposes `GET /health`.
 
 ### 2. Configure an upstream
 
-Open **Settings** in the dashboard, add your upstream provider (name, base URL, model, protocol, and API key if required), and activate it.
+Open **Settings** in the dashboard, add your upstream provider (name, base URL, model, and API key if required), and activate it.
 
 The first provider is activated automatically. Later, you can switch the active provider from Settings without restarting the server.
 
-**Important:** The server starts without an upstream. Model requests return `503` (a JSON error) until a provider is configured and active. Configure the upstream via the dashboard Settings overlay or `POST /api/api-providers` (fields: `name`, `baseUrl`, `model`, `protocol`, `apiKey`).
+**Important:** The server starts without an upstream. Model requests return `503` (a JSON error) until a provider is configured and active. Configure the upstream via the dashboard Settings overlay or `POST /api/api-providers` (fields: `name` and `baseUrl` required; optional `model`, `apiKey`, `adapterId`, `authType`). See [Upstream providers](#upstream-providers).
 
 ### 3. Send a request through the proxy
 
@@ -122,11 +122,20 @@ curl http://localhost:8787/v1/chat/completions \
   }'
 ```
 
-The proxy also accepts Anthropic-format requests at `POST /v1/messages`. Responses are translated when the client's protocol differs from the active provider's protocol.
+The proxy also accepts Anthropic-format requests at `POST /v1/messages`. Streaming responses always go upstream → decode → internal `LLMEvent` → client encode → client, even when the client and provider use the same protocol.
 
 ### 4. Inspect activity and configure rules
 
 Use the dashboard to watch tool calls and results, inspect tool inputs and outputs, compare per-tool token and timing metrics, filter by tool/session/status/time, inspect interventions, and create rules through the matcher/action editor. Rules created through the dashboard take effect without a restart.
+
+## Upstream providers
+
+| Provider | Auth | Wire protocol | Notes |
+| --- | --- | --- | --- |
+| `generic-openai` (Generic OpenAI-compatible) | API key | `openai` | Base URL used as configured. |
+| `generic-anthropic` (Generic Anthropic-compatible) | API key | `anthropic` | Base URL used as configured. |
+| `copilot` (GitHub Copilot) | Device OAuth | `openai` | Maps the host to `api.githubcopilot.com` (default) or `copilot-api.<host>` (enterprise). |
+
 
 ## Policy engine
 
@@ -204,6 +213,25 @@ The two databases separate lightweight rules/events/provider configuration from 
 `GET /health` returns the server's liveness status. Tool activity, metrics, policy rules, and provider settings are managed through the built-in dashboard.
 
 > **Security:** The local management endpoints are not an authentication boundary and can expose sensitive tool data or provider credentials. Keep the server accessible only to trusted users.
+
+### Streaming and reasoning
+
+Every streaming response takes the same path: upstream SSE → protocol decode → internal `LLMEvent` stream → client protocol encode → client. There is no same-protocol bypass.
+
+#### Reasoning / thinking
+
+- **OpenAI chat decode:** `delta.reasoning_text` and `delta.reasoning_content` are read as reasoning.
+- **`delta.reasoning_opaque`:** becomes a signature-carrying reasoning event. It is not emitted to OpenAI clients.
+- **OpenAI chat encode:** reasoning is emitted as `delta.reasoning_content`.
+- **Anthropic:** unsigned thinking is dropped on the Anthropic wire. This is an **open decision under review**, not settled behavior.
+
+#### Non-SSE JSON responses
+
+A 2xx upstream response that is not SSE is handled as follows:
+
+- **JSON with message content:** converted into a synthetic SSE stream for the client.
+- **JSON with metadata only (no content):** returns HTTP `502` with the message `upstream returned a non-streaming response without content`.
+- **Undecodable JSON:** passed through raw.
 
 ## Architecture
 

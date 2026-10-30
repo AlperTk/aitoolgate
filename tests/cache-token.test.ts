@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { summarizeResponse } from '../src/proxy/context';
-import { openaiResponseToAnthropic, anthropicResponseToOpenAI } from '../src/proxy/translate';
+import { convertResponse } from '../src/proxy/translate';
+import type { AnthropicResponse, OpenAIChatResponse } from '../src/proxy/types';
 import { estimateTurnUsage } from '../src/telemetry/tokenEstimate';
 import { createSseToolCallExtractor } from '../src/telemetry/stream-extract';
 import { createCollector } from '../src/telemetry/collector';
@@ -38,7 +39,7 @@ test('OpenAI sync splits prompt_tokens into base input + cacheHitInput', () => {
   assert.equal(usage.total, 1362);
 });
 
-test('OpenAI sync with no cached tokens reports cacheHitInput = 0 (unchanged)', () => {
+test('OpenAI sync with no cached tokens leaves cacheHitInput undefined (not reported)', () => {
   const body = {
     id: 'x',
     object: 'chat.completion',
@@ -50,12 +51,12 @@ test('OpenAI sync with no cached tokens reports cacheHitInput = 0 (unchanged)', 
   const { usage } = summarizeResponse(body);
   assert.ok(usage);
   assert.equal(usage.input, 10);
-  assert.equal(usage.cacheHitInput, 0, 'no cache fields -> cache hit is 0');
+  assert.equal(usage.cacheHitInput, undefined, 'no cache fields -> cache hit not reported');
   assert.equal(usage.output, 5);
   assert.equal(usage.total, 15);
 });
 
-test('OpenAI sync with prompt_tokens_details absent reports cacheHitInput=0, input=prompt_tokens', () => {
+test('OpenAI sync with prompt_tokens_details absent leaves cacheHitInput undefined, input=prompt_tokens', () => {
   const body = {
     id: 'x',
     object: 'chat.completion',
@@ -68,7 +69,7 @@ test('OpenAI sync with prompt_tokens_details absent reports cacheHitInput=0, inp
   const { usage } = summarizeResponse(body);
   assert.ok(usage);
   assert.equal(usage.input, 1320, 'base input = prompt_tokens (no cached_tokens)');
-  assert.equal(usage.cacheHitInput, 0, 'absent prompt_tokens_details -> cache hit is 0');
+  assert.equal(usage.cacheHitInput, undefined, 'absent prompt_tokens_details -> cache hit not reported');
   assert.equal(usage.output, 42);
   assert.equal(usage.total, 1362, 'total reconciles with total_tokens');
 });
@@ -121,7 +122,7 @@ test('Anthropic sync folds cache_creation into base input and carries cache_read
   assert.equal(usage.total, 125 + 1024 + 150, 'total = base + hit + output (true total)');
 });
 
-test('Anthropic sync with no cache tokens reports cacheHitInput = 0 (unchanged)', () => {
+test('Anthropic sync with no cache tokens leaves cacheHitInput undefined (not reported)', () => {
   const body = {
     id: 'x',
     type: 'message',
@@ -134,12 +135,12 @@ test('Anthropic sync with no cache tokens reports cacheHitInput = 0 (unchanged)'
   const { usage } = summarizeResponse(body);
   assert.ok(usage);
   assert.equal(usage.input, 10);
-  assert.equal(usage.cacheHitInput, 0);
+  assert.equal(usage.cacheHitInput, undefined, 'no cache fields -> cache hit not reported');
   assert.equal(usage.output, 5);
   assert.equal(usage.total, 15);
 });
 
-test('Anthropic sync with null cache fields reports cacheHitInput=0, input=input_tokens', () => {
+test('Anthropic sync with null cache fields leaves cacheHitInput undefined, input=input_tokens', () => {
   const body = {
     id: 'x',
     type: 'message',
@@ -153,7 +154,7 @@ test('Anthropic sync with null cache fields reports cacheHitInput=0, input=input
   const { usage } = summarizeResponse(body);
   assert.ok(usage);
   assert.equal(usage.input, 25, 'base input = input_tokens (null cache_creation)');
-  assert.equal(usage.cacheHitInput, 0, 'null cache_read -> cache hit is 0');
+  assert.equal(usage.cacheHitInput, undefined, 'null cache_read -> cache hit not reported');
   assert.equal(usage.output, 150);
   assert.equal(usage.total, 175, 'total = input + output (no cache hit)');
 });
@@ -254,7 +255,7 @@ test('Anthropic stream: cache_creation on message_start survives into the final 
   assert.ok(turn, 'a whole-turn usage event is emitted for the stream');
   assert.equal(turn.tokens.input, 125, 'base input includes cache_creation from message_start');
   assert.equal(turn.tokens.output, 150, 'output from message_delta');
-  assert.equal(turn.tokens.cacheHitInput, 0, 'no cache_read reported -> cache hit is 0');
+  assert.equal(turn.tokens.cacheHitInput, undefined, 'no cache_read reported -> turn.usage omits cacheHitInput');
   assert.equal(turn.tokens.total, 125 + 150, 'total = base + output');
 });
 
@@ -282,8 +283,8 @@ test('OpenAI -> Anthropic conversion maps cached_tokens onto cache_read_input_to
     model: 'gpt-4o-mini',
     choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 1320, completion_tokens: 42, total_tokens: 1362, prompt_tokens_details: { cached_tokens: 1024 } },
-  } as unknown as Parameters<typeof openaiResponseToAnthropic>[0];
-  const anth = openaiResponseToAnthropic(resp);
+  } as unknown;
+  const anth = convertResponse('openai-chat', 'anthropic-messages', resp) as AnthropicResponse;
   assert.equal(anth.usage.input_tokens, 296, 'Anthropic base input = prompt_tokens - cached_tokens');
   assert.equal(anth.usage.output_tokens, 42);
   const usage = anth.usage as Record<string, unknown>;
@@ -299,8 +300,8 @@ test('Anthropic -> OpenAI conversion maps cache_read_input_tokens onto cached_to
     content: [{ type: 'text', text: 'hi' }],
     stop_reason: 'end_turn',
     usage: { input_tokens: 25, cache_creation_input_tokens: 100, cache_read_input_tokens: 1024, output_tokens: 150 },
-  } as unknown as Parameters<typeof anthropicResponseToOpenAI>[0];
-  const openai = anthropicResponseToOpenAI(resp);
+  } as unknown;
+  const openai = convertResponse('anthropic-messages', 'openai-chat', resp) as OpenAIChatResponse;
   const usage = openai.usage as unknown as Record<string, unknown>;
   assert.equal(usage.prompt_tokens, 25 + 100 + 1024, 'OpenAI prompt_tokens = total input (base + creation + read)');
   assert.equal(usage.completion_tokens, 150);
@@ -316,8 +317,8 @@ test('OpenAI -> Anthropic translation total reconciles with the source true tota
     choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
     // cache_write_tokens is a SEPARATE metric; it must NOT be folded into base input (which would over-count the total).
     usage: { prompt_tokens: 1320, completion_tokens: 42, total_tokens: 1362, prompt_tokens_details: { cached_tokens: 1024, cache_write_tokens: 500 } },
-  } as unknown as Parameters<typeof openaiResponseToAnthropic>[0];
-  const anth = openaiResponseToAnthropic(resp);
+  } as unknown;
+  const anth = convertResponse('openai-chat', 'anthropic-messages', resp) as AnthropicResponse;
   const usage = anth.usage as unknown as Record<string, number | undefined>;
   assert.equal(usage.input_tokens, 1320 - 1024, 'base input = prompt_tokens - cached_tokens');
   assert.equal(usage.cache_read_input_tokens, 1024, 'cache hit = cached_tokens');
@@ -337,8 +338,8 @@ test('Anthropic -> OpenAI translation total reconciles with the source true tota
     content: [{ type: 'text', text: 'hi' }],
     stop_reason: 'end_turn',
     usage: { input_tokens: 25, cache_creation_input_tokens: 100, cache_read_input_tokens: 1024, output_tokens: 150 },
-  } as unknown as Parameters<typeof anthropicResponseToOpenAI>[0];
-  const openai = anthropicResponseToOpenAI(resp);
+  } as unknown;
+  const openai = convertResponse('anthropic-messages', 'openai-chat', resp) as OpenAIChatResponse;
   const usage = openai.usage as unknown as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   // Source true total = input_tokens + cache_creation + cache_read + output_tokens.
   assert.equal(usage.prompt_tokens, 25 + 100 + 1024, 'prompt_tokens = total input');

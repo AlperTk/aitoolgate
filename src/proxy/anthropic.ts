@@ -1,20 +1,17 @@
 import type http from 'node:http';
-import type { Pipeline, RequestContext } from '../ports/pipeline';
+import type { Pipeline } from '../ports/pipeline';
 import type { AnthropicRequest } from './types';
 import {
-  forwardAnthropicRequest,
-  pipeUpstreamStream,
-  streamAnthropicRequest,
+  forwardRequest,
+  streamForClient,
   type UpstreamClient,
 } from './upstream';
 import {
   buildRequestContext,
   readJSONBody,
-  resolveAndEmitToolResults,
   runThroughPipeline,
   sendJSON,
-  toClientId,
-  toSessionKeyString,
+  streamSameProtocolRequest,
 } from './context';
 import type {
   TelemetryEventBus,
@@ -53,8 +50,8 @@ export async function handleAnthropicRoute(
   if (req.method === 'POST' && url === '/v1/messages') {
     const raw = await readJSONBody(req);
 
-    // Same-protocol streaming: pipe the upstream SSE straight through; cross-protocol streams keep the buffer-and-translate path.
-    if (isStreamRequest(raw) && deps.upstream.protocol === 'anthropic') {
+    // Streaming (same- or cross-protocol) is served by streamSameProtocol; only non-stream requests use the buffered pipeline.
+    if (isStreamRequest(raw)) {
       await streamSameProtocol(req, res, deps, raw);
       return true;
     }
@@ -63,7 +60,7 @@ export async function handleAnthropicRoute(
     const { status, body } = await runThroughPipeline(
       deps.pipeline,
       requestCtx,
-      (request) => forwardAnthropicRequest(deps.upstream, request as AnthropicRequest),
+      (request) => forwardRequest(deps.upstream, 'anthropic-messages', request as AnthropicRequest),
       {
         bus: deps.bus,
         tracker: deps.tracker,
@@ -96,33 +93,9 @@ async function streamSameProtocol(
   deps: AnthropicHandlerDeps,
   raw: unknown,
 ): Promise<void> {
-  const requestCtx = buildRequestContext(req, deps.upstream, raw);
-  const processed = await deps.pipeline.handleRequest(requestCtx);
-  syncRequestMessages(processed);
-  // Request-phase tool-RESULT detection runs on every proxied request (a no-op when nothing matches).
-  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage, deps.toolErrorPatterns);
-  const upstreamResponse = await streamAnthropicRequest(deps.upstream, processed.raw as AnthropicRequest);
-  // Pipe the raw SSE through a protocol-aware passthrough extractor that captures tool telemetry onto the bus without altering forwarded bytes.
-  const extractor = deps.sseExtractor(
-    deps.bus,
-    toSessionKeyString(requestCtx.sessionKey),
-    toClientId(requestCtx.client),
-    deps.tracker,
-    // Precomputed estimated input-token mass, so a usage-less streamed turn still emits an honest `turn.usage`.
-    undefined,
-    deps.usage.estimateInputTokens(requestCtx.messages),
-    // The request's raw body (carrying `tools`), so each streamed tool.call carries the request-provided description.
-    requestCtx.raw,
+  return streamSameProtocolRequest<AnthropicRequest>(req, res, deps, raw, (upstream, request, tap) =>
+    streamForClient(upstream, 'anthropic-messages', request, tap),
   );
-  pipeUpstreamStream(res, upstreamResponse, extractor);
 }
 
 /** Reflect provider-agnostic message edits onto the raw wire body's `messages` field; no-op when there is none or it's untouched. */
-function syncRequestMessages(ctx: RequestContext): void {
-  const raw = ctx.raw;
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return;
-  const record = raw as Record<string, unknown>;
-  if (!Array.isArray(record.messages)) return;
-  if (record.messages === ctx.messages) return;
-  record.messages = ctx.messages;
-}

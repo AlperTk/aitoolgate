@@ -1,6 +1,6 @@
 {
   "name": "aitoolgate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local, zero-runtime-dependency LLM model proxy (OpenAI/Anthropic compatible) for AI agents: inspects and rewrites tool calls, tracks per-tool token usage and latency, applies policy rules live without restart, and ships a real-time local dashboard.",
   "license": "Apache-2.0",
   "repository": {

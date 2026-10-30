@@ -50,10 +50,12 @@
  * yields a pure passthrough, and no internal error can propagate into the stream.
  */
 import { Transform } from 'node:stream';
+import type { InternalLLMEvent } from '../ports/llm';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from './events';
 import { monotonicEpochMs, type ToolMetricsTracker } from './toolMetrics';
 import { estimateTokensFromChars, estimateCallTokens } from './tokenEstimate';
-import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap, type NormalizedUsage } from './protocol-common';
+import { parseArgs, stableCallId, toolDescriptionMap, type NormalizedUsage } from './protocol-common';
+import { parseSseDataLine, decodeSseFrame, type SseFrameSink } from './sse-frames';
 
 /** Accumulated state for one in-progress streaming tool call, keyed by SSE `index`. */
 interface StreamToolCall {
@@ -73,9 +75,29 @@ interface StreamToolCall {
   firstSeenAt?: number;
 }
 
+/** One tool call ready for emission, normalised across the event tap and the raw SSE byte path. */
+interface PendingCall {
+  /** Provider tool-call index (or arrival ordinal); orders calls within a turn. */
+  index: number;
+  name: string;
+  id: string;
+  /** Raw argument text (wire string when known, else serialized arguments). */
+  raw: string;
+  /** Parsed arguments, when known. */
+  args: Record<string, unknown> | undefined;
+  /** When this call was first observed (epoch milliseconds). */
+  firstSeenAt?: number;
+}
+
+/** True for a decoded InternalLLMEvent object (as opposed to a raw SSE byte chunk). */
+function isInternalEvent(chunk: unknown): chunk is InternalLLMEvent {
+  return typeof chunk === 'object' && chunk !== null && !Buffer.isBuffer(chunk) && typeof (chunk as { type?: unknown }).type === 'string';
+}
+
 /**
- * Create a passthrough {@link Transform} extracting tool-call telemetry from an SSE byte
- * stream. See the module doc for the exact emission semantics. Safe with an undefined
+ * Create a passthrough {@link Transform} extracting tool-call telemetry from decoded
+ * InternalLLMEvents (primary) or, for undecodable passthrough, from raw SSE bytes.
+ * See the module doc for the exact emission semantics. Safe with an undefined
  * `bus` (pure passthrough); `clientId` is attached to emitted events only when provided.
  * An optional injectable timing source (`now`, epoch milliseconds — defaulting to the
  * shared monotonic wall-clock) controls BOTH the shared turn-level event `at` and each
@@ -119,6 +141,8 @@ export function createSseToolCallExtractor(
   };
 
   const byIndex = new Map<number, StreamToolCall>();
+  // Tool calls decoded from the event tap (InternalLLMEvent 'tool-call'); flushed with byIndex at stream end.
+  const eventCalls: PendingCall[] = [];
   let buffer = '';
   let finished = false;
   // The turn's upstream usage, merged field-aware across every usage frame seen this stream;
@@ -153,56 +177,36 @@ export function createSseToolCallExtractor(
    * the shared latency tracker so a LATER request carrying the matching result pairs into a
    * REAL `tool.result` (no synthetic per-stream result).
    */
-  const emitCallAt = (index: number, totalCalls: number): void => {
-    const acc = byIndex.get(index);
-    if (acc === undefined) return;
-    byIndex.delete(index);
-    if (acc.name === '') return;
-    const args = parseArgs(acc.args);
+  const emitCallAt = (call: PendingCall, totalCalls: number): void => {
+    if (call.name === '') return;
     // The EMITTED event keeps ONE shared turn-level `at` so the collector's per-(sessionKey, at)
-    // token dedup collapses a multi-call turn into a single contribution. The TRACKER instead
-    // records THIS call's own first-observation time (captured when the call first appeared on
-    // the stream) as its issue time, so its later result measures a TRUE per-call span — even
-    // for batched/interleaved calls in one streamed turn observed at different times. Results
-    // that genuinely arrive together keep equal (correct, parallel-run) durations; out-of-order
-    // arrivals each take their own span, paired by id (see `toolMetrics`).
+    // token dedup collapses a multi-call turn into a single contribution. The TRACKER records this
+    // call's own first-observation time as its issue time, so its later result measures a per-call span.
     const at = turnTimestamp();
-    const issuedAt = acc.firstSeenAt ?? at;
-    // Assign a stable, turn-unique id (the upstream id when present, else a deterministic
-    // `${sessionKey}#${at}#${index}` fallback) so sibling calls in one batch turn NEVER share an
-    // identical id — the field the dashboard dedups on. The same id feeds both the emitted event
-    // and the tracker so a later result stays linked to its originating call.
-    const id = stableCallId(sessionKey, at, index, acc.id, seenIds);
-    // Fold THIS call's raw argument character mass into the whole-turn OUTPUT estimate and count
-    // the emitted call (so even a usage-less stream that observed tool calls still emits its
-    // final `turn.usage`).
+    const issuedAt = call.firstSeenAt ?? at;
+    // Stable, turn-unique id shared by the emitted event and the tracker (see stableCallId).
+    const id = stableCallId(sessionKey, at, call.index, call.id, seenIds);
     callsEmitted += 1;
-    emittedArgsChars += acc.args.length;
-    // The request-provided tool description (matched by the call's name), attached only when
-    // present so a tool with no description simply omits the field (mirrors the buffered path).
-    const description = toolDescs.get(acc.name);
+    emittedArgsChars += call.raw.length;
+    const description = toolDescs.get(call.name);
     emitEvent({
       type: 'tool.call',
       sessionKey,
-      toolName: acc.name,
+      toolName: call.name,
       ...(id !== '' ? { id } : {}),
-      ...(args !== undefined ? { args } : {}),
+      ...(call.args !== undefined ? { args: call.args } : {}),
       ...(typeof description === 'string' && description !== '' ? { description } : {}),
       at,
-      // Attach the turn's upstream usage when the provider reported it AND the turn is a single
-      // call (omitted for a batched turn so the whole-turn turn.usage carries the token mass once).
+      // Attach the turn's upstream usage when the provider reported it AND the turn is a single call.
       ...(totalCalls === 1 && streamUsage !== undefined ? { tokens: streamUsage } : {}),
-      // Per-call REQUEST-side token estimate (name + serialized arguments); distinct per tool,
-      // mirroring the buffered (proxy/context.ts) emission path.
-      ...(acc.name !== '' || acc.args.length > 0 ? { callTokens: estimateCallTokens(acc.name, acc.args) } : {}),
+      // Per-call REQUEST-side token estimate (name + serialized arguments); distinct per tool.
+      callTokens: estimateCallTokens(call.name, call.raw),
       ...(clientId !== undefined ? { clientId } : {}),
     });
-    // Record the issued call with ITS OWN issue time (plus its name so a resolved result can
-    // surface a real toolName) so its later result can be paired per-call. Every emitted call
-    // now carries a non-empty stable id, so every emitted call is recorded.
+    // Record the issued call with ITS OWN issue time so its later result can be paired per-call.
     if (tracker !== undefined && id !== '') {
       try {
-        tracker.recordIssued(sessionKey, [{ id, at: issuedAt, ...(acc.name !== '' ? { name: acc.name } : {}) }]);
+        tracker.recordIssued(sessionKey, [{ id, at: issuedAt, name: call.name }]);
       } catch {
         // A throwing tracker must never break the stream pass-through.
       }
@@ -211,11 +215,20 @@ export function createSseToolCallExtractor(
 
   /** Emit every accumulated call in index order — the SOLE emission point, at stream end. */
   const flushAllCalls = (): void => {
-    const indices = [...byIndex.keys()].sort((a, b) => a - b);
+    const byteCalls: PendingCall[] = [...byIndex.entries()].map(([index, acc]) => ({
+      index,
+      name: acc.name,
+      id: acc.id,
+      raw: acc.args,
+      args: parseArgs(acc.args),
+      ...(acc.firstSeenAt !== undefined ? { firstSeenAt: acc.firstSeenAt } : {}),
+    }));
+    byIndex.clear();
+    const calls = [...byteCalls, ...eventCalls.splice(0)].sort((a, b) => a.index - b.index);
     // Count the calls that will actually be emitted (non-empty tool names): a single-call turn
     // attaches the turn's tokens to its per-call event, while a batched turn omits them.
-    const totalCalls = indices.reduce((n, index) => n + (byIndex.get(index)?.name ? 1 : 0), 0);
-    for (const index of indices) emitCallAt(index, totalCalls);
+    const totalCalls = calls.reduce((n, call) => n + (call.name !== '' ? 1 : 0), 0);
+    for (const call of calls) emitCallAt(call, totalCalls);
   };
 
   /**
@@ -240,15 +253,20 @@ export function createSseToolCallExtractor(
     const inputMass = typeof inputTokens === 'number' ? inputTokens : 0;
     if (streamUsage !== undefined || callsEmitted > 0) {
       const input = streamUsage?.input ?? inputMass;
-      const cacheHitInput = streamUsage?.cacheHitInput ?? 0;
+      // cacheHitInput is omitted unless the provider reported it; it is never estimated.
+      const cacheHitInput = streamUsage?.cacheHitInput;
       const output = streamUsage?.output ?? estimateTokensFromChars(streamedTextChars + emittedArgsChars);
       if (input > 0 || output > 0) {
-        // total is always the TRUE turn total (base input + cache-hit input + output); cacheHitInput
-        // is 0 when the stream reported no cache fields (and on the estimate path).
+        // total is always the TRUE turn total (base input + cache-hit input + output).
         emitEvent({
           type: 'turn.usage',
           sessionKey,
-          tokens: { input, output, total: input + cacheHitInput + output, cacheHitInput },
+          tokens: {
+            input,
+            output,
+            total: input + (cacheHitInput ?? 0) + output,
+            ...(cacheHitInput !== undefined ? { cacheHitInput } : {}),
+          },
           ...(clientId !== undefined ? { clientId } : {}),
           at: turnTimestamp(),
         });
@@ -256,114 +274,78 @@ export function createSseToolCallExtractor(
     }
   };
 
-  /** Accumulate one `choices[].delta.tool_calls[]` fragment, keyed by its `index`; calls are emitted at stream end. */
-  const accumulate = (entry: unknown): void => {
-    const record = entry as { index?: number; id?: string; function?: { name?: string; arguments?: string } };
-    const index = typeof record.index === 'number' ? record.index : byIndex.size;
+  /** Fold one decoded InternalLLMEvent (event tap) into the telemetry state; calls are emitted at stream end. */
+  const handleEvent = (event: InternalLLMEvent): void => {
+    switch (event.type) {
+      case 'text':
+        streamedTextChars += event.text.length;
+        break;
+      case 'tool-call':
+        eventCalls.push({
+          index: event.index ?? eventCalls.length,
+          name: event.name,
+          id: event.id,
+          // The exact wire argument string when the provider streamed it; else the serialized arguments.
+          raw: event.rawArgs ?? JSON.stringify(event.args),
+          args: event.args,
+          firstSeenAt: clockNow(),
+        });
+        break;
+      case 'usage':
+        streamUsage = mergeUsage(streamUsage, {
+          input: event.usage.input,
+          output: event.usage.output,
+          total: event.usage.total,
+          cacheHitInput: event.usage.cacheHitInput,
+        });
+        break;
+      default:
+        break;
+    }
+  };
+
+  /** Get-or-create the accumulator for `index` (single init site). */
+  const accumulatorAt = (index: number): StreamToolCall => {
     let acc = byIndex.get(index);
     if (acc === undefined) {
       acc = { name: '', args: '', id: '' };
       byIndex.set(index, acc);
     }
-    // First observation of this call: pin ITS issue time once (per-call duration attribution).
+    return acc;
+  };
+
+  /** Pin a call's issue time on its FIRST observation only (per-call duration attribution). */
+  const pinFirstSeen = (acc: StreamToolCall): void => {
     if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
-    if (typeof record.id === 'string' && record.id !== '') acc.id = record.id;
-    const fn = record.function;
-    if (isRecord(fn)) {
-      if (typeof fn.name === 'string' && fn.name !== '') acc.name = fn.name;
-      if (typeof fn.arguments === 'string') acc.args += fn.arguments;
-    }
   };
 
-  /**
-   * Handle one NATIVE Anthropic streaming event frame. Only `tool_use` content blocks produce
-   * pending tool-call state: `content_block_start` opens a call (capturing its stable `id` +
-   * `name`) and `content_block_delta` (`input_json_delta.partial_json`) appends raw arguments.
-   * TEXT deltas are counted only for the whole-turn OUTPUT token estimate (no block state);
-   * every accumulated `tool_use` call is
-   * finalised (emit + record) when the stream ends ({@link finish} → {@link flushAllCalls}),
-   * exactly mirroring the OpenAI-shaped path so each call carries the FULL turn-level `tokens`
-   * (read from `message_start` / `message_delta`) under ONE shared turn-level `at`. `message_*`
-   * frames contribute only via the turn-level usage merge in {@link processLine}.
-   */
-  const handleAnthropicEvent = (parsed: Record<string, unknown>): void => {
-    switch (parsed.type) {
-      case 'content_block_start': {
-        const block = parsed.content_block;
-        if (!isRecord(block) || block.type !== 'tool_use') return; // only tool_use blocks open a call
-        const index = typeof parsed.index === 'number' ? parsed.index : byIndex.size;
-        let acc = byIndex.get(index);
-        if (acc === undefined) {
-          acc = { name: '', args: '', id: '' };
-          byIndex.set(index, acc);
-        }
-        // First observation of this tool_use block: pin ITS issue time once.
-        if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
-        if (typeof block.id === 'string' && block.id !== '') acc.id = block.id;
-        if (typeof block.name === 'string' && block.name !== '') acc.name = block.name;
-        break;
-      }
-      case 'content_block_delta': {
-        const delta = parsed.delta;
-        if (!isRecord(delta)) return;
-        // Response-TEXT fragments count toward the whole-turn OUTPUT token estimate.
-        const textDelta = delta.text_delta;
-        if (isRecord(textDelta) && typeof textDelta.text === 'string') streamedTextChars += textDelta.text.length;
-        const jsonDelta = delta.input_json_delta;
-        if (isRecord(jsonDelta) && typeof jsonDelta.partial_json === 'string') {
-          const index = typeof parsed.index === 'number' ? parsed.index : -1;
-          const acc = byIndex.get(index);
-          if (acc !== undefined) {
-            if (acc.firstSeenAt === undefined) acc.firstSeenAt = clockNow();
-            acc.args += jsonDelta.partial_json;
-          }
-        }
-        break;
-      }
-      default:
-        // message_start / message_delta / message_stop / content_block_stop: no per-block work here;
-        // usage is merged in processLine and tool_use calls are finalised at stream end.
-        break;
-    }
+  /** Folds decoded frame fragments into the telemetry state; calls are emitted at stream end. */
+  const frameSink: SseFrameSink = {
+    text: (chars) => {
+      streamedTextChars += chars;
+    },
+    usage: (usage) => {
+      streamUsage = mergeUsage(streamUsage, usage);
+    },
+    toolCall: (fragment) => {
+      const acc = accumulatorAt(fragment.index ?? byIndex.size);
+      pinFirstSeen(acc);
+      if (fragment.id !== undefined) acc.id = fragment.id;
+      if (fragment.name !== undefined) acc.name = fragment.name;
+      if (fragment.args !== undefined) acc.args += fragment.args;
+    },
+    toolArgs: (index, args) => {
+      const acc = byIndex.get(index);
+      if (acc === undefined) return;
+      pinFirstSeen(acc);
+      acc.args += args;
+    },
   };
 
-  /** Parse one SSE `data:` line and accumulate any tool-call fragments it carries. */
+  /** Parse one SSE `data:` line and fold any frame it carries into the telemetry state. */
   const processLine = (line: string): void => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) return;
-    const payload = trimmed.slice('data:'.length).trim();
-    if (payload === '' || payload === '[DONE]') return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(payload);
-    } catch {
-      return; // Non-JSON data line (comment / keep-alive): ignore.
-    }
-    if (!isRecord(parsed)) return;
-    // Turn-level usage: present on an OpenAI trailing `usage` chunk OR an Anthropic
-    // `message_start` (`message.usage`) / `message_delta` (`usage`) frame. Read from either
-    // location and MERGED across frames so split input/output numbers collapse into ONE
-    // turn-level usage shared by every emitted call (or none when no usage is present).
-    const nestedUsage = isRecord(parsed.message) ? parsed.message.usage : undefined;
-    const usage = normalizeUsage(parsed.usage ?? nestedUsage);
-    if (usage !== undefined) streamUsage = mergeUsage(streamUsage, usage);
-    // OpenAI-shaped streaming tool-call fragments.
-    const choices = parsed.choices;
-    if (Array.isArray(choices)) {
-      for (const choice of choices) {
-        if (!isRecord(choice)) continue;
-        const delta = choice.delta;
-        if (!isRecord(delta)) continue;
-        // Response-TEXT fragments count toward the whole-turn OUTPUT token estimate.
-        if (typeof delta.content === 'string') streamedTextChars += delta.content.length;
-        const toolCalls = delta.tool_calls;
-        if (Array.isArray(toolCalls)) for (const tc of toolCalls) accumulate(tc);
-      }
-      return;
-    }
-    // Native Anthropic streaming events (same-protocol pass-through): content_block_* frames
-    // create/finalise tool_use calls; message_* frames are handled via the usage merge above.
-    handleAnthropicEvent(parsed);
+    const parsed = parseSseDataLine(line);
+    if (parsed !== undefined) decodeSseFrame(parsed, frameSink);
   };
 
   /** Fold a chunk into the buffer and process each completed line. */
@@ -379,7 +361,19 @@ export function createSseToolCallExtractor(
   };
 
   return new Transform({
-    transform(chunk: Buffer, _encoding: string | undefined, callback: () => void): void {
+    // Object mode: accepts decoded InternalLLMEvents as well as raw SSE byte chunks.
+    objectMode: true,
+    transform(chunk: unknown, _encoding: string | undefined, callback: () => void): void {
+      // Decoded events are telemetry-only (not forwarded); raw SSE bytes are forwarded unchanged.
+      if (isInternalEvent(chunk)) {
+        try {
+          handleEvent(chunk);
+        } catch {
+          // Best-effort extraction must never break the pass-through.
+        }
+        callback();
+        return;
+      }
       try {
         handleChunk(chunk as Buffer);
       } catch {

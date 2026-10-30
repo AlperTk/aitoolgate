@@ -2,8 +2,11 @@ import type { AuthStrategy } from './auth';
 
 /** Port contracts for upstream provider adapters; concrete adapters live in `src/providers/<adapter>/`. */
 
+/** Wire protocol names; `WIRE_PROTOCOL_IDS` in `src/protocols/registry.ts` must cover exactly these keys. */
+export const WIRE_PROTOCOLS = ['openai', 'anthropic'] as const;
+
 /** Wire protocol an upstream speaks. */
-export type WireProtocol = 'openai' | 'anthropic';
+export type WireProtocol = (typeof WIRE_PROTOCOLS)[number];
 
 /** Stored provider configuration an adapter resolves into an upstream target. */
 export interface ProviderConfig {

@@ -139,6 +139,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
   let totalOutputTokens = 0;
   let totalTokens = 0;
   let totalCacheHitInputTokens = 0;
+  let cacheHitSeen = false;
   let tokenSumsSeen = false;
   // Bounded, insertion-ordered set of seen token-turn dedup keys; the oldest key is evicted first beyond the cap.
   const tokenTurnKeys = new Set<string>();
@@ -178,7 +179,11 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     totalInputTokens += tokens.input ?? 0;
     totalOutputTokens += tokens.output ?? 0;
     totalTokens += tokens.total ?? 0;
-    totalCacheHitInputTokens += tokens.cacheHitInput ?? 0;
+    // Only turns that reported cache-hit input contribute; an unreported turn is not a 0.
+    if (tokens.cacheHitInput !== undefined) {
+      totalCacheHitInputTokens += tokens.cacheHitInput;
+      cacheHitSeen = true;
+    }
     tokenSumsSeen = true;
   };
 
@@ -381,7 +386,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
       out.totalInputTokens = totalInputTokens;
       out.totalOutputTokens = totalOutputTokens;
       out.totalTokens = totalTokens;
-      out.totalCacheHitInputTokens = totalCacheHitInputTokens;
+      if (cacheHitSeen) out.totalCacheHitInputTokens = totalCacheHitInputTokens;
     }
     return out;
   };
@@ -400,6 +405,7 @@ export function createCollector(options: CollectorOptions = {}): Collector {
     totalOutputTokens = 0;
     totalTokens = 0;
     totalCacheHitInputTokens = 0;
+    cacheHitSeen = false;
     tokenSumsSeen = false;
     tokenTurnKeys.clear();
     toolTokens.clear();

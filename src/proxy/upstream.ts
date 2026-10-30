@@ -1,18 +1,16 @@
 import type http from 'node:http';
 import { Readable, type Transform } from 'node:stream';
 import type { UpstreamProtocol } from '../../config/config';
+import type { InternalResponse, InternalLLMEvent } from '../ports/llm';
+import type { Protocol } from '../ports/protocol';
 import {
-  anthropicResponseToOpenAI,
-  anthropicToOpenAIRequest,
-  openaiResponseToAnthropic,
-  openaiToAnthropicRequest,
-} from './translate';
-import type {
-  AnthropicRequest,
-  AnthropicResponse,
-  OpenAIChatRequest,
-  OpenAIChatResponse,
-} from './types';
+  clientErrorBody,
+  type ProtocolId,
+  protocolRegistration,
+  upstreamErrorMessage,
+  WIRE_PROTOCOL_IDS,
+} from '../protocols/registry';
+import { encodeConvertedResponse, reencodeRequest } from './translate';
 
 /** A fetch-compatible function (defaults to the global `fetch`). */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -158,63 +156,239 @@ async function streamToEndpoint(
   });
 }
 
-/** Forward an OpenAI client request to the upstream, returning an OpenAI response. */
-export async function forwardOpenAIRequest(
-  client: UpstreamClient,
-  request: OpenAIChatRequest,
-): Promise<UpstreamResult> {
+/**
+ * Non-streaming forward keyed by client protocol id: generic re-encode to the upstream protocol, then conform the
+ * response to the client protocol.
+ */
+export async function forwardRequest(client: UpstreamClient, clientId: ProtocolId, request: unknown): Promise<UpstreamResult> {
   if (isUnconfiguredUpstream(client)) return { status: 503, ok: false, body: UNCONFIGURED_UPSTREAM };
-  if (client.protocol === 'openai') {
-    return postJSON(client, '/chat/completions', request);
-  }
-  const result = await postJSON(client, '/messages', openaiToAnthropicRequest(request));
-  return { ...result, body: anthropicResponseToOpenAI(result.body as AnthropicResponse) };
-}
-
-/** Forward an Anthropic client request to the upstream, returning an Anthropic response. */
-export async function forwardAnthropicRequest(
-  client: UpstreamClient,
-  request: AnthropicRequest,
-): Promise<UpstreamResult> {
-  if (isUnconfiguredUpstream(client)) return { status: 503, ok: false, body: UNCONFIGURED_UPSTREAM };
-  if (client.protocol === 'anthropic') {
-    return postJSON(client, '/messages', request);
-  }
-  const result = await postJSON(client, '/chat/completions', anthropicToOpenAIRequest(request));
-  return { ...result, body: openaiResponseToAnthropic(result.body as OpenAIChatResponse) };
+  const upstreamId = WIRE_PROTOCOL_IDS[client.protocol];
+  const { streamPath } = protocolRegistration(upstreamId);
+  const body = reencodeRequest(clientId, upstreamId, request, client.model);
+  if (body === undefined) return { status: 400, ok: false, body: clientErrorBody(clientId, UNDECODABLE_REQUEST_MESSAGE) };
+  return conformResult(await postJSON(client, streamPath, body), upstreamId, clientId);
 }
 
 /**
- * POST an OpenAI client request to the upstream and return the raw `Response` without
- * consuming its body, so the caller can stream it. Same-protocol requests hit
- * `/chat/completions`; cross-protocol requests are translated first (the route handler
- * only invokes this on same-protocol streams — see that file).
+ * Brings a non-streaming upstream result into the client protocol, mirroring the stream path: a non-2xx body
+ * becomes the client error envelope (status kept); a 2xx body with no content becomes a 502. Undecodable 2xx bodies pass through.
  */
-export async function streamOpenAIRequest(
-  client: UpstreamClient,
-  request: OpenAIChatRequest,
-): Promise<Response> {
-  if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
-  if (client.protocol === 'openai') {
-    return streamToEndpoint(client, '/chat/completions', request);
+function conformResult(result: UpstreamResult, upstream: ProtocolId, client: ProtocolId): UpstreamResult {
+  if (!result.ok) {
+    const message = upstreamErrorMessage(result.body) ?? `upstream returned HTTP ${result.status}`;
+    return { ...result, body: clientErrorBody(client, message) };
   }
-  return streamToEndpoint(client, '/messages', openaiToAnthropicRequest(request));
+  const response = protocolRegistration(upstream).create().decodeResponse(result.body);
+  if (response === undefined || !responseEvents(response).some(carriesContent)) {
+    return { status: 502, ok: false, body: clientErrorBody(client, NO_CONTENT_MESSAGE) };
+  }
+  return { ...result, body: encodeConvertedResponse(client, response) };
 }
 
 /**
- * POST an Anthropic client request to the upstream and return the raw `Response` without
- * consuming its body, so the caller can stream it. Same-protocol requests hit
- * `/messages`; cross-protocol requests are translated first.
+ * Streams from the upstream in the registry-resolved protocol. Every stream goes upstream SSE →
+ * decodeStream → InternalLLMEvent → encodeStream (client protocol), including same-protocol streams.
  */
-export async function streamAnthropicRequest(
+// TEMPORARY debug tap (DEBUG_UPSTREAM_SSE=1): logs raw upstream chunks to stderr; the client gets the original chunks.
+const DEBUG_UPSTREAM_SSE_ENABLED = process.env.DEBUG_UPSTREAM_SSE === '1';
+function debugTapUpstream(upstream: Response): Response {
+  if (!DEBUG_UPSTREAM_SSE_ENABLED || upstream.body === null) return upstream;
+  const decoder = new TextDecoder();
+  const logger = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      try {
+        process.stderr.write(`[debug-upstream-sse] ${decoder.decode(chunk, { stream: true })}`);
+      } catch {
+        // Debug logging must never affect the stream.
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  return new Response(upstream.body.pipeThrough(logger), {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+/** Streaming entrypoint keyed by client protocol id; the unconfigured upstream answers 503 without any fetch. */
+export async function streamForClient(
   client: UpstreamClient,
-  request: AnthropicRequest,
+  clientId: ProtocolId,
+  request: unknown,
+  tap?: Transform,
 ): Promise<Response> {
   if (isUnconfiguredUpstream(client)) return unconfiguredUpstreamResponse();
-  if (client.protocol === 'anthropic') {
-    return streamToEndpoint(client, '/messages', request);
+  const upstreamId = WIRE_PROTOCOL_IDS[client.protocol];
+  const { streamPath } = protocolRegistration(upstreamId);
+  const body = reencodeRequest(clientId, upstreamId, request, client.model);
+  if (body === undefined) return clientErrorResponse(protocolRegistration(clientId).create(), UNDECODABLE_REQUEST_MESSAGE, 400);
+  const upstream = debugTapUpstream(await streamToEndpoint(client, streamPath, body));
+  return bridgeStream(upstream, protocolRegistration(upstreamId).create(), protocolRegistration(clientId).create(), tap);
+}
+
+/** Re-encodes an upstream SSE body: decode (upstream protocol) → InternalLLMEvent → encode (client protocol). Non-2xx bodies are converted to the client error envelope. */
+async function bridgeStream(upstream: Response, from: Protocol, to: Protocol, tap?: Transform): Promise<Response> {
+  if (!upstream.ok) return upstreamErrorResponse(upstream, to);
+  if (upstream.body === null) return upstream;
+  prepareTap(tap);
+  if (isEventStream(upstream)) {
+    const frames = to.encodeStream(teeEvents(from.decodeStream(sseTextChunks(upstream.body)), tap));
+    return new Response(byteStreamOf(frames), { status: upstream.status });
   }
-  return streamToEndpoint(client, '/chat/completions', anthropicToOpenAIRequest(request));
+  // A non-SSE 2xx body (e.g. JSON) is read whole so it can be decoded as a response.
+  let raw = '';
+  for await (const text of sseTextChunks(upstream.body)) raw += text;
+  const events = await eventsOfBody(raw, from);
+  for (const event of events) tapWrite(tap, event);
+  tapEnd(tap);
+  // Undecodable or content-less bodies (events empty or metadata-only) become a client-protocol 502.
+  if (!events.some(carriesContent)) return clientErrorResponse(to, NO_CONTENT_MESSAGE);
+  return new Response(byteStreamOf(to.encodeStream(events)), { status: upstream.status });
+}
+
+/** Telemetry tap setup: swallow tap errors and keep it flowing so it never back-pressures the client stream. */
+function prepareTap(tap?: Transform): void {
+  if (tap === undefined) return;
+  tap.on('error', () => {});
+  tap.resume();
+}
+
+/** Best-effort write into the telemetry tap; a throwing tap never affects the client. */
+function tapWrite(tap: Transform | undefined, chunk: unknown): void {
+  if (tap === undefined) return;
+  try {
+    tap.write(chunk);
+  } catch {
+    // Best-effort telemetry: a throwing tap must never break the client stream.
+  }
+}
+
+/** Best-effort tap finalisation (emits stream-end telemetry). */
+function tapEnd(tap: Transform | undefined): void {
+  if (tap === undefined) return;
+  try {
+    tap.end();
+  } catch {
+    // Best-effort telemetry finalisation.
+  }
+}
+
+/** Mirror each decoded event into the tap, forwarding it unchanged to the encoder; the tap ends when the stream does. */
+async function* teeEvents(events: AsyncIterable<InternalLLMEvent>, tap?: Transform): AsyncGenerator<InternalLLMEvent> {
+  try {
+    for await (const event of events) {
+      tapWrite(tap, event);
+      yield event;
+    }
+  } finally {
+    tapEnd(tap);
+  }
+}
+
+/** A non-2xx upstream body becomes the client protocol's error envelope, keeping the upstream status. */
+async function upstreamErrorResponse(upstream: Response, to: Protocol): Promise<Response> {
+  let raw = '';
+  if (upstream.body !== null) for await (const text of sseTextChunks(upstream.body)) raw += text;
+  const message = upstreamErrorMessage(parseJSON(raw)) ?? `upstream returned HTTP ${upstream.status}`;
+  return clientErrorResponse(to, message, upstream.status);
+}
+
+const NO_CONTENT_MESSAGE = 'upstream returned a non-streaming response without content';
+const UNDECODABLE_REQUEST_MESSAGE = 'request body could not be decoded';
+
+/** Step-start and usage events are metadata; any other event (text, tool, reasoning, finish) is content. */
+function carriesContent(event: InternalLLMEvent): boolean {
+  return event.type !== 'step-start' && event.type !== 'usage';
+}
+
+/** 502 JSON error in the client protocol's own error shape. */
+function clientErrorResponse(client: Protocol, message: string, status = 502): Response {
+  return new Response(JSON.stringify(clientErrorBody(client.id, message)), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function isEventStream(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').includes('text/event-stream');
+}
+
+/** The one place a streamed response's Content-Type is chosen: a body its producer already typed (JSON errors, passthrough) keeps that type; an untyped body is the SSE stream. */
+function responseContentType(response: Response): string {
+  return response.headers.get('content-type') ?? 'text/event-stream';
+}
+
+/** Events for a fully buffered body: a decodable JSON response is synthesised; otherwise the body is read as SSE. */
+async function eventsOfBody(raw: string, from: Protocol): Promise<InternalLLMEvent[]> {
+  const wire = parseJSON(raw);
+  if (wire !== undefined) {
+    const response = from.decodeResponse(wire);
+    return response === undefined ? [] : responseEvents(response);
+  }
+  const events: InternalLLMEvent[] = [];
+  for await (const event of from.decodeStream([raw])) events.push(event);
+  return events;
+}
+
+function parseJSON(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Synthetic event stream for a decoded non-streaming response. */
+function responseEvents(response: InternalResponse): InternalLLMEvent[] {
+  type DecodedPart = Exclude<InternalResponse['message']['parts'][number], { type: 'opaque' }>;
+  const events: InternalLLMEvent[] = [
+    {
+      type: 'step-start',
+      ...(response.id !== undefined ? { id: response.id } : {}),
+      ...(response.model !== undefined ? { model: response.model } : {}),
+    },
+  ];
+  const isDecoded = (part: InternalResponse['message']['parts'][number]): part is DecodedPart => part.type !== 'opaque';
+  events.push(...response.message.parts.filter(isDecoded));
+  if (response.usage !== undefined) events.push({ type: 'usage', usage: response.usage });
+  if (response.finishReason !== undefined) events.push({ type: 'finish', finishReason: response.finishReason });
+  return events;
+}
+
+/** Decode the upstream SSE bytes into text chunks (telemetry is taken from the decoded events, not these bytes). */
+async function* sseTextChunks(body: NonNullable<Response['body']>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // An upstream read failure ends the stream (mirrors pipeUpstreamStream's error handling).
+  }
+  yield decoder.decode();
+}
+
+function byteStreamOf(frames: AsyncIterable<string>): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const iterator = frames[Symbol.asyncIterator]();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done === true) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      } catch {
+        controller.close();
+      }
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
 }
 
 /**
@@ -225,13 +399,9 @@ export async function streamAnthropicRequest(
  * a closed response. A read/pipe error terminates the connection rather than crashing
  * the server (both cases are still surfaced by the server-level catch where relevant).
  */
-export function pipeUpstreamStream(
-  res: http.ServerResponse,
-  upstreamResponse: Response,
-  transformer?: Transform,
-): void {
+export function pipeUpstreamStream(res: http.ServerResponse, upstreamResponse: Response): void {
   res.writeHead(upstreamResponse.status, {
-    'Content-Type': 'text/event-stream',
+    'Content-Type': responseContentType(upstreamResponse),
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
@@ -243,19 +413,9 @@ export function pipeUpstreamStream(
   const source = Readable.fromWeb(body as unknown as import('node:stream/web').ReadableStream<Uint8Array>);
   res.once('close', () => {
     source.destroy();
-    if (transformer !== undefined) transformer.destroy();
   });
   source.on('error', () => {
     res.end();
   });
-  if (transformer !== undefined) {
-    // Insert the (passthrough) transformer between the upstream source and the client so
-    // it can observe the stream (e.g. extract tool-call telemetry) without altering bytes.
-    transformer.on('error', () => {
-      // A best-effort transform failure must never crash the server or drop the response.
-    });
-    source.pipe(transformer).pipe(res);
-  } else {
-    source.pipe(res);
-  }
+  source.pipe(res);
 }

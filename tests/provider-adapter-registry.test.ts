@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PROVIDER_ADAPTERS, lookupProviderAdapter } from '../src/providers/registry';
 import { createGenericAdapter, GENERIC_ANTHROPIC_ADAPTER_ID, GENERIC_OPENAI_ADAPTER_ID } from '../src/providers/generic/adapter';
 import { createApiKeyAuth } from '../src/providers/generic/apiKeyAuth';
-import { forwardOpenAIRequest, type UpstreamClient } from '../src/proxy/upstream';
+import { forwardRequest, type UpstreamClient } from '../src/proxy/upstream';
 
 describe('provider adapter registry', () => {
   it('registers the generic-openai, generic-anthropic and copilot types and looks them up by id', () => {
@@ -71,7 +71,7 @@ describe('upstream auth header fallback', () => {
   it('derives Bearer and x-api-key from apiKey when no resolved headers are given', async () => {
     const { calls, fetchImpl } = recordingFetch();
     const client: UpstreamClient = { baseUrl: 'http://localhost:4000/v1', model: 'm', apiKey: 'sk-legacy', protocol: 'openai', fetchImpl };
-    await forwardOpenAIRequest(client, request as never);
+    await forwardRequest(client, 'openai-chat', request as never);
     const headers = calls[0]?.headers as Record<string, string>;
     assert.equal(headers.Authorization, 'Bearer sk-legacy');
     assert.equal(headers['x-api-key'], 'sk-legacy');
@@ -87,7 +87,7 @@ describe('upstream auth header fallback', () => {
       protocol: 'openai',
       fetchImpl,
     };
-    await forwardOpenAIRequest(client, request as never);
+    await forwardRequest(client, 'openai-chat', request as never);
     const headers = calls[0]?.headers as Record<string, string>;
     assert.equal(headers.Authorization, 'Bearer sk-resolved');
     assert.equal(headers['x-api-key'], undefined);

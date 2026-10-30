@@ -149,8 +149,8 @@ export type TurnUsageEvent = {
   sessionKey: string;
   /** Client identity, if known. */
   clientId?: string;
-  /** The turn's token mass (upstream-reported or estimated); all fields present as numbers. */
-  tokens: { input: number; output: number; total: number; cacheHitInput: number };
+  /** The turn's token mass (upstream-reported or estimated); `cacheHitInput` is omitted when the provider reported no cache hits. */
+  tokens: { input: number; output: number; total: number; cacheHitInput?: number };
   /** When the turn was observed (epoch milliseconds); shared by every event of the same turn. */
   at: number;
 };

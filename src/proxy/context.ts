@@ -1,14 +1,20 @@
 import type http from 'node:http';
+import type { Transform } from 'node:stream';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
 import type { ChatMessage, Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
 import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
-import type { ToolMetricsTracker, TelemetryHelpers } from '../ports/telemetry';
+import type {
+  SseExtractorFactory,
+  TelemetryEventBus,
+  ToolMetricsTracker,
+  TelemetryHelpers,
+} from '../ports/telemetry';
 import type { ToolResultStore } from '../telemetry/toolResultStore';
 import { parseArgs, stableCallId, normalizeUsage, isRecord, toolDescriptionMap, isErrorResultContent, isErrorResultContentByPatterns } from '../telemetry/protocol-common';
 import type { NormalizedUsage } from '../telemetry/protocol-common';
 import { estimateTokensFromChars, estimateCallTokens } from '../telemetry/tokenEstimate';
 import { syncResponseBody } from './translate';
-import type { UpstreamClient, UpstreamResult } from './upstream';
+import { pipeUpstreamStream, type UpstreamClient, type UpstreamResult } from './upstream';
 
 /** Read and parse a JSON request body; an empty body resolves to `{}`. */
 export function readJSONBody(req: http.IncomingMessage): Promise<unknown> {
@@ -199,10 +205,60 @@ export async function runThroughPipeline(
   };
   const processedResponse = await pipeline.handleResponse(responseCtx);
   // Rehydrate any stage edits to the tool calls onto the raw wire response before returning it to the client.
-  syncResponseBody(processedResponse, summary);
+  syncResponseBody(processedResponse);
   // Response-phase tool-CALL emission + issue recording + whole-turn usage, ALWAYS (default + policy paths); a no-op when neither a bus nor a tracker is wired.
   emitResponseTelemetry(opts?.bus, opts?.tracker, requestCtx, processedResponse.toolCalls, summary.usage, summary.content, opts?.now, opts?.usage);
   return { status: result.status, body: processedResponse.raw };
+}
+
+/** Dependencies shared by the same-protocol streaming routes (structurally satisfied by each handler's deps). */
+export interface SameProtocolStreamDeps {
+  upstream: UpstreamClient;
+  pipeline: Pipeline;
+  bus?: TelemetryEventBus;
+  tracker?: ToolMetricsTracker;
+  toolResultStore?: ToolResultStore;
+  toolErrorPatterns?: string[];
+  sseExtractor: SseExtractorFactory;
+  usage: TelemetryHelpers;
+}
+
+/**
+ * Shared same-protocol streaming setup: pipeline, request-phase tool-result telemetry, telemetry tap,
+ * then the protocol-specific bridge (`forward`) whose response is piped to the client.
+ */
+export async function streamSameProtocolRequest<TRaw>(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  deps: SameProtocolStreamDeps,
+  raw: unknown,
+  forward: (upstream: UpstreamClient, raw: TRaw, extractor: Transform | undefined) => Promise<Response>,
+): Promise<void> {
+  const requestCtx = buildRequestContext(req, deps.upstream, raw);
+  const processed = await deps.pipeline.handleRequest(requestCtx);
+  syncRequestMessages(processed);
+  // Request-phase tool-RESULT detection runs on every proxied request (a no-op when nothing matches).
+  resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage, deps.toolErrorPatterns);
+  // Telemetry extractor: non-throwing; a factory failure only disables the tap, never the stream.
+  let extractor: Transform | undefined;
+  try {
+    extractor = deps.sseExtractor(
+      deps.bus,
+      toSessionKeyString(requestCtx.sessionKey),
+      toClientId(requestCtx.client),
+      deps.tracker,
+      // Precomputed estimated input-token mass, so a usage-less streamed turn still emits an honest `turn.usage`.
+      undefined,
+      deps.usage.estimateInputTokens(requestCtx.messages),
+      // The request's raw body (carrying `tools`), so each streamed tool.call carries the request-provided description.
+      requestCtx.raw,
+    );
+  } catch {
+    extractor = undefined;
+  }
+  // The extractor taps the UPSTREAM events inside the bridge; the client receives SSE encoded from LLMEvents.
+  const upstreamResponse = await forward(deps.upstream, processed.raw as TRaw, extractor);
+  pipeUpstreamStream(res, upstreamResponse);
 }
 
 /** Coerce a session key (object or empty) to its canonical string form for telemetry events. */

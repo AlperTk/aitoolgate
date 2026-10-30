@@ -1,12 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  anthropicResponseToOpenAI,
-  anthropicToOpenAIRequest,
-  openaiResponseToAnthropic,
-  openaiToAnthropicRequest,
-} from '../src/proxy/translate';
-import type { OpenAIChatRequest, OpenAIChatResponse } from '../src/proxy/types';
+import { convertResponse, reencodeRequest } from '../src/proxy/translate';
+import type { AnthropicRequest, AnthropicResponse, OpenAIChatRequest, OpenAIChatResponse } from '../src/proxy/types';
 
 test('OpenAI → Anthropic → OpenAI round-trip preserves essential fields', () => {
   const original: OpenAIChatRequest = {
@@ -39,12 +34,12 @@ test('OpenAI → Anthropic → OpenAI round-trip preserves essential fields', ()
     ],
   };
 
-  const anthropic = openaiToAnthropicRequest(original);
+  const anthropic = reencodeRequest('openai-chat', 'anthropic-messages', original) as AnthropicRequest;
   assert.equal(anthropic.model, 'gpt-4o-mini');
   assert.equal(anthropic.system, 'You are a helpful assistant.');
   assert.ok(anthropic.max_tokens);
 
-  const roundTrip = anthropicToOpenAIRequest(anthropic);
+  const roundTrip = reencodeRequest('anthropic-messages', 'openai-chat', anthropic) as OpenAIChatRequest;
 
   assert.equal(roundTrip.model, 'gpt-4o-mini');
   const systemMessage = roundTrip.messages.find((m) => m.role === 'system');
@@ -99,7 +94,7 @@ test('OpenAI response → Anthropic response → OpenAI response round-trip', ()
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
   };
 
-  const anthropic = openaiResponseToAnthropic(openaiResponse);
+  const anthropic = convertResponse('openai-chat', 'anthropic-messages', openaiResponse) as AnthropicResponse;
   assert.equal(anthropic.type, 'message');
   assert.equal(anthropic.role, 'assistant');
   assert.equal(anthropic.stop_reason, 'tool_use');
@@ -108,7 +103,7 @@ test('OpenAI response → Anthropic response → OpenAI response round-trip', ()
   assert.ok(anthropic.content.some((b) => b.type === 'text' && b.text === 'Hi'));
   assert.ok(anthropic.content.some((b) => b.type === 'tool_use' && b.name === 'get_weather'));
 
-  const back = anthropicResponseToOpenAI(anthropic);
+  const back = convertResponse('anthropic-messages', 'openai-chat', anthropic) as OpenAIChatResponse;
   assert.equal(back.object, 'chat.completion');
   assert.equal(back.choices[0].finish_reason, 'tool_calls');
   assert.equal(back.usage?.prompt_tokens, 10);
