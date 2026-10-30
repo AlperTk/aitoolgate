@@ -1,58 +1,44 @@
 ---
 name: commands
-description: Build, run, test, and typecheck commands plus environment variables and local-service requirements for aitoolgate. Read when you need to build, run, test, or configure the project.
+description: Defined build, test, typecheck, run commands; toolchain prerequisites; and all environment variables read by config. Read before running verification or changing configuration.
 ---
+# Commands and configuration
 
-# Commands
+Source: `package.json` scripts (defined, not executed during bootstrap).
+
+## Scripts
+| Name | Exact script | Prerequisite |
+|---|---|---|
+| build | `tsc -p tsconfig.build.json` | none |
+| test | `node --test 'dist/tests/**/*.test.js'` | `npm run build` first |
+| typecheck | `tsc --noEmit` | none |
+| dev | `npm run build && node dist/src/server/index.js` | none (builds itself) |
+| start | `node dist/src/server/index.js` | `dist/` must exist |
+
+No lint, format, or CI scripts are defined.
 
 ## Toolchain
-Node (with built-in `node:sqlite`) + TypeScript. **Zero runtime dependencies**; dev deps are `typescript@^7.0.2` and `@types/node@^26.6.4` only.
+- Node `>=22.5` (`engines.node`); `node:sqlite` and `node:test` are used.
+- TypeScript (devDependency). `tsconfig.json` includes `src`, `config`, `tests`; excludes `dashboard`, `dist`. `tsconfig.build.json` extends it (node16, `outDir: dist`).
+- Zero runtime dependencies.
 
-## Setup
-```
-npm install          # installs dev deps only (typescript, @types/node)
-npm i -g aitoolgate  # published CLI (bin `aitoolgate`); same entry as `npm start`
-```
+## Verification recipe
+1. `npm run typecheck`
+2. `npm run build`
+3. `npm test` (or a single file: `node --test dist/tests/<name>.test.js`)
 
-## Build / run / test
-| Task | Command | Notes |
+## Environment variables (`config/config.ts::loadConfig`, defaults in `DEFAULTS`)
+| Variable | Default | Notes |
 |---|---|---|
-| Build | `npm run build` | `tsc -p tsconfig.build.json` → emits `dist/` (node16 CJS). |
-| Run | `npm start` | `node dist/src/server/index.js`; listens on `PORT` (default 8787); dashboard at `http://localhost:8787/`. |
-| Dev | `npm run dev` | build then start. |
-| Test | `npm test` | `node --test 'dist/tests/**/*.test.js'` — **MUST `npm run build` first** (tests run compiled `dist/`). Build does NOT delete stale `dist/` artefacts: a `dist/tests/*.test.js` whose source was removed or never tracked keeps running and can fail the suite. Delete such a stale file under `dist/` only (never tracked source). Baseline: 737 tests, 0 failing (verified with `npm run build && npm test`). |
-| Typecheck | `npm run typecheck` | `tsc --noEmit` against the dev tsconfig. |
+| PORT | 8787 | invalid or outside 0–65535 throws |
+| TOOL_RESULTS_ENABLED | false | bool |
+| TOOL_RESULTS_DB | `<DEFAULT_DB_DIR>/tool-results.db` | README: `data/tool-results.db` |
+| TOOL_RESULTS_FLUSH_MS | 50 | positive int |
+| TOOL_RESULTS_BATCH_SIZE | 100 | positive int |
+| TOOL_RESULTS_FSYNC | false | bool |
+| RULES_ENABLED | true | bool |
+| RULES_DB_PATH | `<DEFAULT_DB_DIR>/rules.db` | README: `data/rules.db`; set enables SQLite rule/provider stores |
+| TOOL_ERROR_PATTERNS | [] | string list; not in README table |
+| COPILOT_DEVICE_CLIENT_ID | built-in client id | empty string falls back to default; not in README table |
 
-There is **no lint or format script** in `package.json` (none observed). `main` and `bin` (`aitoolgate`) both point at `dist/src/server/index.js`; published `files` = `["dist/src","dist/config","dashboard","README.md","LICENSE"]` (tarball verified self-sufficient via `npm pack` + extracted smoke test); `engines` `node >=22.5` (required for `node:sqlite`); `publishConfig.access=public`.
-
-## Database & migrations
-- No migration CLI — migrations **auto-apply when storage opens** (`SCHEMA_VERSION=5`, idempotent, tracked in a `migrations` table).
-- Two DB files (defaults under the OS user home `~/.aitoolgate/`, cwd-independent):
-  - `~/.aitoolgate/rules.db` — `rules`, `events`, `tool_calls`, `interventions`, `api_providers` (provider configs; enabled by default via `RULES_ENABLED=true`).
-  - `~/.aitoolgate/tool-results.db` — heavy `tool_results` payloads (only when `TOOL_RESULTS_ENABLED=true`, default off).
-- Delete a DB file to reset; it is regenerated at startup.
-
-## Required env vars / local services
-There is **no env-based upstream config**: the upstream target comes only from a **provider config** (dashboard **Settings** or `POST /api/api-providers`); with no active provider the LLM routes answer **503 JSON** instead of forwarding. For local tests, the e2e suite uses a canned mock (no real service required).
-
-| Var | Default | Meaning |
-|---|---|---|
-| `PORT` | `8787` | HTTP/WS/dashboard port (validated 0–65535). |
-| `RULES_ENABLED` | `true` | Persist rules + events to `RULES_DB_PATH`. |
-| `RULES_DB_PATH` | `~/.aitoolgate/rules.db` | Path of the rules/events DB. |
-| `TOOL_RESULTS_ENABLED` | `false` | Persist raw tool-result values to `TOOL_RESULTS_DB`. |
-| `TOOL_RESULTS_DB` | `~/.aitoolgate/tool-results.db` | Path of the tool-results DB. |
-| `TOOL_RESULTS_FLUSH_MS` | `50` | SQLite drain flush interval. |
-| `TOOL_RESULTS_BATCH_SIZE` | `100` | SQLite drain batch size. |
-| `TOOL_RESULTS_FSYNC` | `false` | `wal_checkpoint(TRUNCATE)` per batch. |
-| `TOOL_ERROR_PATTERNS` | *(none)* | Comma-separated case-insensitive regex patterns; a tool result whose content matches is flagged as an error (additive to the built-in content heuristic). |
-| `COPILOT_DEVICE_CLIENT_ID` | built-in GitHub OAuth app id | Client id for Copilot device login (used when the device-flow request omits `clientId`). |
-
-## Debugging / dev shortcuts
-- `GET /health` → `{status:"ok"}` liveness check.
-- `GET /api/stats`, `/api/events`, `/api/rules` → current telemetry/rule state as JSON.
-- `WS /ws` (conventionally) → live `TelemetryEvent` stream; client text frames are echoed back (`{"echo": ...}`) as a liveness probe.
-- The dashboard is the primary live-debug surface (stream + metrics + intervention log). No logging framework — console output from Node stdlib only.
-
-## CI/CD
-**No CI/CD pipeline configuration was observed in the repo** (no `.github/`, workflow files, Makefile, or Dockerfile at exploration time). If one exists it is not captured here — verify before assuming.
+Config shape: `config/config.ts::Config` (port, toolResults, rules, toolErrorPatterns, copilotDeviceClientId).

@@ -1,87 +1,77 @@
 ---
 name: domain
-description: Domain vocabulary, core entities and their relationships, business rules that are easy to violate, invariants/state, and end-to-end workflows in aitoolgate. Read before changing policy, session, or telemetry behavior.
+description: Domain terminology, core entities, matcher and action semantics, business rules, and state invariants of aitoolgate. Read when naming things, changing rule/provider behavior, or reasoning about what a rule or provider means.
 ---
+# Domain model
 
-# Domain
+Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec. Owners are the source symbols listed; this file defines meaning, the module docs define flows.
 
-## Terminology (project-specific)
-- **Rule / PolicyRule** — a declarative policy: `{id, enabled, priority?, description?, matcher, action}`, evaluated against a `PolicyContext`.
-- **RuleSpec** — the JSON wire form of a rule sent over REST / shown in the dashboard: `{id?, enabled, priority?, description?, matcher, action}`. `buildRuleFromSpec` → engine `PolicyRule`; `validateSpec` guards it.
-- **Matcher** — predicate deciding whether a rule fires on a context. Returns `Match{matched, reason, details?} | null`.
-- **Action** — what happens when a rule fires; returns an `ActionEffect` (a discriminated union) or `null`.
-- **Pipeline / Stage** — ordered chain of request/response/result handlers each proxied call passes through; the policy engine is mounted as one stage via `.use()`.
-- **PolicyContext** — the union of `RequestContext | ResponseContext | ResultContext` that matchers/actions operate on.
-- **SessionKey** — per-session identity `{fingerprint, token?}` used to scope state (the feedback store).
-- **FeedbackMessage** — a corrective message queued per session and spliced into the next request.
-- **TelemetryEvent** — `ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent` broadcast on the bus.
-- **`turn.usage` / `TurnUsageEvent`** — whole-turn token-mass event covering ALL message content of a turn (not only tool calls/results): upstream-reported usage when present, else a char-based estimate (~4 chars/token). Carries `{input, output, total}` plus optional `cacheHitInput` (present only when the provider reported it) under one shared turn-level `at`, with `total = input + cacheHitInput + output` (`input` = base input not served from cache; `cacheHitInput` = input tokens served from the provider cache, omitted when not reported, including on the estimate path). Per-call `tokens` are attached to a `tool.call` only for a **single-call** turn (they also carry an optional `cacheHitInput`); a **batched** turn (>1 tool calls) omits per-call `tokens` so the turn's token mass is carried ONCE by `turn.usage` (not duplicated on every per-call event). Every `tool.call` additionally carries a per-call **`callTokens`** request-side ESTIMATE (`name` + serialized `args`, ~chars/4 — `estimateCallTokens`), and every `tool.result` carries an estimated **`tokens`** (~chars/4 of `chars`). The **collector** attributes the turn's token mass to EACH tool observed in the turn (once per distinct `(turn, tool)`) so batched-turn per-tool totals stay correct.
-- **tool-result value** — a tool call's raw returned output, captured out-of-band and fetched lazily by id.
-- **flagship-loop-rule** — the built-in always-on loop-detection rule (see below).
-- **Provider / ApiProvider** — an LLM upstream config: `{id, name, baseUrl, model (string|null; `null` = "From Request"), apiKey (string|null), adapterId (type: `generic-openai`|`generic-anthropic`|`copilot`), protocol (derived from adapterId; never client-sent), authType ('apiKey'|'deviceOAuth'), authState (OAuth JSON, server-side only), isActive, createdAt}`. The proxy forwards to the single **active** provider (at most one at a time; a caller-supplied programmatic `options.upstream` seeds one if given, otherwise the store starts empty). A **provider spec** is the validatable client-sent subset (`KNOWN_FIELDS`: `name, baseUrl, model, apiKey, isActive, adapterId, authType`; `protocol` and `authState` are not client-writable).
-
-## Core entities & relationships
-```
-Rule{enabled, priority, matcher, action}
-   ├──matcher──▶ Matcher ──matches?──▶ PolicyContext
-   └──action───▶ Action  ──apply───▶ ActionEffect   (mutates ctx and/or emits InterventionEvent)
-
-RuleStore (live getter) ─▶ Rule[] ─▶ createRuleEngine ─▶ PolicyStage ─.use()─▶ Pipeline
-Provider{baseUrl, model, protocol, apiKey, isActive}   (≤1 active)  ─▶ ApiProviderStore ─▶ proxy upstreamRef (hot-applied, no restart)
-SessionKey{fingerprint[,token]} ─scopes─▶ SessionFeedbackStore ─▶ FeedbackMessage queue
-TelemetryEvent = ToolCall | ToolResult | Intervention | TurnUsage ─▶ bus ─▶ {Collector, ToolMetricsTracker, WS}
-```
-Context carriers: `RequestContext{client, model, sessionKey, messages, raw}`, `ResponseContext{client, model, sessionKey, toolCalls, content, raw}`, `ResultContext{sessionKey, results, raw}`. Other domain types: `ToolCall{id,name,arguments}`, `ToolResult{toolCallId,name,isError,content}`, `ClientConfig{apiKey,name,model}`, `ModelConfig{id,baseUrl,model,apiKey?}`, `PolicyEvent{id,at,type,sessionKey?,ruleId?,payload}`. `ApiProvider` (see **Provider** above) is the runtime-switchable generalization of the single upstream `ModelConfig`.
-
-## Business rules (easy to violate)
-- **Rule selection is ALL-match, not first-match.** Only `enabled` rules fire, evaluated in ascending `priority` (missing = last; ties by array index). Multiple rules can apply in one pass.
-- Matchers return `Match | null`; only `always` never returns `null`. The others may legitimately produce `null` (no match).
-- The **flagship loop rule is ACTIVE by default**: it is wired into the default rule set at composition time (priority 0, evaluated first), is **never persisted** (the rule store stays clean), and is re-added on restart without a DB seed. It is STATELESS; per-session cooldown is laddered in the **policy stage** (which owns per-session feedback state). Don't put per-session state into a rule.
-- `hideTool` `toolNames` entries are **glob patterns** (`*` = any characters, anchored to the full name) or exact names. They form either a **block-list** (default: no entry starts with `!`) — hide every tool matching any entry — or an **allow-list** (≥ 1 entry starts with `!`) — keep only matching tools and hide the rest. Resolution happens against the request's actual tool set; a pattern matching no present tool is a no-op. It strips tools from `raw.tools` **and** removes references from messages.
-- `addDescription` sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); on a response it is a graceful no-op (a bare response carries no tool list).
-- `injectMessage` on a response is **queued for the next request**, not spliced into the current response.
-- `describeRule` is **not lossless** (closures); the HTTP layer stores the original specs for exact round-trip.
-- **Tool-call emission is centralized** in `context.ts` (`emitResponseTelemetry`), NOT in the policy stage — the stage emits only interventions. Avoid double-counting. It also emits ONE whole-turn `turn.usage` per turn that HAS a token source (upstream-reported usage OR issued tool calls): reported usage when present, else an ESTIMATE over all request messages + response content/tool calls; a usage-less, call-free final-answer turn emits NOTHING (omit, don't fabricate). Per-call `tokens` are attached only for a **single-call** turn; a **batched** turn (>1 tool calls) omits per-call `tokens` — the whole-turn `turn.usage` carries the turn's token mass once instead of duplicating it on every per-call event (which would make each batched row look identical). Both emission paths attach a per-call **`callTokens`** request-side ESTIMATE (`estimateCallTokens`: tool name + serialized args, ~chars/4, distinct per tool, never fabricated) to every named/arg-bearing call, and the result path attaches an estimated **`tokens`** (~chars/4 of `chars`) to every `tool.result`. The **collector** attributes the turn's token mass to each tool observed in the turn (once per distinct `(turn, tool)`). The SSE path mirrors this at stream end (`stream-extract.ts`), where per-call events are emitted at stream end (not as each call's `index` starts) so a single-call turn's event carries the turn's final merged usage.
-- **`tool.call` carries the request-provided tool description:** the event's `description` field = the description from the incoming request's `tools` array, matched by the call's `toolName` (both OpenAI `tools[i].function.description` and Anthropic `tools[i].description`). It is attached in BOTH emission paths (buffered `context.ts` and streamed `stream-extract.ts`) and is OMITTED (field absent, not empty) when the request provides no description for that tool or no `tools` array — the description is surfaced in the row's detail panel, not the stream table. Don't fabricate a description.
-- **Tool-result error state (`ok`):** a resolved `tool.result` event and its raw-result-store entry carry `ok` (boolean), not a native `isError`. `ok` is `false` when ANY of: the native Anthropic `is_error:true`, the built-in content heuristic (leading "error" markers — `isErrorResultContent`, e.g. `error:`, "tool execution failed", "internal server error"), or a user `TOOL_ERROR_PATTERNS` entry (case-insensitive regex, additive to the built-in). The OpenAI wire has no native error flag, so it is detected from content only. The dashboard renders this as status `fail` (not `error`) via `ok → fail|ok`.
-- **Cache-hit input accounting:** the turn's input is split into base `input` (not served from cache) + `cacheHitInput` (input tokens served from the provider cache), with `total = input + cacheHitInput + output`. Per-provider mapping (detected from which usage fields are present): OpenAI `prompt_tokens` INCLUDES the cached subset → `input = prompt_tokens − prompt_tokens_details.cached_tokens`, `cacheHitInput = cached_tokens`; Anthropic `input_tokens` EXCLUDES cache tokens → `input = input_tokens + cache_creation_input_tokens`, `cacheHitInput = cache_read_input_tokens` (cache-creation folds into base input — writing the cache is not a hit). Base input and `cacheHitInput` are clamped ≥ 0. `cacheHitInput` has presence semantics: `Usage.cacheHitInput` is `undefined` when the provider does not report it (distinct from `0`), and it is then OMITTED from `turn.usage`/`tokens`; the estimate path never sets it. Cross-protocol translation carries the cache fields without over-counting (OpenAI `cache_write_tokens` is a separate write metric, never folded into cache-creation).
-- **Streamed usage merge is FIELD-AWARE last-reported-value-wins:** each numeric field (`input`, `output`, `total`, `cacheHitInput`) independently takes the value from the most recent frame that reports it — a later Anthropic `message_delta` (final `output_tokens`, cumulative `cache_read_input_tokens`) wins over the preliminary `message_start` values, while `input_tokens` (only on `message_start`) survives; once both input and output are known, `total` is recomputed as `input + cacheHitInput + output` so the emitted total always reconciles with the final field values. A `message_delta` never overwrites a cache field with `0`. (Unchanged by the cross-protocol stream work.)
-- **Stream telemetry source (non-throwing):** telemetry for streamed responses reads the **internal event tap** — the decoded upstream `InternalLLMEvent`s (after `decodeStream`), never the re-encoded client stream — same-protocol and cross-protocol alike. Raw upstream SSE bytes are tapped ONLY for undecodable passthrough (no events decoded). Tap errors are swallowed; the client stream is never affected by telemetry.
-- **SessionKey derivation:** an explicit token (header, default `x-session-id`) wins → `sha256(token-domain)+token`; otherwise `sha256` of the canonical stable prefix (system messages + first user message).
-- **Single-active provider:** at most ONE `isActive` provider at a time (zero allowed). The store re-enforces on add/update/setActive; deleting the active row promotes the **lexicographically-lowest-id** remaining row (or none if the store is empty). The dashboard mirrors this client-side with a single native radio group.
-- **Provider key-masking:** list responses (`GET /api/api-providers`) expose only `apiKeySet: true|false`; only the detail `GET /api/api-providers/:id` returns the raw `apiKey` verbatim. Never leak the raw key in a list.
-- **Auto-first activation:** adding a provider to an **empty** store (or sending explicit `isActive:true`) makes it active; a caller-supplied `options.upstream` is seeded as one active provider, otherwise the store starts **empty** and LLM routes answer **503 JSON** until a provider is added + activated.
-- **Reasoning / thinking forwarding (cross-protocol):** Anthropic `thinking` / `redacted_thinking` blocks in a request are forwarded to an OpenAI upstream as `reasoning_content` on assistant messages (decided 2026-10-29). An unsigned Anthropic thinking block is never emitted in Anthropic wire output. OpenAI `reasoning_content` in responses/stream deltas maps to reasoning parts/events in the common model; stream deltas also accept `reasoning_text` (Copilot; unsigned) as reasoning, and `reasoning_opaque` becomes a signature-only reasoning event (empty text) that the OpenAI encoder does not emit. OpenAI stream encoding emits reasoning as `delta.reasoning_content` and skips empty text. Some OpenAI-compatible upstreams may reject the unknown `reasoning_content` field; verify with a live reasoning-capable provider.
-- **Stream reasoning path (all streams):** every stream is bridged through `InternalLLMEvent` (no same-protocol bypass). Consequence, OPEN: unsigned thinking from an Anthropic upstream is now dropped on same-protocol streams too (Anthropic encoder suppresses unsigned thinking).
-- **"From Request" model:** `model: null` (or blank) forwards the client request's model unchanged; a non-empty string overrides it on the upstream request.
-- **Provider probe:** `POST /api/api-providers/probe` GETs the upstream model-list (`/v1/models`, not doubled if baseUrl ends in `/v1`) with protocol-specific auth; it returns `ok`/`status`/`latencyMs`/sorted model ids and never throws. Upstream bodies are discarded; errors are key-redacted. A body of just `{id}` probes a saved provider with its stored credential resolved server-side (unknown id → 404); adapters with `listModels` (copilot) build their own request from `authState`.
-- **Copilot device login:** `POST /api/api-providers/device-flow/start` then `/poll` (opaque `flowId`; `device_code` never leaves the server). The entitlement check runs first (blocked → 403, no row written); on success the single `copilot` row is created or updated with `authType: deviceOAuth` and `authState`, and activated.
-- **Unconfigured upstream = 503, never a fetch:** when the resolved upstream `baseUrl` is empty (no active provider, no programmatic upstream), every forwarding path (buffered + streaming, both protocols) short-circuits with a fixed **503** `UNCONFIGURED_UPSTREAM` JSON error before any network call — no dedicated log line.
-
-## Matchers (return `Match | null`)
-| Type | Fields | Behavior |
+## Glossary
+| Term | Meaning | Anchor |
 |---|---|---|
-| `toolName` | `toolName?`, `toolNames?` | fires when the name is PRESENT in the context: names an actual tool call (response `toolCalls` / a request assistant `tool_calls` entry) OR — additively — names a tool definition the request offers (`ctx.raw.tools`, either provider shape). The additive request-phase match lets `hideTool`/`addDescription` act directly on the request's tool set. |
-| `argPattern` | `pattern: string\|RegExp`, `toolName?`, `toolNames?` | **case-sensitive** regex vs serialized args (optional name restriction). |
-| `loop` (loopDetector) | `window?=4`, `requireConsecutive?=true`, `paramIdentity/resultIdentity='normalized'\|'exact'` | builds `(call→result)` pairs; signature = `name␟paramsKey␟resultKey` (normalized = key-order/whitespace-insensitive); flags `window` consecutive identical signatures. |
-| `always` | brand flag | fires unconditionally; never `null`. |
+| Rule | Enabled flag + priority + matcher + action + description. Lower priority runs first. | `src/ports/domain.ts::Rule` |
+| Matcher | Predicate that returns a `Match` (`{matched, reason, details?}`) or null | `src/ports/strategy.ts::Matcher`, `src/policy/types.ts::PolicyMatcher` |
+| Action | Named behavior applied to request/response; carries an effect | `src/ports/strategy.ts::Action`, `src/policy/types.ts::ActionStrategy` |
+| Effect kind | Discriminant of action effects: `hideTool`, `rewriteArgs`, `injectMessage`, `addDescription` | `src/policy/types.ts::ActionEffectKind` |
+| SessionKey | `{fingerprint, token?}` identifying a conversation for feedback queueing | `src/ports/domain.ts::SessionKey` |
+| Provider (ApiProvider) | Upstream configuration row; at most one is active | `src/api/providerStore.ts::createApiProviderStore` |
+| Flagship loop rule | Built-in rule id `flagship-loop-rule`; spliced in at wiring, never persisted | `src/policy/ruleEngine.ts`, `src/api/persistentRuleStore.ts` |
+| Feedback message | Response-side effect queued per session and spliced into the next request | `src/policy/feedbackStore.ts::SessionFeedbackStore` |
+| Intervention | Telemetry record that a rule's action fired (`policy.intervention`) | `src/telemetry/events.ts::InterventionEvent` |
+| Turn usage | Per-turn token counts, reported or estimated (`turn.usage`) | `src/telemetry/events.ts::TurnUsageEvent` |
 
-## Actions (`ActionEffect` union)
-| Type | Effect |
-|---|---|
-| `hideTool` `{toolNames[]}` | `toolNames` entries are glob patterns / exact names forming a block-list (hide matching) or allow-list (entries with `!` prefix: keep matching, hide rest). Strips from `raw.tools` + message references. |
-| `rewriteArgs` `{toolCallId, newArguments, mode:'replace'\|'merge'}` | mutates a tool call's arguments. |
-| `injectMessage` `{role, content}` | splices into the request; if on a response, queued for the next request. |
-| `addDescription` `{description, toolNames[]}` | sets the matched tool(s)' description on their definition in the outgoing request's `raw.tools` (either provider shape); response-phase is a graceful no-op (a bare response carries no tool list). |
+## Entities
+| Entity | Key fields | Owner |
+|---|---|---|
+| ToolCall | id, name, arguments | `src/ports/domain.ts::ToolCall` |
+| ToolResult | toolCallId, name, isError, content | `src/ports/domain.ts::ToolResult` |
+| ModelConfig | id, baseUrl, model, apiKey? | `src/ports/domain.ts::ModelConfig` |
+| ClientConfig | apiKey, name, model (default route) | `src/ports/domain.ts::ClientConfig` |
+| Rule | id, enabled, priority, matcher, action, description | `src/ports/domain.ts::Rule` |
+| PolicyEvent | id, at, type, sessionKey?, ruleId?, payload | `src/ports/domain.ts::PolicyEvent` |
+| RuleContext | sessionKey, client, messages, toolSchemas, toolCalls, toolResults | `src/policy/types.ts::RuleContext` |
+| ToolSchema | name, description?, parameters? | `src/policy/types.ts::ToolSchema` |
+| PolicyContext | union of request, response, and result contexts | `src/ports/strategy.ts::PolicyContext` |
+| Provider | id, name, baseUrl, model, apiKey, adapterId, protocol (derived from adapterId), authType, authState, isActive, createdAt | `src/api/providerStore.ts`, `src/api/persistentProviderStore.ts` |
+| Telemetry event | `tool.call`, `tool.result`, `policy.intervention`, `turn.usage` | `src/telemetry/events.ts::TelemetryEvent` |
 
-## Invariants & state
-- **Session feedback queue:** FIFO, keyed by `fingerprint`; drained and spliced at the injection index (after the system prefix, before the trailing user turn).
-- **Tool-metrics pairing:** issued→result matched by stable id (same-session bucket first, then any-session fallback); `durationMs = max(0, result.at - issued.at)`; pending entries swept by lazy TTL (default 300 000 ms) and `maxPending` (1 000).
-- **Collector caps:** `maxInterventions=500`, `maxRecent=200`, `maxTokenTurns=10000`; token dedup per `(sessionKey␟at)`; aggregates skip excluded tools (default `['task']`, case-insensitive). Whole-turn token totals are summed from BOTH `tool.call.tokens` AND `turn.usage`, deduped per `(sessionKey␟at)` with first-seen winning (a turn carrying both sources counts once). Per-tool adds `totalTokens` (sum of distinct turns' `tokens.total` invoking that tool, deduped per `(turn␟tool)`) and `totalResponseTokens` + `resolvedCount` (estimated response-payload tokens `round(chars/4)` across resolved results reporting `chars`). A `totalCacheHitInputTokens` aggregate (global on `CollectorSummary` + per-tool on `TopTool`) sums `tokens.cacheHitInput` with the same dedup semantics and is auto-exposed via `GET /api/stats`; it is OMITTED (not 0) when no reported tokens carried a cache-hit value. Per-tool also adds `totalCallTokens` (sum of the tool's per-call `callTokens` estimates — per-call, NO dedup — the token cost of invoking the tool; per-tool on `TopTool` only, no global aggregate, auto-exposed via `GET /api/stats`, OMITTED when the tool has no call-side estimate). The dashboard's stats "Counts & top tools" table renders it as a per-call AVERAGE — `Avg call (tok/call)` = `totalCallTokens / count` (integer-rounded, `—` when omitted), matching the `Avg resp (tok/call)` formatting; the API field itself stays the sum. The `turn.usage` handler attributes the turn's token mass to EACH tool observed in the turn (once per distinct `(turn␟tool)`), so a batched turn whose per-call events omit `tokens` still keeps correct per-tool `totalTokens`/`totalCacheHitInputTokens` (a single-call turn is a no-op there — its per-call `tokens` already attributed the same `(turn␟tool)`, first-seen wins).
-- **In-memory tool-result store** bounded at 1 000 entries; optional SQLite persister drains in batches (WAL mode).
-- **Provider persistence:** providers persist in the shared `data/rules.db` `api_providers` table (schema v5; v4 adds `adapter_id`/`auth_type`/`auth_state`, v5 remaps legacy rows so `adapter_id` and `protocol` agree) via a write-through store; persistence is **best-effort** (a failing open/read/write logs a warning and leaves the in-memory store intact) and applies to the server's provider store (a seeded `options.upstream` row included) — tests that construct the proxy directly with a mock upstream bypass the store and stay in-memory.
+### Matcher kinds (`src/policy/matchers/`)
+- **toolName** — fires when a configured name appears in response `toolCalls`, assistant `tool_calls` in messages, or request `raw.tools` (OpenAI `function.name` / Anthropic `name`). No names configured → never fires.
+- **argPattern** — regex (string converted to RegExp; case-sensitive) tested on serialized arguments of each call, optionally restricted by tool name(s).
+- **always** — always matches.
+- **loopDetector** — window default 4; `requireConsecutive` default true; identity default `normalized`; signature = name + params + result. Stateless across turns. Shown as `loop` in README.
 
-## End-to-end workflows
-- **Request:** client → route → `buildRequestContext` (derive SessionKey) → pipeline [session-token stage drains+splices feedback; policy stage evaluates+applies effects+emits Intervention] → translate → forward upstream → response stages → rehydrate → emit tool-call/result telemetry (centralized) → send.
-- **Add a rule at runtime:** `POST /api/rules` → `validateSpec` → `buildRuleFromSpec` (assigns `id` if absent) → `RuleStore.add` + write-through `saveRule` → the policy stage's live getter sees it on the next evaluate (**no restart**). The built-in flagship rule is wired in at composition time (never added to the store), so it is never persisted and is re-added on restart.
-- **Drill into a tool result:** `resolveAndEmitToolResults` captures the raw value into the in-memory store (key = tool-call id) → dashboard calls `GET /api/tool-results/:id` (memory-first, then DB fallback); optional async SQLite drain when enabled.
+### Action kinds (`src/policy/actions/`)
+- **hideTool** — request: removes matching tool definitions from `raw.tools` and strips matching `tool_calls` / tool-result references from messages; supports `!` allow-list and `*` globs. Response: no-op. Preserves the messages reference when nothing matches (`stripHiddenToolReferences`).
+- **rewriteArgs** — targets by `toolCallId`, else first name match; mode `replace` (default) or `merge`. Request rewrites the assistant tool call arguments; response rewrites `ctx.toolCalls`.
+- **injectMessage** — role `user` (default) or `system`. Request: spliced after the leading system prefix and before the trailing user turn. Response: queued to the session feedback store for the next request.
+- **addDescription** — uses `match.details.matchedToolNames`; request sets description on matched tool definitions (OpenAI `function.description` or Anthropic top-level). Response: no-op.
+
+## Business rules
+| Rule | Condition | Anchor |
+|---|---|---|
+| Rule spec requires boolean `enabled` | validation | `src/api/ruleSpec.ts::validateSpec` |
+| Rule spec requires matcher and action passing their validators | validation | `src/api/ruleSpec.ts::validateSpec` |
+| Optional id/priority/description must have the right types when provided | validation | `src/api/ruleSpec.ts::validateSpec` |
+| Rule id = spec id if non-empty string, else random UUID | id assignment | `src/api/ruleSpec.ts`, `src/api/crudStore.ts::assignId` |
+| Rule update is a shallow merge; matcher/action replaced only when defined; id change moves the entry | update | `src/api/ruleStore.ts::createRuleStore.update` |
+| Provider defaults: `authType` = `apiKey`, `isActive` = false, protocol derived from `adapterId` (client-supplied protocol ignored) | defaults | `src/api/providerStore.ts::createApiProviderStore.toStored` |
+| First stored provider becomes active | auto-activation | `src/api/providerStore.ts::createApiProviderStore.afterStore` |
+| Removing the active provider promotes the lowest-sorted remaining id | removal | `src/api/providerStore.ts::createApiProviderStore.remove` |
+| Empty provider table + seed fallback → one persisted auto-active row | startup seed | `src/api/persistentProviderStore.ts::createPersistentProviderStore` |
+| Action spec validation: hideTool needs non-empty string array `toolNames`; rewriteArgs needs object `arguments`; injectMessage needs string `content`; addDescription needs string `description` | validation | `src/policy/actions/*.ts` (`validateSpec` / `buildSpec`) |
+
+## Invariants
+| Invariant | Anchor | Basis |
+|---|---|---|
+| At most one active provider | `src/api/providerStore.ts` (`markActive` clears all then sets one; `reconcileSingleActive` keeps one) | code |
+| Rules evaluated in priority order (lower first, stable by index, missing priority last) | `src/policy/ruleEngine.ts::orderByPriority`; `src/ports/domain.ts::Rule` | code, doc |
+| Flagship rule is not persisted and is skipped on rehydrate | `src/api/persistentRuleStore.ts` (`persistId`, `seedFromDb`) | code |
+| Store reads return copies (callers cannot mutate stored rules) | `src/api/ruleStore.ts` | code |
+| Matchers are stateless between turns | `src/policy/matchers/always.ts`, `loopDetector.ts` | code |
+| Pending feedback is drained before rule evaluation on each request | `src/policy/policyStage.ts::createPolicyStage` `onRequest` (drain → splice → evaluate) | code |
+| Telemetry failures do not affect the client response | `src/telemetry/event-bus.ts::createEventBus`; README | code, doc |
+
+## Unknowns
+- Whether the rule API rejects writes to `flagship-loop-rule` (`ruleSpec.ts::describeRule` special-cases it; no rejection observed).
+- `markActive` invariant is inferred from its body and call sites; no dedicated test name was checked.
