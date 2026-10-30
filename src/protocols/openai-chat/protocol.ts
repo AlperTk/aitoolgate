@@ -1,8 +1,8 @@
 import type {
-  CommonRequest,
-  CommonResponse,
+  InternalRequest,
+  InternalResponse,
   FinishReason,
-  LLMEvent,
+  InternalLLMEvent,
   Message,
   MessagePart,
   ToolDefinition,
@@ -10,8 +10,12 @@ import type {
 } from '../../ports/llm';
 import type { ToolCall } from '../../ports/domain';
 import type { Protocol } from '../../ports/protocol';
+import { captureRequestExtra, mergeNodeExtra, mergeRequestExtra } from '../request-extra';
 
 type Obj = Record<string, unknown>;
+
+const OPENAI_MODELED_REQUEST_KEYS = ['model', 'messages', 'max_tokens', 'temperature', 'top_p', 'tools', 'tool_choice', 'stream', 'stream_options'];
+const OPENAI_MODELED_FUNCTION_KEYS = ['name', 'description', 'parameters'];
 
 interface PendingCall {
   id: string;
@@ -58,10 +62,11 @@ function decodeUsage(raw: unknown): Usage | undefined {
   const total = isNumber(raw.total_tokens) ? raw.total_tokens : undefined;
   if (prompt === undefined && completion === undefined && total === undefined) return undefined;
   const details = isRecord(raw.prompt_tokens_details) ? raw.prompt_tokens_details : undefined;
-  const cacheHitInput = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : 0;
-  const input = prompt !== undefined ? Math.max(0, prompt - cacheHitInput) : 0;
+  const cached = details !== undefined && isNumber(details.cached_tokens) ? details.cached_tokens : undefined;
+  const input = prompt !== undefined ? Math.max(0, prompt - (cached ?? 0)) : 0;
   const output = completion ?? 0;
-  return { input, output, cacheHitInput, total: total ?? input + cacheHitInput + output };
+  const cacheHitInput = cached !== undefined ? { cacheHitInput: cached } : {};
+  return { input, output, ...cacheHitInput, total: total ?? input + (cached ?? 0) + output };
 }
 
 function textOf(parts: MessagePart[]): string {
@@ -101,7 +106,9 @@ function encodeMessages(messages: Message[]): Obj[] {
     }
     // Tool results become standalone `tool` messages; `isError` has no OpenAI field and is not encoded.
     for (const part of message.parts) {
-      if (part.type === 'tool-result') out.push({ role: 'tool', tool_call_id: part.id, content: part.content });
+      if (part.type === 'tool-result') {
+        out.push({ role: 'tool', tool_call_id: part.id, ...(part.name !== '' ? { name: part.name } : {}), content: part.content });
+      }
     }
   }
   return out;
@@ -132,13 +139,20 @@ interface StreamState {
   calls: Map<number, PendingCall>;
 }
 
-function flushCalls(state: StreamState): LLMEvent[] {
-  const events: LLMEvent[] = [];
+function flushCalls(state: StreamState): InternalLLMEvent[] {
+  const events: InternalLLMEvent[] = [];
   const indices = [...state.calls.keys()].sort((a, b) => a - b);
   for (const index of indices) {
     const call = state.calls.get(index);
     if (call === undefined || call.name === '') continue;
-    events.push({ type: 'tool-call', id: call.id, name: call.name, args: parseArgs(call.args) });
+    events.push({
+      type: 'tool-call',
+      id: call.id,
+      name: call.name,
+      args: parseArgs(call.args),
+      rawArgs: call.args,
+      index,
+    });
   }
   state.calls.clear();
   return events;
@@ -152,8 +166,8 @@ function identityOf(source: Obj): { id?: string; model?: string } {
   };
 }
 
-function handleFrame(frame: Obj, state: StreamState): LLMEvent[] {
-  const events: LLMEvent[] = [];
+function handleFrame(frame: Obj, state: StreamState): InternalLLMEvent[] {
+  const events: InternalLLMEvent[] = [];
   if (!state.started) {
     state.started = true;
     events.push({ type: 'step-start', ...identityOf(frame) });
@@ -212,10 +226,10 @@ function parseFrame(line: string): Obj | undefined {
   }
 }
 
-async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncGenerator<LLMEvent> {
+async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncGenerator<InternalLLMEvent> {
   const state: StreamState = { started: false, calls: new Map() };
   let buffer = '';
-  const handleLine = (line: string): LLMEvent[] => {
+  const handleLine = (line: string): InternalLLMEvent[] => {
     const frame = parseFrame(line);
     return frame === undefined ? [] : handleFrame(frame, state);
   };
@@ -235,7 +249,7 @@ async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): 
 }
 
 /** Encode LLM events as chat-completion chunk SSE frames; usage and finish trail the content, then `[DONE]`. */
-async function* encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent>): AsyncGenerator<string> {
+async function* encodeStream(events: AsyncIterable<InternalLLMEvent> | Iterable<InternalLLMEvent>): AsyncGenerator<string> {
   const created = Math.floor(Date.now() / 1000);
   let meta: { id?: string | undefined; model?: string | undefined } = {};
   const frame = (payload: Obj): string => {
@@ -310,7 +324,8 @@ function decodeOpenAIMessages(rawMessages: unknown[]): Message[] {
     }
     if (raw.role === 'tool') {
       const id = typeof raw.tool_call_id === 'string' ? raw.tool_call_id : '';
-      out.push({ role: 'tool', parts: [{ type: 'tool-result', id, name: '', content: text, isError: false }] });
+      const name = typeof raw.name === 'string' ? raw.name : '';
+      out.push({ role: 'tool', parts: [{ type: 'tool-result', id, name, content: text, isError: false }] });
       continue;
     }
     const parts: MessagePart[] = [];
@@ -324,13 +339,13 @@ function decodeOpenAIMessages(rawMessages: unknown[]): Message[] {
           type: 'tool-call',
           id: typeof call.id === 'string' ? call.id : '',
           name: typeof fn.name === 'string' ? fn.name : '',
-          args: typeof fn.arguments === 'string' ? parseArgs(fn.arguments) : {},
+          args: typeof fn.arguments === 'string' ? parseArgs(fn.arguments) : isRecord(fn.arguments) ? fn.arguments : {},
         });
       }
     }
     // Empty messages keep a single empty text part (translate.ts emits an empty text block).
     if (parts.length === 0) parts.push({ type: 'text', text: '' });
-    out.push({ role: raw.role === 'assistant' ? 'assistant' : 'user', parts });
+    out.push({ role: raw.role === 'assistant' ? 'assistant' : 'user', parts, plainStringContent: true });
   }
   return out;
 }
@@ -343,6 +358,8 @@ function decodeOpenAITool(tool: Obj): ToolDefinition {
     parameters: isRecord(fn.parameters) ? fn.parameters : { type: 'object' },
   };
   if (typeof fn.description === 'string' && fn.description !== '') definition.description = fn.description;
+  const extra = captureRequestExtra('openai-chat', fn, OPENAI_MODELED_FUNCTION_KEYS);
+  if (extra !== undefined) definition.extra = extra;
   return definition;
 }
 
@@ -396,33 +413,35 @@ function encodeOpenAIMessage(parts: MessagePart[]): Obj {
 export function createOpenAIChatProtocol(): Protocol {
   return {
     id: 'openai-chat',
-    encodeRequest(request: CommonRequest): Record<string, unknown> {
+    encodeRequest(request: InternalRequest): Record<string, unknown> {
       const wire: Record<string, unknown> = { model: request.model, messages: encodeMessages(request.messages) };
       if (request.maxTokens !== undefined) wire.max_tokens = request.maxTokens;
       if (request.temperature !== undefined) wire.temperature = request.temperature;
       if (request.topP !== undefined) wire.top_p = request.topP;
       if (request.tools !== undefined && request.tools.length > 0) {
-        wire.tools = request.tools.map((tool) => ({
-          type: 'function',
-          function: {
+        wire.tools = request.tools.map((tool) => {
+          const fn: Obj = {
             name: tool.name,
             ...(tool.description !== undefined ? { description: tool.description } : {}),
             ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {}),
-          },
-        }));
+          };
+          mergeNodeExtra(tool.extra, 'openai-chat', fn, OPENAI_MODELED_FUNCTION_KEYS);
+          return { type: 'function', function: fn };
+        });
       }
       if (request.toolChoice !== undefined) wire.tool_choice = request.toolChoice;
-      if (request.stream === true) {
-        wire.stream = true;
-        wire.stream_options = { include_usage: true };
-      }
+      if (request.stream === true) wire.stream = true;
+      // Streams always ask for the trailing usage chunk; client `stream_options` keys are kept.
+      if (request.stream === true) wire.stream_options = { ...request.streamOptions, include_usage: true };
+      else if (request.streamOptions !== undefined) wire.stream_options = request.streamOptions;
+      mergeRequestExtra(request, 'openai-chat', wire, OPENAI_MODELED_REQUEST_KEYS);
       return wire;
     },
-    decodeResponse(wire: unknown): CommonResponse | undefined {
+    decodeResponse(wire: unknown): InternalResponse | undefined {
       if (!isRecord(wire)) return undefined;
       const choice: unknown = Array.isArray(wire.choices) ? wire.choices[0] : undefined;
       const message = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
-      const response: CommonResponse = {
+      const response: InternalResponse = {
         message: { role: 'assistant', parts: message ? decodeMessageParts(message) : [] },
       };
       if (isRecord(choice)) {
@@ -437,12 +456,12 @@ export function createOpenAIChatProtocol(): Protocol {
       if (!message && response.id === undefined && response.model === undefined && usage === undefined) return undefined;
       return response;
     },
-    decodeRequest(wire: unknown): CommonRequest | undefined {
+    decodeRequest(wire: unknown): InternalRequest | undefined {
       if (!isRecord(wire)) return undefined;
       const rawMessages: unknown = wire.messages;
       if (!Array.isArray(rawMessages)) return undefined;
       const model = wire.model;
-      const request: CommonRequest = {
+      const request: InternalRequest = {
         model: typeof model === 'string' ? model : '',
         messages: decodeOpenAIMessages(rawMessages),
       };
@@ -456,12 +475,15 @@ export function createOpenAIChatProtocol(): Protocol {
       if (Array.isArray(rawTools) && rawTools.length > 0) request.tools = rawTools.filter(isRecord).map(decodeOpenAITool);
       if (wire.tool_choice !== undefined) request.toolChoice = wire.tool_choice;
       if (wire.stream === true) request.stream = true;
+      if (isRecord(wire.stream_options)) request.streamOptions = wire.stream_options;
+      const extra = captureRequestExtra('openai-chat', wire, OPENAI_MODELED_REQUEST_KEYS);
+      if (extra !== undefined) request.extra = extra;
       return request;
     },
-    decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncIterable<LLMEvent> {
+    decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncIterable<InternalLLMEvent> {
       return decodeStream(chunks);
     },
-    encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent>): AsyncIterable<string> {
+    encodeStream(events: AsyncIterable<InternalLLMEvent> | Iterable<InternalLLMEvent>): AsyncIterable<string> {
       return encodeStream(events);
     },
     applyToolCalls(wire: Obj, toolCalls: readonly ToolCall[]): Obj | undefined {
@@ -484,7 +506,7 @@ export function createOpenAIChatProtocol(): Protocol {
       }
       return next;
     },
-    encodeResponse(response: CommonResponse): Record<string, unknown> {
+    encodeResponse(response: InternalResponse): Record<string, unknown> {
       return {
         id: response.id,
         object: 'chat.completion',

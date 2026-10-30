@@ -1,8 +1,8 @@
 import type {
-  CommonRequest,
-  CommonResponse,
+  InternalRequest,
+  InternalResponse,
   FinishReason,
-  LLMEvent,
+  InternalLLMEvent,
   Message,
   MessagePart,
   ToolDefinition,
@@ -10,8 +10,22 @@ import type {
 } from '../../ports/llm';
 import type { ToolCall } from '../../ports/domain';
 import type { Protocol } from '../../ports/protocol';
+import type { RequestExtra } from '../../ports/llm';
+import { captureRequestExtra, mergeNodeExtra, mergeRequestExtra } from '../request-extra';
 
 type Obj = Record<string, unknown>;
+
+const ANTHROPIC_MODELED_REQUEST_KEYS = ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'tools', 'tool_choice', 'stream'];
+const ANTHROPIC_MODELED_TOOL_KEYS = ['name', 'description', 'input_schema'];
+const ANTHROPIC_MODELED_TEXT_KEYS = ['type', 'text'];
+const ANTHROPIC_MODELED_TOOL_USE_KEYS = ['type', 'id', 'name', 'input'];
+const ANTHROPIC_MODELED_TOOL_RESULT_KEYS = ['type', 'tool_use_id', 'content', 'is_error'];
+
+/** Spread-ready `{ extra }` holding a request block's unmodeled fields (e.g. `cache_control`); empty when none. */
+function blockExtra(block: Obj, modeled: readonly string[]): { extra?: RequestExtra } {
+  const extra = captureRequestExtra('anthropic-messages', block, modeled);
+  return extra !== undefined ? { extra } : {};
+}
 
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -52,11 +66,13 @@ function decodeUsage(raw: unknown): Usage | undefined {
   const input = isNumber(raw.input_tokens) ? raw.input_tokens : undefined;
   const output = isNumber(raw.output_tokens) ? raw.output_tokens : undefined;
   if (input === undefined && output === undefined) return undefined;
-  const cacheRead = isNumber(raw.cache_read_input_tokens) ? Math.max(0, raw.cache_read_input_tokens) : 0;
+  const cacheRead = isNumber(raw.cache_read_input_tokens) ? Math.max(0, raw.cache_read_input_tokens) : undefined;
   const cacheCreation = isNumber(raw.cache_creation_input_tokens) ? raw.cache_creation_input_tokens : 0;
   const base = Math.max(0, (input ?? 0) + cacheCreation);
   const out = output ?? 0;
-  return { input: base, output: out, cacheHitInput: cacheRead, total: base + cacheRead + out };
+  const cacheWrite = isNumber(raw.cache_creation_input_tokens) ? { cacheWriteInput: cacheCreation } : {};
+  const cacheHit = cacheRead !== undefined ? { cacheHitInput: cacheRead } : {};
+  return { input: base, output: out, ...cacheHit, ...cacheWrite, total: base + (cacheRead ?? 0) + out };
 }
 
 /** Anthropic thinking block: redacted data verbatim, or signed thinking only (unsigned returns null). */
@@ -70,40 +86,68 @@ function encodeBlocks(parts: MessagePart[]): Obj[] {
   const blocks: Obj[] = [];
   for (const part of parts) {
     switch (part.type) {
-      case 'text':
-        blocks.push({ type: 'text', text: part.text });
+      case 'text': {
+        const block: Obj = { type: 'text', text: part.text };
+        mergeNodeExtra(part.extra, 'anthropic-messages', block, ANTHROPIC_MODELED_TEXT_KEYS);
+        blocks.push(block);
         break;
+      }
       case 'reasoning': {
         const block = encodeReasoningBlock(part);
         if (block !== null) blocks.push(block);
         break;
       }
-      case 'tool-call':
-        blocks.push({ type: 'tool_use', id: part.id, name: part.name, input: part.args });
+      case 'tool-call': {
+        const block: Obj = { type: 'tool_use', id: part.id, name: part.name, input: part.args };
+        mergeNodeExtra(part.extra, 'anthropic-messages', block, ANTHROPIC_MODELED_TOOL_USE_KEYS);
+        blocks.push(block);
         break;
-      case 'tool-result':
-        blocks.push({
+      }
+      case 'tool-result': {
+        const block: Obj = {
           type: 'tool_result',
           tool_use_id: part.id,
           content: part.content,
           ...(part.isError ? { is_error: true } : {}),
-        });
+        };
+        mergeNodeExtra(part.extra, 'anthropic-messages', block, ANTHROPIC_MODELED_TOOL_RESULT_KEYS);
+        blocks.push(block);
+        break;
+      }
+      case 'opaque':
+        // Same-protocol opaque blocks are re-emitted verbatim; other protocols skip them.
+        if (part.protocol === 'anthropic-messages') blocks.push(structuredClone(part.block));
         break;
     }
   }
   return blocks;
 }
 
-function encodeMessages(messages: Message[]): { system: string[]; messages: Obj[] } {
-  const system: string[] = [];
+/** One system text; `extra` is set only for same-protocol fields (e.g. block-form `cache_control`). */
+interface SystemText {
+  text: string;
+  extra?: RequestExtra;
+}
+
+/** String form when no system text carries same-protocol fields (unchanged); block form otherwise. */
+function encodeSystem(system: SystemText[]): string | Obj[] {
+  if (!system.some((entry) => entry.extra !== undefined)) return system.map((entry) => entry.text).join('\n');
+  return system.map((entry) => {
+    const block: Obj = { type: 'text', text: entry.text };
+    mergeNodeExtra(entry.extra, 'anthropic-messages', block, ANTHROPIC_MODELED_TEXT_KEYS);
+    return block;
+  });
+}
+
+function encodeMessages(messages: Message[]): { system: SystemText[]; messages: Obj[] } {
+  const system: SystemText[] = [];
   const out: Obj[] = [];
   for (const message of messages) {
     if (message.role === 'system') {
-      const text = message.parts
-        .filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
-        .map((part) => part.text)
-        .join('');
-      if (text !== '') system.push(text);
+      const texts = message.parts.filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text');
+      const text = texts.map((part) => part.text).join('');
+      const extra = texts.find((part) => part.extra?.protocol === 'anthropic-messages')?.extra;
+      if (text !== '') system.push({ text, ...(extra !== undefined ? { extra } : {}) });
       continue;
     }
     // `tool` messages carry tool_result blocks, which Anthropic sends as user-role content.
@@ -159,12 +203,14 @@ interface StreamState {
   finishReason?: FinishReason;
 }
 
-function emitToolCall(block: StreamBlock): LLMEvent[] {
+function emitToolCall(block: StreamBlock, index: number): InternalLLMEvent[] {
   if (block.name === '') return [];
-  return [{ type: 'tool-call', id: block.id, name: block.name, args: parseInput(block.args) }];
+  return [
+    { type: 'tool-call', id: block.id, name: block.name, args: parseInput(block.args), rawArgs: block.args, index },
+  ];
 }
 
-function flushUsage(state: StreamState): LLMEvent[] {
+function flushUsage(state: StreamState): InternalLLMEvent[] {
   if (!state.usageDirty) return [];
   state.usageDirty = false;
   const usage = decodeUsage(state.usageRaw);
@@ -190,8 +236,8 @@ function identityOf(source: Obj): { id?: string; model?: string } {
   };
 }
 
-function handleFrame(frame: Obj, state: StreamState): LLMEvent[] {
-  const events: LLMEvent[] = [];
+function handleFrame(frame: Obj, state: StreamState): InternalLLMEvent[] {
+  const events: InternalLLMEvent[] = [];
   switch (frame.type) {
     case 'message_start': {
       if (!state.started) {
@@ -243,7 +289,7 @@ function handleFrame(frame: Obj, state: StreamState): LLMEvent[] {
       const block = state.blocks.get(frame.index);
       if (block === undefined) break;
       state.blocks.delete(frame.index);
-      if (block.kind === 'tool_use') events.push(...emitToolCall(block));
+      if (block.kind === 'tool_use') events.push(...emitToolCall(block, frame.index));
       break;
     }
     case 'message_delta': {
@@ -276,10 +322,10 @@ function parseFrame(line: string): Obj | undefined {
   }
 }
 
-async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncGenerator<LLMEvent> {
+async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncGenerator<InternalLLMEvent> {
   const state: StreamState = { started: false, blocks: new Map(), usageRaw: {}, usageDirty: false };
   let buffer = '';
-  const handleLine = (line: string): LLMEvent[] => {
+  const handleLine = (line: string): InternalLLMEvent[] => {
     const frame = parseFrame(line);
     return frame === undefined ? [] : handleFrame(frame, state);
   };
@@ -298,7 +344,7 @@ async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): 
   const open = [...state.blocks.keys()].sort((a, b) => a - b);
   for (const index of open) {
     const block = state.blocks.get(index);
-    if (block !== undefined && block.kind === 'tool_use') yield* emitToolCall(block);
+    if (block !== undefined && block.kind === 'tool_use') yield* emitToolCall(block, index);
   }
   state.blocks.clear();
   yield* flushUsage(state);
@@ -306,7 +352,7 @@ async function* decodeStream(chunks: AsyncIterable<string> | Iterable<string>): 
 }
 
 /** Encode LLM events as messages SSE frames. Unsigned reasoning has no valid Anthropic wire form and is dropped. */
-async function* encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent>): AsyncGenerator<string> {
+async function* encodeStream(events: AsyncIterable<InternalLLMEvent> | Iterable<InternalLLMEvent>): AsyncGenerator<string> {
   const frame = (name: string, data: Obj): string => `event: ${name}\ndata: ${JSON.stringify({ type: name, ...data })}\n\n`;
   let index = 0;
   let textOpen = false;
@@ -314,6 +360,8 @@ async function* encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent
   let usage: Usage | undefined;
   let meta: { id?: string | undefined; model?: string | undefined } = {};
   let started = false;
+  // Unsigned thinking text waits here for its signature; unsigned thinking is never emitted.
+  let pendingThinking: string | undefined;
   const startFrame = (): string => {
     started = true;
     return frame('message_start', {
@@ -340,6 +388,7 @@ async function* encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent
       yield frame('content_block_delta', { index, delta: { type: 'text_delta', text: event.text } });
       continue;
     }
+    if (event.type !== 'reasoning') pendingThinking = undefined;
     if (textOpen) {
       yield frame('content_block_stop', { index });
       index++;
@@ -354,15 +403,21 @@ async function* encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent
         break;
       case 'reasoning':
         if (event.redactedData !== undefined) {
+          pendingThinking = undefined;
           yield frame('content_block_start', { index, content_block: { type: 'redacted_thinking', data: event.redactedData } });
           yield frame('content_block_stop', { index });
           index++;
         } else if (event.signature !== undefined) {
+          // Decoder emits thinking text and its signature as separate events; join them here.
+          const thinking = (pendingThinking ?? '') + event.text;
+          pendingThinking = undefined;
           yield frame('content_block_start', { index, content_block: { type: 'thinking', thinking: '', signature: '' } });
-          if (event.text !== '') yield frame('content_block_delta', { index, delta: { type: 'thinking_delta', thinking: event.text } });
+          if (thinking !== '') yield frame('content_block_delta', { index, delta: { type: 'thinking_delta', thinking } });
           yield frame('content_block_delta', { index, delta: { type: 'signature_delta', signature: event.signature } });
           yield frame('content_block_stop', { index });
           index++;
+        } else {
+          pendingThinking = (pendingThinking ?? '') + event.text;
         }
         break;
       case 'usage':
@@ -421,7 +476,7 @@ function decodeAnthropicMessages(rawMessages: unknown[]): Message[] {
     for (const block of content) {
       if (!isRecord(block)) continue;
       if (block.type === 'text' && typeof block.text === 'string') {
-        parts.push({ type: 'text', text: block.text });
+        parts.push({ type: 'text', text: block.text, ...blockExtra(block, ANTHROPIC_MODELED_TEXT_KEYS) });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
         parts.push({
           type: 'reasoning',
@@ -436,14 +491,19 @@ function decodeAnthropicMessages(rawMessages: unknown[]): Message[] {
           id: typeof block.id === 'string' ? block.id : '',
           name: block.name,
           args: isRecord(block.input) ? block.input : {},
+          ...blockExtra(block, ANTHROPIC_MODELED_TOOL_USE_KEYS),
         });
+      } else if (block.type === 'image') {
+        // Image blocks are opaque: kept verbatim for the same protocol, skipped by other encoders.
+        parts.push({ type: 'opaque', protocol: 'anthropic-messages', block: structuredClone(block) });
       } else if (block.type === 'tool_result' && role === 'user') {
         results.push({
           type: 'tool-result',
           id: typeof block.tool_use_id === 'string' ? block.tool_use_id : '',
           name: '',
           content: extractToolResultText(block.content),
-          isError: false,
+          isError: block.is_error === true,
+          ...blockExtra(block, ANTHROPIC_MODELED_TOOL_RESULT_KEYS),
         });
       }
     }
@@ -460,6 +520,8 @@ function decodeAnthropicTool(tool: Obj): ToolDefinition {
     parameters: isRecord(tool.input_schema) ? tool.input_schema : { type: 'object' },
   };
   if (typeof tool.description === 'string' && tool.description !== '') definition.description = tool.description;
+  const extra = captureRequestExtra('anthropic-messages', tool, ANTHROPIC_MODELED_TOOL_KEYS);
+  if (extra !== undefined) definition.extra = extra;
   return definition;
 }
 
@@ -511,31 +573,44 @@ function encodeAnthropicContent(parts: MessagePart[]): Obj[] {
 export function createAnthropicMessagesProtocol(): Protocol {
   return {
     id: 'anthropic-messages',
-    encodeRequest(request: CommonRequest): Record<string, unknown> {
+    encodeRequest(request: InternalRequest): Record<string, unknown> {
       const encoded = encodeMessages(request.messages);
+      // A lone text block is emitted as a plain string only when the source content was a plain string.
+      const sourceMessages = request.messages.filter((message) => message.role !== 'system');
+      encoded.messages.forEach((message, index) => {
+        if (sourceMessages[index]?.plainStringContent !== true) return;
+        const blocks = message.content;
+        const only = Array.isArray(blocks) && blocks.length === 1 ? blocks[0] : undefined;
+        if (isRecord(only) && only.type === 'text') message.content = only.text;
+      });
       const wire: Record<string, unknown> = {
         model: request.model,
         max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         messages: encoded.messages,
       };
-      if (encoded.system.length > 0) wire.system = encoded.system.join('\n');
+      if (encoded.system.length > 0) wire.system = encodeSystem(encoded.system);
       if (request.temperature !== undefined) wire.temperature = request.temperature;
       if (request.topP !== undefined) wire.top_p = request.topP;
       if (request.tools !== undefined && request.tools.length > 0) {
-        wire.tools = request.tools.map((tool) => ({
-          name: tool.name,
-          ...(tool.description !== undefined ? { description: tool.description } : {}),
-          input_schema: tool.parameters ?? { type: 'object' },
-        }));
+        wire.tools = request.tools.map((tool) => {
+          const wireTool: Obj = {
+            name: tool.name,
+            ...(tool.description !== undefined ? { description: tool.description } : {}),
+            input_schema: tool.parameters ?? { type: 'object' },
+          };
+          mergeNodeExtra(tool.extra, 'anthropic-messages', wireTool, ANTHROPIC_MODELED_TOOL_KEYS);
+          return wireTool;
+        });
       }
       if (request.toolChoice !== undefined) wire.tool_choice = request.toolChoice;
       if (request.stream === true) wire.stream = true;
+      mergeRequestExtra(request, 'anthropic-messages', wire, ANTHROPIC_MODELED_REQUEST_KEYS);
       return wire;
     },
-    decodeResponse(wire: unknown): CommonResponse | undefined {
+    decodeResponse(wire: unknown): InternalResponse | undefined {
       if (!isRecord(wire)) return undefined;
       const content: unknown[] | undefined = Array.isArray(wire.content) ? wire.content : undefined;
-      const response: CommonResponse = {
+      const response: InternalResponse = {
         message: { role: 'assistant', parts: content ? decodeBlocks(content) : [] },
       };
       const finishReason = mapStopReason(wire.stop_reason);
@@ -548,7 +623,7 @@ export function createAnthropicMessagesProtocol(): Protocol {
       if (!content && response.id === undefined && response.model === undefined && usage === undefined) return undefined;
       return response;
     },
-    decodeRequest(wire: unknown): CommonRequest | undefined {
+    decodeRequest(wire: unknown): InternalRequest | undefined {
       if (!isRecord(wire)) return undefined;
       const rawMessages: unknown = wire.messages;
       if (!Array.isArray(rawMessages)) return undefined;
@@ -557,8 +632,17 @@ export function createAnthropicMessagesProtocol(): Protocol {
       const system = wire.system;
       if (typeof system === 'string' && system !== '') {
         messages.unshift({ role: 'system', parts: [{ type: 'text', text: system }] });
+      } else if (Array.isArray(system)) {
+        // Block-form system prompt: one text part per block; unmodeled fields (cache_control) ride in `extra`.
+        const blocks = system.filter(isRecord).filter((b) => b.type === 'text' && typeof b.text === 'string');
+        messages.unshift(
+          ...blocks.map((b): Message => ({
+            role: 'system',
+            parts: [{ type: 'text', text: String(b.text), ...blockExtra(b, ANTHROPIC_MODELED_TEXT_KEYS) }],
+          })),
+        );
       }
-      const request: CommonRequest = { model: typeof model === 'string' ? model : '', messages };
+      const request: InternalRequest = { model: typeof model === 'string' ? model : '', messages };
       const maxTokens = wire.max_tokens;
       if (isNumber(maxTokens)) request.maxTokens = maxTokens;
       const temperature = wire.temperature;
@@ -569,12 +653,14 @@ export function createAnthropicMessagesProtocol(): Protocol {
       if (Array.isArray(rawTools) && rawTools.length > 0) request.tools = rawTools.filter(isRecord).map(decodeAnthropicTool);
       if (wire.tool_choice !== undefined) request.toolChoice = wire.tool_choice;
       if (wire.stream === true) request.stream = true;
+      const extra = captureRequestExtra('anthropic-messages', wire, ANTHROPIC_MODELED_REQUEST_KEYS);
+      if (extra !== undefined) request.extra = extra;
       return request;
     },
-    decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncIterable<LLMEvent> {
+    decodeStream(chunks: AsyncIterable<string> | Iterable<string>): AsyncIterable<InternalLLMEvent> {
       return decodeStream(chunks);
     },
-    encodeStream(events: AsyncIterable<LLMEvent> | Iterable<LLMEvent>): AsyncIterable<string> {
+    encodeStream(events: AsyncIterable<InternalLLMEvent> | Iterable<InternalLLMEvent>): AsyncIterable<string> {
       return encodeStream(events);
     },
     applyToolCalls(wire: Obj, toolCalls: readonly ToolCall[]): Obj | undefined {
@@ -591,7 +677,7 @@ export function createAnthropicMessagesProtocol(): Protocol {
       next.content = blocks;
       return next;
     },
-    encodeResponse(response: CommonResponse): Record<string, unknown> {
+    encodeResponse(response: InternalResponse): Record<string, unknown> {
       return {
         id: response.id,
         type: 'message',

@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOpenAIChatProtocol } from '../src/protocols/openai-chat';
-import type { LLMEvent } from '../src/ports/llm';
+import type { InternalLLMEvent } from '../src/ports/llm';
 
 const protocol = createOpenAIChatProtocol();
 
-async function collect(chunks: AsyncIterable<string> | Iterable<string>): Promise<LLMEvent[]> {
-  const out: LLMEvent[] = [];
+async function collect(chunks: AsyncIterable<string> | Iterable<string>): Promise<InternalLLMEvent[]> {
+  const out: InternalLLMEvent[] = [];
   for await (const event of protocol.decodeStream(chunks)) out.push(event);
   return out;
 }
@@ -41,7 +41,7 @@ describe('openai-chat protocol', () => {
           content: null,
           tool_calls: [{ id: 'c1', type: 'function', function: { name: 'weather', arguments: '{"city":"Oslo"}' } }],
         },
-        { role: 'tool', tool_call_id: 'c1', content: '-3C' },
+        { role: 'tool', tool_call_id: 'c1', name: 'weather', content: '-3C' },
       ],
       tools: [{ type: 'function', function: { name: 'weather', description: 'get weather', parameters: { type: 'object' } } }],
     });
@@ -77,6 +77,27 @@ describe('openai-chat protocol', () => {
     assert.deepEqual(decoded?.usage, { input: 60, output: 20, cacheHitInput: 40, total: 120 });
   });
 
+  it('keeps wire tool-call index and leaves cacheWriteInput undefined', async () => {
+    const chunks = [
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"a","function":{"name":"f","arguments":"{}"}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"g","arguments":"{\\"x\\":1}"}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const events = await collect(chunks);
+    const calls = events.filter((e) => e.type === 'tool-call');
+    assert.deepEqual(
+      calls.map((e) => (e.type === 'tool-call' ? [e.index, e.rawArgs] : null)),
+      [
+        [0, '{}'],
+        [1, '{"x":1}'],
+      ],
+    );
+    const usage = events.find((e) => e.type === 'usage');
+    assert.ok(usage?.type === 'usage' && !('cacheWriteInput' in usage.usage));
+  });
+
   it('maps reasoning_content to reasoning and re-emits it on encode', () => {
     const decoded = protocol.decodeResponse({
       choices: [{ message: { role: 'assistant', content: 'ok', reasoning_content: 'think' }, finish_reason: 'stop' }],
@@ -104,9 +125,9 @@ describe('openai-chat protocol', () => {
     const events = await collect(chunks);
     assert.deepEqual(events, [
       { type: 'step-start' },
-      { type: 'tool-call', id: 'c1', name: 'weather', args: { city: 'Oslo' } },
+      { type: 'tool-call', id: 'c1', name: 'weather', args: { city: 'Oslo' }, rawArgs: '{"city":"Oslo"}', index: 0 },
       { type: 'step-finish', finishReason: 'tool-calls' },
-      { type: 'usage', usage: { input: 10, output: 5, cacheHitInput: 0, total: 15 } },
+      { type: 'usage', usage: { input: 10, output: 5, total: 15 } },
       { type: 'finish', finishReason: 'tool-calls' },
     ]);
   });

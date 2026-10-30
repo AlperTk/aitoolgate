@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOpenAIChatProtocol } from '../src/protocols/openai-chat';
 import { createAnthropicMessagesProtocol } from '../src/protocols/anthropic-messages';
-import type { LLMEvent } from '../src/ports/llm';
+import type { InternalLLMEvent } from '../src/ports/llm';
 
 const openai = createOpenAIChatProtocol();
 const anthropic = createAnthropicMessagesProtocol();
@@ -11,10 +11,10 @@ const sse = (type: string, data: Record<string, unknown>): string =>
   `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 
 async function collect(
-  protocol: { decodeStream(chunks: Iterable<string>): AsyncIterable<LLMEvent> },
+  protocol: { decodeStream(chunks: Iterable<string>): AsyncIterable<InternalLLMEvent> },
   chunks: string[],
-): Promise<LLMEvent[]> {
-  const out: LLMEvent[] = [];
+): Promise<InternalLLMEvent[]> {
+  const out: InternalLLMEvent[] = [];
   for await (const event of protocol.decodeStream(chunks)) out.push(event);
   return out;
 }

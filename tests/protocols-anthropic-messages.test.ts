@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAnthropicMessagesProtocol } from '../src/protocols/anthropic-messages';
-import type { LLMEvent } from '../src/ports/llm';
+import type { InternalLLMEvent } from '../src/ports/llm';
 
 const protocol = createAnthropicMessagesProtocol();
 
-async function collect(chunks: AsyncIterable<string> | Iterable<string>): Promise<LLMEvent[]> {
-  const out: LLMEvent[] = [];
+async function collect(chunks: AsyncIterable<string> | Iterable<string>): Promise<InternalLLMEvent[]> {
+  const out: InternalLLMEvent[] = [];
   for await (const event of protocol.decodeStream(chunks)) out.push(event);
   return out;
 }
@@ -76,8 +76,34 @@ describe('anthropic-messages protocol', () => {
       { type: 'tool-call', id: 'tu1', name: 'weather', args: { city: 'Oslo' } },
     ]);
     assert.equal(decoded?.finishReason, 'tool-calls');
-    assert.deepEqual(decoded?.usage, { input: 40, output: 7, cacheHitInput: 40, total: 87 });
+    assert.deepEqual(decoded?.usage, { input: 40, output: 7, cacheHitInput: 40, cacheWriteInput: 10, total: 87 });
     assert.equal(decoded?.id, 'msg_1');
+  });
+
+  it('reports cacheWriteInput, wire block index and raw argument string on streamed tool_use', async () => {
+    const events = await collect([
+      sse('message_start', {
+        message: { id: 'msg_2', usage: { input_tokens: 5, cache_creation_input_tokens: 7, output_tokens: 1 } },
+      }),
+      sse('content_block_start', { index: 1, content_block: { type: 'tool_use', id: 'tu2', name: 'lookup', input: {} } }),
+      sse('content_block_delta', { index: 1, delta: { type: 'input_json_delta', partial_json: '{"q":' } }),
+      sse('content_block_delta', { index: 1, delta: { type: 'input_json_delta', partial_json: '"x"}' } }),
+      sse('content_block_stop', { index: 1 }),
+      sse('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 2 } }),
+      sse('message_stop', {}),
+    ]);
+    assert.deepEqual(events.find((e) => e.type === 'tool-call'), {
+      type: 'tool-call',
+      id: 'tu2',
+      name: 'lookup',
+      args: { q: 'x' },
+      rawArgs: '{"q":"x"}',
+      index: 1,
+    });
+    assert.deepEqual(events.find((e) => e.type === 'usage'), {
+      type: 'usage',
+      usage: { input: 12, output: 2, cacheWriteInput: 7, total: 14 },
+    });
   });
 
   it('assembles streamed tool_use input from partial_json fragments', async () => {
@@ -93,8 +119,8 @@ describe('anthropic-messages protocol', () => {
     ]);
     assert.deepEqual(events, [
       { type: 'step-start', id: 'msg_1' },
-      { type: 'tool-call', id: 'tu1', name: 'weather', args: { city: 'Oslo' } },
-      { type: 'usage', usage: { input: 12, output: 9, cacheHitInput: 0, total: 21 } },
+      { type: 'tool-call', id: 'tu1', name: 'weather', args: { city: 'Oslo' }, rawArgs: '{"city":"Oslo"}', index: 0 },
+      { type: 'usage', usage: { input: 12, output: 9, total: 21 } },
       { type: 'step-finish', finishReason: 'tool-calls' },
       { type: 'finish', finishReason: 'tool-calls' },
     ]);

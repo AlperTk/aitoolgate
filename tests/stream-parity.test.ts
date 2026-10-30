@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { createOpenAIChatProtocol } from '../src/protocols/openai-chat';
 import { createAnthropicMessagesProtocol } from '../src/protocols/anthropic-messages';
 import { createSseToolCallExtractor } from '../src/telemetry/stream-extract';
-import type { LLMEvent } from '../src/ports/llm';
+import type { InternalLLMEvent, Usage } from '../src/ports/llm';
 import type { Protocol } from '../src/ports/protocol';
 
 // Parity: protocol decodeStream output must agree with the telemetry extractor (stream-extract.ts)
@@ -129,8 +129,8 @@ function splitChunks(text: string): string[] {
   return out;
 }
 
-async function decode(protocol: Protocol, chunks: string[]): Promise<LLMEvent[]> {
-  const events: LLMEvent[] = [];
+async function decode(protocol: Protocol, chunks: string[]): Promise<InternalLLMEvent[]> {
+  const events: InternalLLMEvent[] = [];
   for await (const event of protocol.decodeStream(chunks)) events.push(event);
   return events;
 }
@@ -159,7 +159,7 @@ interface ToolCallView {
   args: unknown;
 }
 
-const decodedToolCalls = (events: LLMEvent[]): ToolCallView[] =>
+const decodedToolCalls = (events: InternalLLMEvent[]): ToolCallView[] =>
   events.flatMap((e) => (e.type === 'tool-call' ? [{ id: e.id, name: e.name, args: e.args }] : []));
 
 const extractedToolCalls = (emitted: Emitted[]): ToolCallView[] =>
@@ -167,14 +167,18 @@ const extractedToolCalls = (emitted: Emitted[]): ToolCallView[] =>
     .filter((e) => e.type === 'tool.call')
     .map((e) => ({ id: e.id as string, name: e.toolName as string, args: e.args }));
 
-const decodedUsage = (events: LLMEvent[]) => {
+const decodedUsage = (events: InternalLLMEvent[]) => {
   const event = events.find((e) => e.type === 'usage');
   return event?.type === 'usage' ? event.usage : undefined;
 };
 
 const extractedUsage = (emitted: Emitted[]) => emitted.find((e) => e.type === 'turn.usage')?.tokens;
 
-const decodedReasoning = (events: LLMEvent[]): string =>
+/** The extractor's turn.usage tokens carry no cacheWriteInput; compare the shared fields only. */
+const sharedUsageView = (usage: Usage | undefined) =>
+  usage && { input: usage.input, output: usage.output, cacheHitInput: usage.cacheHitInput, total: usage.total };
+
+const decodedReasoning = (events: InternalLLMEvent[]): string =>
   events.flatMap((e) => (e.type === 'reasoning' ? [e.text] : [])).join('');
 
 interface ParityCase {
@@ -210,7 +214,7 @@ describe('stream parity: decodeStream vs stream-extract', () => {
         const decoded = decodedUsage(await decode(c.protocol, chunks));
         const emitted = extractedUsage(await extract(chunks));
         assert.notEqual(decoded, undefined, 'fixture must carry usage');
-        assert.deepStrictEqual(emitted, decoded);
+        assert.deepStrictEqual(emitted, sharedUsageView(decoded));
       });
     }
 
@@ -230,7 +234,7 @@ describe('stream parity: decoded usage and reasoning values', () => {
 
   it('anthropic usage: cache creation folds into input, final output_tokens wins', async () => {
     const usage = decodedUsage(await decode(createAnthropicMessagesProtocol(), splitChunks(anthropicThinkingTextTool)));
-    assert.deepStrictEqual(usage, { input: 35, output: 42, cacheHitInput: 5, total: 82 });
+    assert.deepStrictEqual(usage, { input: 35, output: 42, cacheHitInput: 5, cacheWriteInput: 10, total: 82 });
   });
 
   it('openai reasoning_content is decoded as reasoning text', async () => {

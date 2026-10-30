@@ -1,7 +1,9 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-export type UpstreamProtocol = 'openai' | 'anthropic';
+import type { WireProtocol } from '../src/ports/provider';
+
+export type UpstreamProtocol = WireProtocol;
 
 export interface ToolResultsConfig {
   enabled: boolean;

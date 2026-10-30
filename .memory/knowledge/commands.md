@@ -20,7 +20,7 @@ npm i -g aitoolgate  # published CLI (bin `aitoolgate`); same entry as `npm star
 | Build | `npm run build` | `tsc -p tsconfig.build.json` → emits `dist/` (node16 CJS). |
 | Run | `npm start` | `node dist/src/server/index.js`; listens on `PORT` (default 8787); dashboard at `http://localhost:8787/`. |
 | Dev | `npm run dev` | build then start. |
-| Test | `npm test` | `node --test 'dist/tests/**/*.test.js'` — **MUST `npm run build` first** (tests run compiled `dist/`). Build does NOT delete stale `dist/` artefacts: a `dist/tests/*.test.js` whose source was removed or never tracked keeps running and can fail the suite. Delete such a stale file under `dist/` only (never tracked source). Baseline after the protocol-layer work: 647 tests, all passing. |
+| Test | `npm test` | `node --test 'dist/tests/**/*.test.js'` — **MUST `npm run build` first** (tests run compiled `dist/`). Build does NOT delete stale `dist/` artefacts: a `dist/tests/*.test.js` whose source was removed or never tracked keeps running and can fail the suite. Delete such a stale file under `dist/` only (never tracked source). Baseline: 737 tests, 0 failing (verified with `npm run build && npm test`). |
 | Typecheck | `npm run typecheck` | `tsc --noEmit` against the dev tsconfig. |
 
 There is **no lint or format script** in `package.json` (none observed). `main` and `bin` (`aitoolgate`) both point at `dist/src/server/index.js`; published `files` = `["dist/src","dist/config","dashboard","README.md","LICENSE"]` (tarball verified self-sufficient via `npm pack` + extracted smoke test); `engines` `node >=22.5` (required for `node:sqlite`); `publishConfig.access=public`.

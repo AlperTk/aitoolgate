@@ -9,8 +9,6 @@ import { createAnthropicMessagesProtocol } from '../src/protocols/anthropic-mess
 const openai = createOpenAIChatProtocol();
 const anthropic = createAnthropicMessagesProtocol();
 
-const original = { toolCalls: [] as ToolCall[], content: 'hi' };
-
 function ctxFor(raw: unknown, toolCalls: ToolCall[], content = 'hi'): ResponseContext {
   return { toolCalls, content, raw } as unknown as ResponseContext;
 }
@@ -50,14 +48,14 @@ function anthropicBody(): Record<string, unknown> {
 test('unchanged view leaves an OpenAI body untouched (same reference, same content)', () => {
   const raw = openaiBody();
   const snapshot = structuredClone(raw);
-  syncResponseBody(ctxFor(raw, []), original);
+  syncResponseBody(ctxFor(raw, []));
   assert.deepEqual(raw, snapshot);
 });
 
 test('unchanged view leaves an Anthropic body untouched (same reference, same content)', () => {
   const raw = anthropicBody();
   const snapshot = structuredClone(raw);
-  syncResponseBody(ctxFor(raw, []), original);
+  syncResponseBody(ctxFor(raw, []));
   assert.deepEqual(raw, snapshot);
 });
 
@@ -115,7 +113,7 @@ test('applyToolCalls returns undefined for the other protocol shape', () => {
 
 test('syncResponseBody rewrites an OpenAI body when tool calls changed', () => {
   const ctx = ctxFor(openaiBody(), [{ id: 'call_3', name: 'lookup', arguments: { id: 7 } }]);
-  syncResponseBody(ctx, original);
+  syncResponseBody(ctx);
   const message = ((ctx.raw as Record<string, unknown>).choices as Record<string, unknown>[])[0].message as Record<string, unknown>;
   assert.deepEqual(message.tool_calls, [
     { id: 'call_3', type: 'function', function: { name: 'lookup', arguments: '{"id":7}' } },
@@ -124,7 +122,7 @@ test('syncResponseBody rewrites an OpenAI body when tool calls changed', () => {
 
 test('syncResponseBody rewrites an Anthropic body when tool calls changed', () => {
   const ctx = ctxFor(anthropicBody(), [{ id: 'toolu_3', name: 'lookup', arguments: { id: 7 } }]);
-  syncResponseBody(ctx, original);
+  syncResponseBody(ctx);
   assert.deepEqual((ctx.raw as Record<string, unknown>).content, [
     { type: 'text', text: 'calling' },
     { type: 'tool_use', id: 'toolu_3', name: 'lookup', input: { id: 7 } },
@@ -132,5 +130,5 @@ test('syncResponseBody rewrites an Anthropic body when tool calls changed', () =
 });
 
 test('syncResponseBody ignores non-record raw bodies', () => {
-  assert.doesNotThrow(() => syncResponseBody(ctxFor('not-json', []), original));
+  assert.doesNotThrow(() => syncResponseBody(ctxFor('not-json', [])));
 });

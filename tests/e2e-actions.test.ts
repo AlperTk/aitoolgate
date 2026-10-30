@@ -282,8 +282,10 @@ test('e2e actions: rewriteArgs rewrites only the matched tool call\u2019s argume
     const calls = forwardedAssistantToolCalls(fakeModel.requests[0]);
     const edited = calls.find((call) => call.name === EDITED);
     assert.ok(edited !== undefined, 'the edit_file tool call must still be present in the forwarded request');
-    assert.deepEqual(edited!.arguments, { path: '/safe/dest.txt' }, 'edit_file arguments are rewritten per the rule');
-    assert.ok(!JSON.stringify(edited!.arguments).includes('/tmp/dangerous.txt'), 'the original dangerous argument is gone');
+    // Wire arguments are the JSON string an OpenAI upstream requires (was: a raw object).
+    const editedArgs = typeof edited!.arguments === 'string' ? JSON.parse(edited!.arguments) : edited!.arguments;
+    assert.deepEqual(editedArgs, { path: '/safe/dest.txt' }, 'edit_file arguments are rewritten per the rule');
+    assert.ok(!JSON.stringify(editedArgs).includes('/tmp/dangerous.txt'), 'the original dangerous argument is gone');
 
     // The non-targeted call is left untouched (proves the rewrite is scoped to the match).
     const web = calls.find((call) => call.name === OTHER);

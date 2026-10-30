@@ -42,3 +42,15 @@ export function clientErrorBody(id: string, message: string): Record<string, unk
   const known = Object.hasOwn(REGISTRY, id) ? REGISTRY[id as ProtocolId] : REGISTRY['openai-chat'];
   return known.errorBody(message);
 }
+
+/** Message carried by an upstream error body (`{error:{message}}`, `{error:"text"}` or `{message}`, shared by both wire protocols); undefined when absent. */
+export function upstreamErrorMessage(body: unknown): string | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const record = body as { error?: unknown; message?: unknown };
+  if (typeof record.error === 'string') return record.error;
+  if (typeof record.error === 'object' && record.error !== null) {
+    const message = (record.error as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return typeof record.message === 'string' ? record.message : undefined;
+}

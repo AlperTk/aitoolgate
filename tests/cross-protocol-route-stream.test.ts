@@ -199,15 +199,16 @@ test('Anthropic client + OpenAI upstream: tool-call stream keeps tool name and a
   assert.equal(args, '{"p":1}');
 });
 
-test('telemetry extractor receives the UPSTREAM raw SSE bytes on cross-protocol streams', async () => {
-  const seen: string[] = [];
+test('telemetry extractor receives decoded InternalLLMEvents (not raw SSE bytes) on cross-protocol streams', async () => {
+  const seen: Array<{ type: string }> = [];
   const spyDefaults: ProxyDefaults = {
     ...defaultProxyDefaults,
     makeSseExtractor: () =>
       new Transform({
-        transform(chunk: Buffer, _enc, cb) {
-          seen.push(chunk.toString('utf8'));
-          cb(null, chunk);
+        objectMode: true,
+        transform(chunk: unknown, _enc, cb) {
+          if (typeof chunk === 'object' && chunk !== null && !Buffer.isBuffer(chunk)) seen.push(chunk as { type: string });
+          cb();
         },
       }),
   };
@@ -220,9 +221,8 @@ test('telemetry extractor receives the UPSTREAM raw SSE bytes on cross-protocol 
   );
 
   assert.equal(res.status, 200);
-  const upstreamBytes = seen.join('');
-  assert.ok(upstreamBytes.includes('event: message_start'), 'extractor must see upstream Anthropic frames');
-  assert.ok(!upstreamBytes.includes('chat.completion.chunk'), 'extractor must not see translated client frames');
+  assert.ok(seen.some((e) => e.type === 'text'), 'extractor must see decoded upstream text events');
+  assert.ok(seen.every((e) => typeof e.type === 'string'), 'extractor must see events, not raw SSE chunks');
 });
 
 test('telemetry transform failure does not break the client stream', async () => {
@@ -314,9 +314,11 @@ test('OpenAI client + Anthropic JSON-200 upstream with undecodable body: raw bod
   assert.equal(res.body, raw);
 });
 
-test('same-protocol JSON-200 upstream bytes are forwarded byte-identical', async () => {
+test('same-protocol JSON-200 upstream is re-encoded as an OpenAI SSE stream', async () => {
   const log: Captured[] = [];
   const res = await postStream({ protocol: 'openai', fetchImpl: upstreamFetch(OPENAI_JSON, log, 'application/json') }, '/v1/chat/completions', OAI_CLIENT);
 
-  assert.equal(res.body, OPENAI_JSON);
+  assert.equal(res.status, 200);
+  assert.match(res.contentType ?? '', /text\/event-stream/);
+  assert.ok(res.body.includes('Hello'));
 });

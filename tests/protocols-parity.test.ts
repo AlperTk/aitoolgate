@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  anthropicResponseToOpenAI,
-  anthropicToOpenAIRequest,
-  openaiResponseToAnthropic,
-  openaiToAnthropicRequest,
-} from '../src/proxy/translate';
+import { convertResponse, reencodeRequest } from '../src/proxy/translate';
 import type {
   AnthropicRequest,
   AnthropicResponse,
@@ -157,17 +152,17 @@ describe('parity: anthropic -> openai request (anthropic.decodeRequest -> openai
   ];
   runCases(
     cases,
-    (input) => anthropicToOpenAIRequest(input as unknown as AnthropicRequest),
+    (input) => reencodeRequest('anthropic-messages', 'openai-chat', input as unknown as AnthropicRequest),
     (input) => openai.encodeRequest(required(anthropic.decodeRequest(input))),
   );
 });
 
 describe('parity: openai -> anthropic request (openai.decodeRequest -> anthropic.encodeRequest)', () => {
   it('plain text user message with system prompt keeps string form via translate export', () => {
-    const wire = openaiToAnthropicRequest({
+    const wire = reencodeRequest('openai-chat', 'anthropic-messages', {
       model: 'claude-x',
       messages: [{ role: 'system', content: 'be brief' }, { role: 'user', content: 'hello' }],
-    } as unknown as OpenAIChatRequest);
+    } as unknown as OpenAIChatRequest) as AnthropicRequest;
     assert.equal(wire.system, 'be brief');
     assert.deepStrictEqual(wire.messages, [{ role: 'user', content: 'hello' }]);
   });
@@ -256,7 +251,7 @@ describe('parity: openai -> anthropic request (openai.decodeRequest -> anthropic
   ];
   runCases(
     cases,
-    (input) => openaiToAnthropicRequest(input as unknown as OpenAIChatRequest),
+    (input) => reencodeRequest('openai-chat', 'anthropic-messages', input as unknown as OpenAIChatRequest),
     (input) => anthropic.encodeRequest(required(openai.decodeRequest(input))),
   );
 });
@@ -393,7 +388,7 @@ describe('parity: openai -> anthropic response (openai.decodeResponse -> anthrop
   ];
   runCases(
     cases,
-    (input) => openaiResponseToAnthropic(input as unknown as OpenAIChatResponse),
+    (input) => convertResponse('openai-chat', 'anthropic-messages', input as unknown as OpenAIChatResponse),
     (input) => anthropic.encodeResponse(required(openai.decodeResponse(input))),
   );
 });
@@ -561,7 +556,7 @@ describe('parity: anthropic -> openai response (anthropic.decodeResponse -> open
   ];
   runCases(
     cases,
-    (input) => anthropicResponseToOpenAI(input as unknown as AnthropicResponse),
+    (input) => convertResponse('anthropic-messages', 'openai-chat', input as unknown as AnthropicResponse),
     (input) => openai.encodeResponse(required(anthropic.decodeResponse(input))),
   );
 });
@@ -575,7 +570,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
   });
 
   it('openai response without choices keeps HEAD id/model/usage and empty text block', () => {
-    const out = openaiResponseToAnthropic({
+    const out = convertResponse('openai-chat', 'anthropic-messages', {
       id: 'chatcmpl-m1',
       object: 'chat.completion',
       model: 'gpt-x',
@@ -593,7 +588,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
   });
 
   it('openai response with empty choices and no usage yields zero usage', () => {
-    const out = openaiResponseToAnthropic({ id: 'chatcmpl-m2', choices: [] } as unknown as OpenAIChatResponse);
+    const out = convertResponse('openai-chat', 'anthropic-messages', { id: 'chatcmpl-m2', choices: [] } as unknown as OpenAIChatResponse);
     assert.deepStrictEqual(out, {
       id: 'chatcmpl-m2',
       type: 'message',
@@ -606,7 +601,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
   });
 
   it('anthropic response without content yields null content and created from Date.now', () => {
-    const out = anthropicResponseToOpenAI({
+    const out = convertResponse('anthropic-messages', 'openai-chat', {
       id: 'msg_m1',
       type: 'message',
       role: 'assistant',
@@ -625,7 +620,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
   });
 
   it('anthropic response with empty content array yields null content', () => {
-    const out = anthropicResponseToOpenAI({
+    const out = convertResponse('anthropic-messages', 'openai-chat', {
       id: 'msg_m2',
       type: 'message',
       role: 'assistant',
@@ -645,7 +640,7 @@ describe('malformed upstream responses: translate exports keep id/model/usage (p
   });
 
   it('openai response with content but missing usage yields zero usage', () => {
-    const out = openaiResponseToAnthropic({
+    const out = convertResponse('openai-chat', 'anthropic-messages', {
       id: 'chatcmpl-m3',
       object: 'chat.completion',
       model: 'gpt-x',

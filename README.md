@@ -74,7 +74,7 @@ When developing AI-agent tools, the model's final answer rarely explains *why* i
           AI client response             +--> Optional SQLite storage
 ```
 
-Requests pass through a policy pipeline, are translated if necessary, and are forwarded to the currently active provider. Responses are returned in the client's protocol. Tool activity and interventions are published to a shared telemetry bus. Telemetry failures are isolated from proxied requests.
+Requests pass through a policy pipeline, are converted to the active provider's protocol, and are forwarded. Every streaming response is decoded from the upstream protocol into an internal `LLMEvent` stream and re-encoded into the client's protocol. There is no same-protocol bypass for streaming. See [Streaming and reasoning](#streaming-and-reasoning). Tool activity and interventions are published to a shared telemetry bus. Telemetry failures are isolated from proxied requests.
 
 ## Quick start
 
@@ -122,7 +122,7 @@ curl http://localhost:8787/v1/chat/completions \
   }'
 ```
 
-The proxy also accepts Anthropic-format requests at `POST /v1/messages`. Responses are translated when the client's protocol differs from the active provider's protocol.
+The proxy also accepts Anthropic-format requests at `POST /v1/messages`. Streaming responses always go upstream → decode → internal `LLMEvent` → client encode → client, even when the client and provider use the same protocol.
 
 ### 4. Inspect activity and configure rules
 
@@ -204,6 +204,25 @@ The two databases separate lightweight rules/events/provider configuration from 
 `GET /health` returns the server's liveness status. Tool activity, metrics, policy rules, and provider settings are managed through the built-in dashboard.
 
 > **Security:** The local management endpoints are not an authentication boundary and can expose sensitive tool data or provider credentials. Keep the server accessible only to trusted users.
+
+### Streaming and reasoning
+
+Every streaming response takes the same path: upstream SSE → protocol decode → internal `LLMEvent` stream → client protocol encode → client. There is no same-protocol bypass.
+
+#### Reasoning / thinking
+
+- **OpenAI chat decode:** `delta.reasoning_text` and `delta.reasoning_content` are read as reasoning.
+- **`delta.reasoning_opaque`:** becomes a signature-carrying reasoning event. It is not emitted to OpenAI clients.
+- **OpenAI chat encode:** reasoning is emitted as `delta.reasoning_content`.
+- **Anthropic:** unsigned thinking is dropped on the Anthropic wire. This is an **open decision under review**, not settled behavior.
+
+#### Non-SSE JSON responses
+
+A 2xx upstream response that is not SSE is handled as follows:
+
+- **JSON with message content:** converted into a synthetic SSE stream for the client.
+- **JSON with metadata only (no content):** returns HTTP `502` with the message `upstream returned a non-streaming response without content`.
+- **Undecodable JSON:** passed through raw.
 
 ## Architecture
 

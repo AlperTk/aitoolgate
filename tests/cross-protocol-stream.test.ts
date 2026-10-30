@@ -1,9 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { LLMEvent } from '../src/ports/llm';
+import type { InternalLLMEvent } from '../src/ports/llm';
 import { createAnthropicMessagesProtocol } from '../src/protocols/anthropic-messages';
 import { createOpenAIChatProtocol } from '../src/protocols/openai-chat';
-import { streamAnthropicRequest, streamOpenAIRequest, type FetchLike, type UpstreamClient } from '../src/proxy/upstream';
+import { streamForClient, type FetchLike, type UpstreamClient } from '../src/proxy/upstream';
 
 const sseResponse = (body: string, status = 200): FetchLike =>
   async () => new Response(body, { status, headers: { 'Content-Type': 'text/event-stream' } });
@@ -15,8 +15,8 @@ const clientOf = (protocol: 'openai' | 'anthropic', fetchImpl: FetchLike): Upstr
   fetchImpl,
 });
 
-async function collect(events: AsyncIterable<LLMEvent>): Promise<LLMEvent[]> {
-  const out: LLMEvent[] = [];
+async function collect(events: AsyncIterable<InternalLLMEvent>): Promise<InternalLLMEvent[]> {
+  const out: InternalLLMEvent[] = [];
   for await (const event of events) out.push(event);
   return out;
 }
@@ -70,12 +70,12 @@ const OPENAI_MIXED = [
   'data: [DONE]\n\n',
 ].join('');
 
-const textOf = (events: LLMEvent[]): string =>
+const textOf = (events: InternalLLMEvent[]): string =>
   events.map((e) => (e.type === 'text' ? e.text : '')).join('');
 
 describe('cross-protocol stream: OpenAI client <- Anthropic upstream', () => {
   it('re-encodes text deltas and finish into OpenAI chunks', async () => {
-    const res = await streamOpenAIRequest(clientOf('anthropic', sseResponse(ANTHROPIC_TEXT)), {
+    const res = await streamForClient(clientOf('anthropic', sseResponse(ANTHROPIC_TEXT)), 'openai-chat', {
       model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true,
     } as never);
     const events = await collect(createOpenAIChatProtocol().decodeStream([await res.text()]));
@@ -84,16 +84,16 @@ describe('cross-protocol stream: OpenAI client <- Anthropic upstream', () => {
   });
 
   it('re-encodes a tool_use block into an OpenAI tool_calls delta with complete args', async () => {
-    const res = await streamOpenAIRequest(clientOf('anthropic', sseResponse(ANTHROPIC_TOOL)), {
+    const res = await streamForClient(clientOf('anthropic', sseResponse(ANTHROPIC_TOOL)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
     const events = await collect(createOpenAIChatProtocol().decodeStream([await res.text()]));
-    assert.deepEqual(events.find((e) => e.type === 'tool-call'), { type: 'tool-call', id: 'tu_1', name: 'read', args: { p: 1 } });
+    assert.deepEqual(events.find((e) => e.type === 'tool-call'), { type: 'tool-call', id: 'tu_1', name: 'read', args: { p: 1 }, rawArgs: '{"p":1}', index: 0 });
     assert.deepEqual(events.at(-1), { type: 'finish', finishReason: 'tool-calls' });
   });
 
   it('carries signed thinking as reasoning_content text', async () => {
-    const res = await streamOpenAIRequest(clientOf('anthropic', sseResponse(ANTHROPIC_THINKING)), {
+    const res = await streamForClient(clientOf('anthropic', sseResponse(ANTHROPIC_THINKING)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
     const events = await collect(createOpenAIChatProtocol().decodeStream([await res.text()]));
@@ -105,41 +105,53 @@ describe('cross-protocol stream: OpenAI client <- Anthropic upstream', () => {
 
 describe('cross-protocol stream: Anthropic client <- OpenAI upstream', () => {
   it('re-encodes text, tool-call and usage; drops unsigned reasoning', async () => {
-    const res = await streamAnthropicRequest(clientOf('openai', sseResponse(OPENAI_MIXED)), {
+    const res = await streamForClient(clientOf('openai', sseResponse(OPENAI_MIXED)), 'anthropic-messages', {
       model: 'm', max_tokens: 100, messages: [], stream: true,
     } as never);
     const wire = await res.text();
     const events = await collect(createAnthropicMessagesProtocol().decodeStream([wire]));
     assert.equal(textOf(events), 'Hi');
     assert.equal(events.some((e) => e.type === 'reasoning'), false);
-    assert.deepEqual(events.find((e) => e.type === 'tool-call'), { type: 'tool-call', id: 'call_1', name: 'read', args: { p: 1 } });
+    assert.deepEqual(events.find((e) => e.type === 'tool-call'), { type: 'tool-call', id: 'call_1', name: 'read', args: { p: 1 }, rawArgs: '{"p":1}', index: 1 });
     assert.deepEqual(events.at(-1), { type: 'finish', finishReason: 'tool-calls' });
     assert.ok(wire.includes('event: message_stop'));
   });
 });
 
-describe('same-protocol stream bypass is unchanged', () => {
-  it('OpenAI client + OpenAI upstream returns upstream bytes untouched', async () => {
-    const res = await streamOpenAIRequest(clientOf('openai', sseResponse(OPENAI_MIXED)), {
+describe('same-protocol stream is re-encoded from LLMEvents', () => {
+  it('OpenAI client + OpenAI upstream is re-encoded: text, reasoning and tool-call survive', async () => {
+    const res = await streamForClient(clientOf('openai', sseResponse(OPENAI_MIXED)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
-    assert.equal(await res.text(), OPENAI_MIXED);
+    const events = await collect(createOpenAIChatProtocol().decodeStream([await res.text()]));
+    assert.equal(textOf(events), 'Hi');
+    assert.equal(events.filter((e) => e.type === 'reasoning').map((e) => e.text).join(''), 'think');
+    const call = events.find((e) => e.type === 'tool-call');
+    assert.ok(call?.type === 'tool-call');
+    assert.equal(call.name, 'read');
+    assert.deepEqual(call.args, { p: 1 });
+    assert.deepEqual(events.at(-1), { type: 'finish', finishReason: 'tool-calls' });
   });
 
-  it('Anthropic client + Anthropic upstream returns upstream bytes untouched', async () => {
-    const res = await streamAnthropicRequest(clientOf('anthropic', sseResponse(ANTHROPIC_THINKING)), {
+  it('Anthropic client + Anthropic upstream is re-encoded: thinking and text survive', async () => {
+    const res = await streamForClient(clientOf('anthropic', sseResponse(ANTHROPIC_THINKING)), 'anthropic-messages', {
       model: 'm', max_tokens: 10, messages: [], stream: true,
     } as never);
-    assert.equal(await res.text(), ANTHROPIC_THINKING);
+    const events = await collect(createAnthropicMessagesProtocol().decodeStream([await res.text()]));
+    assert.equal(events.filter((e) => e.type === 'reasoning').map((e) => e.text).join(''), 'ponder');
+    assert.equal(textOf(events), 'ok');
   });
 
-  it('non-2xx upstream bodies pass through unchanged on a cross-protocol route', async () => {
+  it('non-2xx upstream bodies are converted to the client error envelope, keeping the status', async () => {
     const errorBody = '{"error":"rate limited"}';
-    const res = await streamOpenAIRequest(clientOf('anthropic', sseResponse(errorBody, 429)), {
+    const res = await streamForClient(clientOf('anthropic', sseResponse(errorBody, 429)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
     assert.equal(res.status, 429);
-    assert.equal(await res.text(), errorBody);
+    assert.match(res.headers.get('content-type') ?? '', /application\/json/);
+    const body = await res.json() as { error: { message: string; type: string } };
+    assert.equal(body.error.message, 'rate limited');
+    assert.equal(body.error.type, 'server_error');
   });
 });
 
@@ -183,7 +195,7 @@ describe('cross-protocol stream: id and model metadata', () => {
 
 describe('cross-protocol stream: JSON-200 upstream bodies', () => {
   it('synthesises an OpenAI SSE stream from a decodable Anthropic JSON body', async () => {
-    const res = await streamOpenAIRequest(clientOf('anthropic', jsonResponse(ANTHROPIC_JSON)), {
+    const res = await streamForClient(clientOf('anthropic', jsonResponse(ANTHROPIC_JSON)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
     const wire = await res.text();
@@ -195,7 +207,7 @@ describe('cross-protocol stream: JSON-200 upstream bodies', () => {
 
   it('forwards an undecodable JSON-200 body raw', async () => {
     const body = '{"type":"error","error":{"message":"nope"}}';
-    const res = await streamOpenAIRequest(clientOf('anthropic', jsonResponse(body)), {
+    const res = await streamForClient(clientOf('anthropic', jsonResponse(body)), 'openai-chat', {
       model: 'm', messages: [], stream: true,
     } as never);
     assert.equal(res.status, 200);
