@@ -10,6 +10,7 @@ import { bindControlEvents } from './js/controls.mjs';
 import { initViews } from './js/views.mjs';
 import { initSettings } from './js/settings.mjs';
 import { mountLayout } from './js/layout.mjs';
+import { initTheme } from './js/theme.mjs';
 
 function init() {
   bindFormEvents();
@@ -17,6 +18,7 @@ function init() {
   normalizeStreamHead();   // self-heal the stream header structure at init
   bindControlEvents();
   initViews();              // client-side page routing (hashchange between views)
+  initTheme();              // light/dark palette toggle (header button; see js/theme.mjs)
   initSettings();           // settings popup modal: header gear icon -> API-providers manager (see js/settings.mjs)
   renderMatcherFields(state.curMatcherType);
   renderActionFields(state.curActionType);

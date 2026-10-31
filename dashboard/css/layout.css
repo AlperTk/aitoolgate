@@ -4,7 +4,7 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgba(13, 17, 23, 0.8);
+  background: var(--scrim-bg);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
@@ -89,10 +89,10 @@
   border-bottom: 2px solid transparent;
   transition: color 0.15s ease, background 0.15s ease;
 }
-.nav-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.nav-link:hover { color: var(--text); background: var(--hover-bg); }
 .nav-link.is-active {
   color: var(--text);
-  background: rgba(76, 141, 255, 0.16);
+  background: var(--accent-tint-strong);
   border-bottom-color: var(--accent);
 }
 /* Live status pill (green = connected, muted = polling fallback). */
@@ -111,7 +111,7 @@
   white-space: nowrap;
 }
 .conn .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); flex: none; }
-.conn.connected { color: var(--c-st-ok); border-color: rgba(126, 212, 145, 0.35); }
+.conn.connected { color: var(--c-st-ok); border-color: var(--c-st-ok-border); }
 .conn.connected .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .conn.disconnected { color: var(--muted); }
 .conn.disconnected .dot { background: var(--text-faint); }
@@ -122,8 +122,8 @@
   padding: 0.6rem 0.9rem;
   border: 1px solid var(--border);
   border-left: 3px solid var(--amber);
-  background: rgba(210, 153, 34, 0.08);
-  color: #f3d08a;
+  background: var(--amber-tint);
+  color: var(--c-st-amber);
   border-radius: var(--radius);
   font-size: var(--fs-md);
 }

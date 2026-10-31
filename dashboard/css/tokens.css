@@ -51,6 +51,110 @@
      --scroll-thumb-hover. */
   --scroll-thumb: rgba(139, 152, 165, 0.5);       /* ~50% muted gray (default thumb) */
   --scroll-thumb-hover: rgba(139, 152, 165, 0.85); /* ~85% muted gray (hover/horizontal) */
+
+  /* Component color roles (dark values). Alpha tints are kept exact so the dark theme is unchanged. */
+  --bg-glow: #152036;
+  --scrim-bg: rgba(13, 17, 23, 0.8);
+  --input-bg: #0f141b;
+  --btn-hover-bg: #243040;
+  --on-accent: #fff;
+  --accent-hover: #3a7bf0;
+  --primary-fill: #2563eb;       /* primary button fill: darker than --accent so white text reaches AA */
+  --primary-fill-hover: #1e40af;
+  --hover-bg: rgba(255, 255, 255, 0.05);
+  --row-hover: rgba(255, 255, 255, 0.03);
+  --row-stripe: rgba(255, 255, 255, 0.045);
+  --provider-hover: rgba(255, 255, 255, 0.035);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --focus-ring: rgba(76, 141, 255, 0.18);
+  --accent-tint-faint: rgba(76, 141, 255, 0.04);
+  --accent-tint: rgba(76, 141, 255, 0.08);
+  --accent-tint-active: rgba(76, 141, 255, 0.1);
+  --accent-tint-md: rgba(76, 141, 255, 0.12);
+  --accent-tint-strong: rgba(76, 141, 255, 0.16);
+  --amber-tint: rgba(210, 153, 34, 0.08);
+  --badge-pending-bg: rgba(139, 188, 255, 0.14);
+  --badge-pending-border: rgba(139, 188, 255, 0.3);
+  --badge-ok-bg: rgba(126, 212, 145, 0.14);
+  --badge-ok-border: rgba(126, 212, 145, 0.3);
+  --badge-fail-bg: rgba(255, 122, 92, 0.14);
+  --badge-fail-border: rgba(255, 122, 92, 0.3);
+  --badge-amber-bg: rgba(243, 208, 138, 0.14);
+  --badge-amber-border: rgba(243, 208, 138, 0.3);
+  --proto-anthropic-bg: rgba(243, 208, 138, 0.13);
+  --c-st-ok-border: rgba(126, 212, 145, 0.35);
+  --danger-text: #ff9b94;
+  --danger-border: rgba(248, 81, 73, 0.4);
+  --danger-border-hover: rgba(248, 81, 73, 0.55);
+  --danger-tint: rgba(248, 81, 73, 0.08);
+  --danger-tint-soft: rgba(248, 81, 73, 0.1);
+  --danger-tint-hover: rgba(248, 81, 73, 0.16);
+  --ok-border: rgba(63, 185, 80, 0.35);
+  --ok-tint: rgba(63, 185, 80, 0.1);
+  --ok-tint-soft: rgba(63, 185, 80, 0.07);
+}
+
+/* Light palette: selected by <html data-theme="light"> (see js/theme.mjs). Overrides only; dark values above are the default. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-2: #eef2f6;
+  --border: #7d8590;
+  --text: #1f2328;
+  --muted: #57606a;
+  --accent: #0969da;
+  --green: #1a7f37;
+  --red: #cf222e;
+  --amber: #9a6700;
+  --text-faint: rgba(87, 96, 106, 0.8);
+  --c-st-ok: #1a7f37;
+  --c-st-pending: #0550ae;
+  --c-st-fail: #cf222e;
+  --c-st-amber: #7d4e00;
+  --shadow: 0 1px 0 rgba(31, 35, 40, 0.08), 0 8px 24px rgba(31, 35, 40, 0.1);
+  --shadow-sm: 0 1px 0 rgba(31, 35, 40, 0.08), 0 2px 8px rgba(31, 35, 40, 0.08);
+  --scroll-thumb: rgba(87, 96, 106, 0.45);
+  --scroll-thumb-hover: rgba(87, 96, 106, 0.75);
+  --bg-glow: #ffffff;
+  --scrim-bg: rgba(246, 248, 250, 0.85);
+  --input-bg: #ffffff;
+  --btn-hover-bg: #eaeef2;
+  --on-accent: #ffffff;
+  --accent-hover: #0550ae;
+  --primary-fill: #0969da;
+  --primary-fill-hover: #0550ae;
+  --hover-bg: rgba(31, 35, 40, 0.05);
+  --row-hover: rgba(31, 35, 40, 0.03);
+  --row-stripe: rgba(31, 35, 40, 0.035);
+  --provider-hover: rgba(31, 35, 40, 0.03);
+  --border-strong: rgba(31, 35, 40, 0.25);
+  --focus-ring: rgba(9, 105, 218, 0.25);
+  --accent-tint-faint: rgba(9, 105, 218, 0.04);
+  --accent-tint: rgba(9, 105, 218, 0.08);
+  --accent-tint-active: rgba(9, 105, 218, 0.1);
+  --accent-tint-md: rgba(9, 105, 218, 0.12);
+  --accent-tint-strong: rgba(9, 105, 218, 0.16);
+  --amber-tint: rgba(154, 103, 0, 0.1);
+  --badge-pending-bg: rgba(5, 80, 174, 0.1);
+  --badge-pending-border: rgba(5, 80, 174, 0.3);
+  --badge-ok-bg: rgba(26, 127, 55, 0.1);
+  --badge-ok-border: rgba(26, 127, 55, 0.3);
+  --badge-fail-bg: rgba(207, 34, 46, 0.1);
+  --badge-fail-border: rgba(207, 34, 46, 0.3);
+  --badge-amber-bg: rgba(154, 103, 0, 0.12);
+  --badge-amber-border: rgba(154, 103, 0, 0.3);
+  --proto-anthropic-bg: rgba(154, 103, 0, 0.1);
+  --c-st-ok-border: rgba(26, 127, 55, 0.35);
+  --danger-text: #cf222e;
+  --danger-border: rgba(207, 34, 46, 0.4);
+  --danger-border-hover: rgba(207, 34, 46, 0.55);
+  --danger-tint: rgba(207, 34, 46, 0.06);
+  --danger-tint-soft: rgba(207, 34, 46, 0.08);
+  --danger-tint-hover: rgba(207, 34, 46, 0.14);
+  --ok-border: rgba(26, 127, 55, 0.35);
+  --ok-tint: rgba(26, 127, 55, 0.08);
+  --ok-tint-soft: rgba(26, 127, 55, 0.05);
 }
 
 * { box-sizing: border-box; }
@@ -58,7 +162,7 @@
 html, body { margin: 0; padding: 0; }
 
 body {
-  background: radial-gradient(1200px 600px at 50% -10%, #152036 0%, var(--bg) 55%) fixed, var(--bg);
+  background: radial-gradient(1200px 600px at 50% -10%, var(--bg-glow) 0%, var(--bg) 55%) fixed, var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 15px;

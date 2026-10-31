@@ -52,7 +52,7 @@
   cursor: pointer;
   user-select: none;
 }
-.row-main:hover { background: rgba(255, 255, 255, 0.03); }
+.row-main:hover { background: var(--row-hover); }
 /* In-progress rows nudge left so they read as still-running; drops automatically when the
    data-status attribute flips off "pending" (set/flipped by live-view.mjs, zero JS here). */
 li[data-status="pending"] > .row-main { margin-left:-4px; }
@@ -74,7 +74,7 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .s-tokens-in, .s-tokens-out, .s-tokens-total, .s-size { color: var(--text-faint); }
 /* Zebra striping for the dense live-call stream (rows are direct <li> children of
    #stream-list); pairs with the existing per-row border for easy row scanning. */
-#stream-list .stream-row:nth-child(even) { background: rgba(255, 255, 255, 0.045); }
+#stream-list .stream-row:nth-child(even) { background: var(--row-stripe); }
 .s-expand {
   font-size: var(--fs-2xs);
   color: var(--muted);
@@ -138,7 +138,7 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .rd-pre {
   margin: 0;
   padding: 0.4rem 0.6rem;
-  background: #0f141b;
+  background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow-x: auto;
@@ -196,7 +196,7 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 }
 .stream-filters input[type="text"] {
   width: 130px;
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -207,10 +207,10 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .stream-filters input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .stream-filters select {
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -221,7 +221,7 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .stream-filters select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 #stream-count { margin-left: auto; white-space: nowrap; }
 
@@ -236,10 +236,10 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
   border-radius: 999px;
   border: 1px solid transparent;
 }
-.badge-pending { background: rgba(139, 188, 255, 0.14); color: var(--c-st-pending); border-color: rgba(139, 188, 255, 0.3); }
-.badge-ok { background: rgba(126, 212, 145, 0.14); color: var(--c-st-ok); border-color: rgba(126, 212, 145, 0.3); }
-.badge-fail { background: rgba(255, 122, 92, 0.14); color: var(--c-st-fail); border-color: rgba(255, 122, 92, 0.3); }
-.badge-interv { background: rgba(243, 208, 138, 0.14); color: var(--c-st-amber); border-color: rgba(243, 208, 138, 0.3); }
+.badge-pending { background: var(--badge-pending-bg); color: var(--c-st-pending); border-color: var(--badge-pending-border); }
+.badge-ok { background: var(--badge-ok-bg); color: var(--c-st-ok); border-color: var(--badge-ok-border); }
+.badge-fail { background: var(--badge-fail-bg); color: var(--c-st-fail); border-color: var(--badge-fail-border); }
+.badge-interv { background: var(--badge-amber-bg); color: var(--c-st-amber); border-color: var(--badge-amber-border); }
 
 /* Stream rows (call / orphan + intervention) render tonal status/action pills: a soft
    tinted fill, a small leading status dot, vertically centered in the row, and compact
@@ -289,10 +289,10 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .top-tools th.sortable:hover { color: var(--text); background: var(--surface-2); }
 .top-tools th.sortable.active { color: var(--accent); }
 .top-tools .sort-ind { display: inline-block; margin-left: 0.3rem; font-size: var(--fs-2xs); opacity: 0.8; }
-.top-tools th.active { background: rgba(76, 141, 255, 0.08); }
+.top-tools th.active { background: var(--accent-tint); }
 .top-tools th.active ~ * {} /* no-op to keep specificity simple */
 /* Highlight active sorted column cells via a class added by JS (optional) */
-.top-tools td.sorted-col { background: rgba(76, 141, 255, 0.04); }
+.top-tools td.sorted-col { background: var(--accent-tint-faint); }
 
 /* ------------------------------- scrollbars ------------------------ */
 /* Refined dark-theme scrollbar scoped ONLY to the dashboard's scroll

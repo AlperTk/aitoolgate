@@ -11,11 +11,11 @@
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
-.btn:hover { background: #243040; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
-.btn-primary:hover { background: #3a7bf0; }
-.btn-danger { color: #ff9b94; border-color: rgba(248, 81, 73, 0.4); background: rgba(248, 81, 73, 0.08); }
-.btn-danger:hover { background: rgba(248, 81, 73, 0.16); border-color: rgba(248, 81, 73, 0.55); }
+.btn:hover { background: var(--btn-hover-bg); }
+.btn-primary { background: var(--primary-fill); border-color: var(--primary-fill); color: var(--on-accent); font-weight: var(--fw-semibold); }
+.btn-primary:hover { background: var(--primary-fill-hover); }
+.btn-danger { color: var(--danger-text); border-color: var(--danger-border); background: var(--danger-tint); }
+.btn-danger:hover { background: var(--danger-tint-hover); border-color: var(--danger-border-hover); }
 .btn[hidden] { display: none; }
 
 /* Global controls toolbar: time range + clear on-screen history + export. */
@@ -37,7 +37,7 @@
 }
 .dash-controls select,
 .dash-controls input[type="datetime-local"] {
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -49,6 +49,6 @@
 .dash-controls input[type="datetime-local"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .dash-controls .time-custom[hidden] { display: none; }

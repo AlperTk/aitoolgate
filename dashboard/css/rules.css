@@ -39,7 +39,7 @@
 .field select,
 .field textarea {
   width: 100%;
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -51,11 +51,11 @@
 .field input:focus, .field select:focus, .field textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .check { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text); font-size: var(--fs-md); cursor: pointer; user-select: none; }
 .check input { width: 1rem; height: 1rem; accent-color: var(--accent); }
-.form-error { color: #ff9b94; font-size: var(--fs-sm); min-height: 1em; margin-top: 0.3rem; }
+.form-error { color: var(--danger-text); font-size: var(--fs-sm); min-height: 1em; margin-top: 0.3rem; }
 .form-error[hidden] { display: none; }
 
 /* ============================ page shell / sub-views ================= */
@@ -79,9 +79,9 @@
 .rule-saved-note {
   margin-bottom: 1rem;
   padding: 0.6rem 0.9rem;
-  border: 1px solid rgba(63, 185, 80, 0.35);
+  border: 1px solid var(--ok-border);
   border-left: 3px solid var(--green);
-  background: rgba(63, 185, 80, 0.1);
+  background: var(--ok-tint);
   color: var(--c-st-ok);
   border-radius: var(--radius);
   font-size: var(--fs-md);
@@ -102,7 +102,7 @@
   border-radius: 7px;
   transition: color 0.15s ease, background 0.15s ease;
 }
-.link-back:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.link-back:hover { color: var(--text); background: var(--hover-bg); }
 
 /* Roomy, centered empty state for the rules list (icon + text + CTA). */
 .empty-lg {
@@ -120,8 +120,6 @@
    below gets an explicit [hidden] rule). */
 .empty-lg[hidden] { display: none; }
 .empty-icon { color: var(--muted); opacity: 0.6; margin-bottom: 0.25rem; }
-.empty-cta { margin-top: 0.75rem; }
-
 /* --------------------- rule list (responsive card grid) ------------- */
 /* Single column below 960px (natural page flow); a multi-column auto-fill
    grid at >=961px within the centered 1400px rules page. */
@@ -289,7 +287,7 @@
   margin-top: 0.7rem;
   padding: 0.5rem 0.7rem;
   border-left: 3px solid var(--accent);
-  background: rgba(76, 141, 255, 0.08);
+  background: var(--accent-tint);
   color: var(--text);
   border-radius: 7px;
   font-size: var(--fs-sm);

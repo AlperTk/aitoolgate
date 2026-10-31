@@ -13,7 +13,8 @@
    styles.css (loaded after all @imports) so they apply reliably. Only the
    modal-internal focus ring for #open-settings remains here (see below). */
 /* ---------------------- header gear trigger (icon button) ----------- */
-#open-settings {
+#open-settings,
+#theme-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -25,10 +26,10 @@
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
 }
-#open-settings:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
-#open-settings svg { width: 1.05rem; height: 1.05rem; display: block; }
+#open-settings:hover, #theme-toggle:hover { color: var(--text); background: var(--hover-bg); }
+#open-settings svg, #theme-toggle svg { width: 1.05rem; height: 1.05rem; display: block; }
 /* --------------------- modal overlay / backdrop (dim) --------------- */
-.settings-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(13, 17, 23, 0.8); }
+.settings-backdrop { position: fixed; inset: 0; z-index: 90; background: var(--scrim-bg); }
 .settings-backdrop[hidden] { display: none; }
 .settings-backdrop.is-open { display: flex; align-items: center; justify-content: center; padding: 1.25rem; }
 .settings-card {
@@ -44,7 +45,7 @@
   flex-direction: column;
 }
 .settings-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.9rem; }
-.icon-btn { padding: 0.32rem 0.6rem; line-height: 1; font-size: var(--fs-md); }
+.icon-btn { padding: 0.32rem 0.6rem; line-height: 1; font-size: var(--fs-md); min-width: 35px; min-height: 35px; }
 
 /* master–detail two-column body: left rail | right panel */
 .settings-body {
@@ -87,8 +88,8 @@
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
 }
-.rail-item:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
-.rail-item.is-active { color: var(--accent); background: rgba(76, 141, 255, 0.1); font-weight: var(--fw-semibold); }
+.rail-item:hover { color: var(--text); background: var(--hover-bg); }
+.rail-item.is-active { color: var(--accent); background: var(--accent-tint-active); font-weight: var(--fw-semibold); }
 
 .settings-subpane[hidden] { display: none; }
 .settings-placeholder h3 { margin-bottom: 0.4rem; }
@@ -118,18 +119,27 @@
   user-select: none;
 }
 .provider-row:last-child { border-bottom: none; }
-.provider-row:hover { background: rgba(255, 255, 255, 0.035); }   /* hover emphasis */
-.provider-row.is-active { background: rgba(63, 185, 80, 0.07); }  /* the active provider row */
+.provider-row:hover { background: var(--provider-hover); }   /* hover emphasis */
+.provider-row.is-active { background: var(--ok-tint-soft); }  /* the active provider row */
 .provider-row.is-loaded { box-shadow: inset 2px 0 0 var(--accent); } /* row currently in the editor form below */
 
 .prov-radio {
   grid-area: act;
   justify-self: start;
-  width: 0.95rem;
-  height: 0.95rem;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
   margin: 0;
-  accent-color: var(--green);
+  border-radius: 50%;
+  border: 2px solid var(--muted);   /* unchecked ring: ≥3:1 vs --surface in both themes */
+  background: transparent;
   cursor: pointer;
+}
+.prov-radio:checked {
+  background: var(--green);
+  border-color: var(--green);
+  box-shadow: inset 0 0 0 3px var(--surface);   /* inner dot in card color, distinct from fill */
 }
 .provider-info { grid-area: info; min-width: 0; display: flex; flex-direction: column; gap: 0.12rem; }
 .provider-name { font-weight: var(--fw-semibold); font-size: var(--fs-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -137,14 +147,16 @@
 .prov-aux { grid-area: aux; display: flex; align-items: center; gap: 0.55rem; }
 
 /* Protocol chip: geometry/text from the shared .badge base; tonal variants are new. */
-.proto-openai    { background: rgba(139, 188, 255, 0.14); color: var(--c-st-pending); border-color: rgba(139, 188, 255, 0.3); }
-.proto-anthropic { background: rgba(243, 208, 138, 0.13); color: var(--c-st-amber);    border-color: rgba(243, 208, 138, 0.3); }
+.proto-openai    { background: var(--badge-pending-bg); color: var(--c-st-pending); border-color: var(--badge-pending-border); }
+.proto-anthropic { background: var(--proto-anthropic-bg); color: var(--c-st-amber);    border-color: var(--badge-amber-border); }
 
 /* Subtle per-row delete affordance (red on hover, matching .btn-danger tone). */
 .prov-del {
   background: none;
   border: none;
   padding: 0.15rem 0.35rem;
+  min-width: 24px;
+  min-height: 24px;
   font-size: var(--fs-md);
   line-height: 1;
   color: var(--muted);
@@ -152,7 +164,7 @@
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
 }
-.prov-del:hover { color: #ff9b94; background: rgba(248, 81, 73, 0.1); }
+.prov-del:hover { color: var(--danger-text); background: var(--danger-tint-soft); }
 
 /* ------------------------------ editor form ------------------------ */
 /* Reuses .field / .field-row / .hint / .section-title / .form-error from rules.css. */
@@ -161,7 +173,7 @@
 .pf-password {
   flex: 1 1 auto;
   min-width: 0;
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -169,7 +181,7 @@
   font: inherit;
   font-size: var(--fs-sm);
 }
-.pf-password:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18); }
+.pf-password:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 .key-toggle { padding: 0.35rem 0.6rem; font-size: var(--fs-xs); }   /* tighter than default .btn, loaded last so it wins */
 .prov-foot { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 1rem; }
 

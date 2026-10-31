@@ -32,8 +32,11 @@
   }
   .stream-head,
   .row-main {
-    grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) minmax(0, 3.5rem) minmax(0, 3.5rem) 1.2rem;
+    grid-template-columns: minmax(0, 4.6rem) minmax(6.5rem, 1fr) minmax(4rem, 1fr) minmax(0, 4.4rem) minmax(3.5rem, 1fr) minmax(3.5rem, 1fr) 1.2rem;
   }
+  /* Tool/Session/In/Out keep a readable minimum (instead of collapsing to 0); the call list
+     scrolls sideways inside its card when the row is wider than the viewport. */
+  .list-wrap { overflow-x: auto; }
   /* Safety net so the wide top-tools table can't push the page wider either. */
   .tools-scroll { overflow-x: auto; }
 }
@@ -70,6 +73,20 @@
     min-width: 0;      /* allow a group to shrink below its widest child */
     flex-wrap: wrap;   /* let a group's own controls (e.g. the 4 Export buttons) wrap onto new lines */
     gap: 0.5rem;
+  }
+  /* Header at phone width: nav on its own row; theme toggle, settings gear and Live
+     badge form one compact cluster on the row below, with 35px square icon buttons. */
+  .app-header-right { gap: 0.5rem; }
+  .app-nav { flex: 1 1 100%; }
+  .app-header-right #theme-toggle,
+  .app-header-right #open-settings {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 35px;
+    height: 35px;
+    padding: 0;
   }
 }
 
@@ -140,6 +157,6 @@
     z-index: 2;
   }
   .tools-scroll .dt-table th.active {
-    background: rgba(76, 141, 255, 0.12);
+    background: var(--accent-tint-md);
   }
 }

@@ -8,7 +8,7 @@
 .dt-toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
 .dt-filter {
   width: 130px;
-  background: #0f141b;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -16,14 +16,14 @@
   font: inherit;
   font-size: var(--fs-sm);
 }
-.dt-filter:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18); }
+.dt-filter:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 .dt-count { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dt-table { width: 100%; border-collapse: collapse; }
 .dt-table th, .dt-table td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); }
 .dt-table th { color: var(--muted); font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.4px; }
 /* Body cells: a consistent, slightly denser line-height shared with the stream rows. */
 .dt-table td { font-size: var(--fs-md); line-height: var(--lh-snug); }
-.dt-table tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+.dt-table tbody tr:hover { background: var(--row-hover); }
 .dt-table th:first-child, .dt-table td:first-child { min-width: 0; word-break: break-word; }
 .dt-table tbody tr:last-child td { border-bottom: none; }
 /* Right-aligned numeric column (reuses the shared .num-col convention). */
@@ -34,7 +34,7 @@
 .dt-table th.sortable { cursor: pointer; user-select: none; transition: color 0.15s, background 0.15s; }
 .dt-table th.sortable:hover { color: var(--text); background: var(--surface-2); }
 .dt-table th.sortable.active { color: var(--accent); }
-.dt-table th.active { background: rgba(76, 141, 255, 0.08); }
+.dt-table th.active { background: var(--accent-tint); }
 .dt-ind { display: inline-block; margin-left: 0.3rem; font-size: var(--fs-2xs); opacity: 0.8; }
 /* Empty-state row: a single centered, muted message spanning all columns. */
 .dt-empty td { text-align: center; color: var(--muted); padding: 1rem 0.5rem; }
