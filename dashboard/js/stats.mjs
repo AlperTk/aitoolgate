@@ -8,14 +8,14 @@
  * ========================================================================== */
 import { $, fmtOpt, setStatValue, showNotice, clearNotice, errMsg } from './dom.mjs';
 import { formatCount } from './format.mjs';
-import { NO_DATA_TIP } from './constants.mjs';
 import { createDataTable } from './table.mjs';
+import { t, onLocaleChange } from './i18n/index.mjs';
 
 // Render one duration/token number cell, attaching the "no data yet" tooltip
 // only when the value is still absent (early in the run).
 export function statNumCell(v) {
-  var t = fmtOpt(v);
-  return '<td class="num-col"' + (t === '\u2014' ? ' title="' + NO_DATA_TIP + '"' : '') + '>' + t + '</td>';
+  var t0 = fmtOpt(v);
+  return '<td class="num-col"' + (t0 === '\u2014' ? ' title="' + t('noData.tip') + '"' : '') + '>' + t0 + '</td>';
 }
 
 /* ---- Top tools table (module-local; built once via createDataTable) ---- */
@@ -27,20 +27,31 @@ var _lastTop = [];        // latest top-tools array (client-side field mapping)
 // empty-state row, and re-renders only its <tbody> on data changes.
 export function initTopTools() {
   if (topToolsTable) return;
+  var noDataTip = t('noData.tip');
   topToolsTable = createDataTable({
     container: $('top-tools'),
     columns: [
-      { key: 'toolName', label: 'Tool' },
-      { key: 'count', label: 'Calls', align: 'right' },
-      { key: 'avgCallTokPerCall', label: 'Avg call (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) },
-      { key: 'avgRespTokPerCall', label: 'Avg resp (tok/call)', align: 'right', headerTitle: NO_DATA_TIP, emptyTitle: NO_DATA_TIP, render: (v) => fmtOpt(v) }
+      { key: 'toolName', label: t('stats.top.tool') },
+      { key: 'count', label: t('stats.top.calls'), align: 'right' },
+      { key: 'avgCallTokPerCall', label: t('stats.top.avgCall'), align: 'right', headerTitle: noDataTip, emptyTitle: noDataTip, render: (v) => fmtOpt(v) },
+      { key: 'avgRespTokPerCall', label: t('stats.top.avgResp'), align: 'right', headerTitle: noDataTip, emptyTitle: noDataTip, render: (v) => fmtOpt(v) }
     ],
     rows: _lastTop,
     filterable: true,
     showCount: true,
-    emptyMessage: 'No tool data yet.'
+    emptyMessage: t('stats.top.empty')
   });
 }
+
+// Re-render the top-tools table so its headers, placeholder and empty text use the
+// active locale (the widget's labels are fixed at creation, so it is rebuilt).
+function relabelTopTools() {
+  if (!topToolsTable) return;
+  topToolsTable.destroy();
+  topToolsTable = null;
+  initTopTools();
+}
+onLocaleChange(relabelTopTools);
 
 // GET /api/stats and refresh the counts + top-tools panel. Fetched on load
 // and every STATS_POLL_MS so numbers stay current even if the WS drops.
@@ -59,20 +70,20 @@ export async function refreshStats() {
     // Map the server aggregate fields onto the table's column keys, then push
     // them into the table. Only when it exists — app.js may call this before
     // initTopTools(), which then seeds real data via rows:_lastTop.
-    _lastTop = (s.topTools || []).map(function (t) {
+    _lastTop = (s.topTools || []).map(function (t0) {
       // Per-tool average call tokens (÷call count) and average response-payload tokens (÷resolved
       // results); each null (= —) when there is nothing to divide by.
       return {
-        toolName: t.toolName,
-        count: t.count,
-        avgCallTokPerCall: (t.totalCallTokens != null && t.count > 0) ? Math.round(t.totalCallTokens / t.count) : null,
-        avgRespTokPerCall: t.resolvedCount ? Math.round(t.totalResponseTokens / t.resolvedCount) : null
+        toolName: t0.toolName,
+        count: t0.count,
+        avgCallTokPerCall: (t0.totalCallTokens != null && t0.count > 0) ? Math.round(t0.totalCallTokens / t0.count) : null,
+        avgRespTokPerCall: t0.resolvedCount ? Math.round(t0.totalResponseTokens / t0.resolvedCount) : null
       };
     });
     if (topToolsTable) topToolsTable.setData(_lastTop);
     clearNotice();
   } catch (e) {
-    showNotice('Stats unavailable: ' + errMsg(e));
+    showNotice(t('stats.error.unavailable', { detail: errMsg(e) }));
   }
 }
 
@@ -86,7 +97,7 @@ export async function clearStats() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     await refreshStats();
   } catch (e) {
-    showNotice('Stats clear failed: ' + errMsg(e));
+    showNotice(t('stats.error.clearFailed', { detail: errMsg(e) }));
   }
 }
 

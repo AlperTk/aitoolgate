@@ -17,6 +17,7 @@
  * ========================================================================== */
 import { $, el, isPlainObject, errMsg, showNotice, clearNotice, showFormError } from './dom.mjs';
 import { state } from './state.mjs';
+import { t, onLocaleChange } from './i18n/index.mjs';
 import { MATCHER_FIELDS, ACTION_FIELDS } from './rule-schema.mjs';
 
 /* ==================== human-first type-select labels ==================== */
@@ -25,21 +26,21 @@ import { MATCHER_FIELDS, ACTION_FIELDS } from './rule-schema.mjs';
 // <span class="muted">(identifier)</span> in the static HTML options and the
 // dynamically-added options built by renderTypeOption).
 var MATCHER_TYPE_LABELS = {
-  toolName: 'Tool name',
-  argPattern: 'Argument pattern',
-  loop: 'Loop · repeated calls',
-  always: 'Always'
+  toolName: 'rules.type.matcher.toolName',
+  argPattern: 'rules.type.matcher.argPattern',
+  loop: 'rules.type.matcher.loop',
+  always: 'rules.type.matcher.always'
 };
 var ACTION_TYPE_LABELS = {
-  hideTool: 'Hide tool',
-  rewriteArgs: 'Rewrite arguments',
-  injectMessage: 'Inject a message',
-  addDescription: 'Add a description'
+  hideTool: 'rules.type.action.hideTool',
+  rewriteArgs: 'rules.type.action.rewriteArgs',
+  injectMessage: 'rules.type.action.injectMessage',
+  addDescription: 'rules.type.action.addDescription'
 };
 // The human-first phrase for a matcher / action type (falls back to the raw
 // identifier for an unknown type).
-export function matcherTypeLabel(type) { return MATCHER_TYPE_LABELS[type] || String(type || ''); }
-export function actionTypeLabel(type) { return ACTION_TYPE_LABELS[type] || String(type || ''); }
+export function matcherTypeLabel(type) { return MATCHER_TYPE_LABELS[type] ? t(MATCHER_TYPE_LABELS[type]) : String(type || ''); }
+export function actionTypeLabel(type) { return ACTION_TYPE_LABELS[type] ? t(ACTION_TYPE_LABELS[type]) : String(type || ''); }
 // Build a <select> option whose visible text is "Phrase (identifier)", the
 // identifier rendered as a muted secondary hint. In the browser this is a text
 // node + a <span class="muted">(identifier)</span>; in DOM-less test stubs (no
@@ -76,9 +77,9 @@ export function renderRuleRow(spec) {
   var cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = enabled;
-  cb.setAttribute('aria-label', 'Enabled');
+  cb.setAttribute('aria-label', t('rules.card.enabled'));
   toggle.appendChild(cb);
-  toggle.appendChild(el('span', null, enabled ? 'Enabled' : 'Disabled'));
+  toggle.appendChild(el('span', null, enabled ? t('rules.card.enabled') : t('rules.card.disabled')));
   var sevType = spec.action && spec.action.type ? String(spec.action.type) : '\u2014';
   top.appendChild(toggle);
   top.appendChild(el('span', 'badge rc-sev ' + severityClass(sevType), sevType));
@@ -87,21 +88,21 @@ export function renderRuleRow(spec) {
 
   // Body: matcher / action summaries (+ priority when set).
   var body = el('div', 'rc-body');
-  body.appendChild(summaryCell('Matcher', matcherSummary(spec.matcher)));
-  body.appendChild(summaryCell('Action', actionSummary(spec.action, spec.matcher)));
-  if (typeof spec.priority === 'number') body.appendChild(summaryCell('Priority', String(spec.priority)));
+  body.appendChild(summaryCell(t('rules.card.matcher'), matcherSummary(spec.matcher)));
+  body.appendChild(summaryCell(t('rules.card.action'), actionSummary(spec.action, spec.matcher)));
+  if (typeof spec.priority === 'number') body.appendChild(summaryCell(t('rules.card.priority'), String(spec.priority)));
   card.appendChild(body);
 
   // Footer: bare rule id (secondary, muted) leading + edit/delete actions trailing.
   var foot = el('div', 'rc-foot');
   if (spec.id) foot.appendChild(el('span', 'rc-id', spec.id));
   var actions = el('div', 'rc-actions');
-  var editBtn = el('a', 'btn', 'Edit');
+  var editBtn = el('a', 'btn', t('rules.card.edit'));
   editBtn.href = '#/rules/' + encodeURIComponent(spec.id || '');
-  editBtn.title = 'Edit rule';
-  var delBtn = el('button', 'btn btn-danger', 'Delete');
+  editBtn.title = t('rules.editTitle');
+  var delBtn = el('button', 'btn btn-danger', t('rules.card.delete'));
   delBtn.type = 'button';
-  delBtn.title = 'Delete rule';
+  delBtn.title = t('rules.card.deleteTitle');
   actions.appendChild(editBtn);
   actions.appendChild(delBtn);
   foot.appendChild(actions);
@@ -132,7 +133,7 @@ export async function refreshRules() {
     renderRules(await res.json());
     clearNotice();
   } catch (e) {
-    showNotice('Rules unavailable: ' + errMsg(e));
+    showNotice(t('rules.notice.unavailable', { error: errMsg(e) }));
   }
 }
 // Toggle a rule's enabled flag via PATCH /api/rules/{id} with a partial body.
@@ -143,10 +144,10 @@ export async function toggleEnabled(spec, enabled) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: enabled })
     });
-    if (!res.ok && res.status !== 404) showNotice('Toggle failed: HTTP ' + res.status);
+    if (!res.ok && res.status !== 404) showNotice(t('rules.notice.toggleFailed', { status: res.status }));
     refreshRules();
   } catch (e) {
-    showNotice('Toggle error: ' + errMsg(e));
+    showNotice(t('rules.notice.toggleError', { error: errMsg(e) }));
   }
 }
 // Delete a rule via DELETE /api/rules/{id}.
@@ -154,13 +155,13 @@ export async function deleteRule(spec) {
   // The confirm shows the humanized label (description, or a friendly
   // matcher+action summary) instead of leaking a raw rule id.
   var label = ruleLabel(spec);
-  if (!window.confirm('Delete rule "' + label + '"?')) return;
+  if (!window.confirm(t('rules.notice.confirmDelete', { label: label }))) return;
   try {
     var res = await fetch('api/rules/' + encodeURIComponent(spec.id), { method: 'DELETE' });
-    if (!res.ok && res.status !== 404) showNotice('Delete failed: HTTP ' + res.status);
+    if (!res.ok && res.status !== 404) showNotice(t('rules.notice.deleteFailed', { status: res.status }));
     refreshRules();
   } catch (e) {
-    showNotice('Delete error: ' + errMsg(e));
+    showNotice(t('rules.notice.deleteError', { error: errMsg(e) }));
   }
 }
 
@@ -177,7 +178,7 @@ export async function createRule(spec) {
   var data = null;
   try { data = await res.json(); } catch (_e) { /* non-JSON (204 / error text) */ }
   if (!res.ok) {
-    showNotice('Rule not created: ' + (data && data.error ? data.error : 'HTTP ' + res.status));
+    showNotice(t('rules.notice.notCreated', { error: data && data.error ? data.error : t('rules.notice.httpStatus', { status: res.status }) }));
     throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
   }
   return data;
@@ -254,9 +255,9 @@ function hideToolToolNames(toolNames) {
 // block-list with several entries collapses to a count ("hide N tools").
 function hideToolSummary(toolNames) {
   var info = hideToolToolNames(toolNames);
-  if (info.entries.length === 0) return 'hide tools';
-  if (info.entries.length === 1) return info.allow ? 'hide all except ' + info.base[0] : 'hide ' + info.base[0];
-  return info.allow ? 'hide all except ' + info.base.join(' + ') : 'hide ' + info.entries.length + ' tools';
+  if (info.entries.length === 0) return t('rules.summary.hideTools');
+  if (info.entries.length === 1) return info.allow ? t('rules.summary.hideAllExcept', { name: info.base[0] }) : t('rules.summary.hide', { name: info.base[0] });
+  return info.allow ? t('rules.summary.hideAllExcept', { name: info.base.join(' + ') }) : t('rules.summary.hideCount', { count: info.entries.length });
 }
 // The read-only "Target tool" chip text for a hideTool action, derived from the
 // action's own toolNames (patterns) rather than the matcher: block-list single
@@ -266,10 +267,10 @@ function hideToolSummary(toolNames) {
 // matcher-mirroring target (the existing behaviour).
 function hideToolTargetLabel(toolNames, matcher) {
   var info = hideToolToolNames(toolNames);
-  if (info.entries.length === 1) return info.allow ? 'Target: all except ' + info.base[0] : 'Target: ' + info.base[0];
-  if (info.entries.length > 1) return info.allow ? 'Target: all except ' + info.base.join(' + ') : 'Target: ' + info.entries.length + ' tools';
+  if (info.entries.length === 1) return info.allow ? t('rules.preview.targetAllExcept', { name: info.base[0] }) : t('rules.preview.target', { name: info.base[0] });
+  if (info.entries.length > 1) return info.allow ? t('rules.preview.targetAllExcept', { name: info.base.join(' + ') }) : t('rules.preview.targetCount', { count: info.entries.length });
   var name = matcherTargetToolName(matcher);
-  return name ? 'Target: ' + name : 'Applies to matching tool(s)';
+  return name ? t('rules.preview.target', { name: name }) : t('rules.preview.appliesMatching');
 }
 // One-line human-first summary of a matcher spec. Reused by the rule-card body
 // ("Matcher" cell) and the wizard's per-step "Fires when: …" preview.
@@ -278,25 +279,28 @@ export function matcherSummary(m) {
   switch (m.type) {
     case 'toolName': {
       var names = toolNamesFrom(m);
-      return names.length ? 'by tool name' + (names.length > 1 ? 's' : '') + ': ' + names.join(', ') : 'by any tool';
+      if (!names.length) return t('rules.summary.byAnyTool');
+      return names.length > 1
+        ? t('rules.summary.byToolNames', { names: names.join(', ') })
+        : t('rules.summary.byToolName', { names: names.join(', ') });
     }
     case 'argPattern': {
       var parts = [];
-      var t = toolNamesFrom(m);
-      if (t.length) parts.push('on ' + t.join(', '));
-      if (typeof m.pattern === 'string' && m.pattern) parts.push('arguments match ' + truncate(m.pattern, 48));
-      return parts.length ? parts.join(' \u00B7 ') : 'all calls';
+      var tn = toolNamesFrom(m);
+      if (tn.length) parts.push(t('rules.summary.onTools', { names: tn.join(', ') }));
+      if (typeof m.pattern === 'string' && m.pattern) parts.push(t('rules.summary.argumentsMatch', { pattern: truncate(m.pattern, 48) }));
+      return parts.length ? parts.join(' \u00B7 ') : t('rules.summary.allCalls');
     }
     case 'loop': {
-      var base = typeof m.window === 'number' ? m.window + '\u00D7 in a row' : 'repeated identical calls';
+      var base = typeof m.window === 'number' ? t('rules.summary.inARow', { window: m.window }) : t('rules.summary.repeatedCalls');
       var bits = [base];
-      if (m.requireConsecutive === false) bits.push('anywhere in run');
-      if (m.paramIdentity === 'exact') bits.push('exact params');
-      else if (m.resultIdentity === 'exact') bits.push('exact results');
+      if (m.requireConsecutive === false) bits.push(t('rules.summary.anywhereInRun'));
+      if (m.paramIdentity === 'exact') bits.push(t('rules.summary.exactParams'));
+      else if (m.resultIdentity === 'exact') bits.push(t('rules.summary.exactResults'));
       return bits.join(' \u00B7 ');
     }
     case 'always':
-      return 'every call';
+      return t('rules.summary.everyCall');
     default: return '\u2014';
   }
 }
@@ -311,14 +315,15 @@ export function actionSummary(a, matcher) {
       return hideToolSummary(a.toolNames);
     case 'rewriteArgs': {
       var mode = a.mode ? ' (' + a.mode + ')' : '';
-      var target = a.toolCallId ? 'by call id ' + a.toolCallId : (typeof a.toolName === 'string' && a.toolName ? 'on ' + a.toolName : 'arguments');
-      return 'rewrite arguments' + (target !== 'arguments' ? ' \u00B7 ' + target : '') + mode;
+      var target = a.toolCallId ? t('rules.summary.byCallId', { id: a.toolCallId })
+        : (typeof a.toolName === 'string' && a.toolName ? t('rules.summary.onTool', { name: a.toolName }) : null);
+      return t('rules.summary.rewriteArgs') + (target ? ' \u00B7 ' + target : '') + mode;
     }
     case 'injectMessage':
-      return (a.role ? a.role + ' message' : 'inject a message') + (typeof a.content === 'string' && a.content ? ' \u00B7 \u201C' + truncate(a.content, 60) + '\u201D' : '');
+      return (a.role ? t('rules.summary.roleMessage', { role: a.role }) : t('rules.summary.injectMessage')) + (typeof a.content === 'string' && a.content ? ' \u00B7 \u201C' + truncate(a.content, 60) + '\u201D' : '');
     case 'addDescription': {
       var tgt = matcher ? matcherTargetToolName(matcher) : null;
-      return tgt ? 'add a description to ' + tgt : 'add a description to matching tool(s)';
+      return tgt ? t('rules.summary.addDescriptionTo', { name: tgt }) : t('rules.summary.addDescriptionMatching');
     }
     default: return '\u2014';
   }
@@ -332,8 +337,8 @@ export function ruleLabel(spec) {
   var a = spec ? spec.action : null;
   var m = spec ? spec.matcher : null;
   var as = a ? actionSummary(a, m) : '\u2014';
-  if (as && as !== '\u2014') return 'New rule \u00B7 ' + as;
-  return 'New rule';
+  if (as && as !== '\u2014') return t('rules.card.newRuleWith', { summary: as });
+  return t('rules.newRule');
 }
 // One labelled summary cell for the rule-card body.
 function summaryCell(label, value) {
@@ -362,7 +367,7 @@ export function makeField(prefix, def, value) {
       (def.options || ['']).forEach(function (opt) {
         var o = document.createElement('option');
         o.value = opt;
-        o.textContent = opt === '' ? '(default)' : opt;
+        o.textContent = opt === '' ? t('rules.field.defaultOption') : opt;
         c.appendChild(o);
       });
       break;
@@ -407,7 +412,8 @@ export function renderMatcherFields(type, values) {
 // untouched) so renderActionFields / collectSpec handle it like any other action.
 var ACTION_FIELDS_ALL = Object.assign({}, ACTION_FIELDS, {
   addDescription: [
-    { key: 'description', label: 'Tool description', kind: 'area', required: true, hint: 'The description text shown to the model for the matched tool' }
+    // Getters: the editor re-reads these on each render, so a locale switch re-translates them.
+    { key: 'description', get label() { return t('rules.field.description.label'); }, kind: 'area', required: true, get hint() { return t('rules.field.description.hint'); } }
   ]
 });
 // Rebuild the action-fields container for a type, optionally pre-filled.
@@ -426,8 +432,8 @@ export function readField(container, def) {
   var raw = c.value;
   switch (def.kind) {
     case 'text': case 'area': {
-      var t = String(raw).trim();
-      return t === '' ? { skip: true } : { value: t };
+      var txt = String(raw).trim();
+      return txt === '' ? { skip: true } : { value: txt };
     }
     case 'list': {
       // Entries are comma- or line-separated: split on commas or line breaks,
@@ -441,15 +447,15 @@ export function readField(container, def) {
       var j = String(raw).trim();
       if (j === '') return { skip: true };
       var parsed;
-      try { parsed = JSON.parse(j); } catch (_e) { return { err: '"' + def.key + '" must be valid JSON' }; }
-      if (!isPlainObject(parsed)) return { err: '"' + def.key + '" must be a JSON object' };
+      try { parsed = JSON.parse(j); } catch (_e) { return { err: t('rules.validate.fieldJson', { key: def.key }) }; }
+      if (!isPlainObject(parsed)) return { err: t('rules.validate.fieldJsonObject', { key: def.key }) };
       return { value: parsed };
     }
     case 'number': {
       var nraw = String(raw).trim();
       if (nraw === '') return { skip: true };
       var num = Number(nraw);
-      if (isNaN(num)) return { err: '"' + def.key + '" must be a number' };
+      if (isNaN(num)) return { err: t('rules.validate.fieldNumber', { key: def.key }) };
       return { value: num };
     }
     case 'bool':
@@ -474,38 +480,38 @@ export function readSection(defs, container, out) {
 // Per-step validators (pure — operate on spec sub-objects, no DOM access).
 // Step 1 (When): the matcher is well-formed + carries its required fields.
 function validateMatcher(m) {
-  if (!isPlainObject(m) || typeof m.type !== 'string') return 'a matcher with a "type" is required';
+  if (!isPlainObject(m) || typeof m.type !== 'string') return t('rules.validate.matcherType');
   if (m.type === 'argPattern' && !(typeof m.pattern === 'string' && m.pattern !== '')) {
-    return 'matcher requires a non-empty "pattern"';
+    return t('rules.validate.patternRequired');
   }
   if (m.type === 'loop' && m.window !== undefined && typeof m.window !== 'number') {
-    return 'matcher "window" must be a number';
+    return t('rules.validate.windowNumber');
   }
   return null;
 }
 // Step 2 (Then): the action is well-formed + carries its required fields.
 function validateAction(a) {
-  if (!isPlainObject(a) || typeof a.type !== 'string') return 'an action with a "type" is required';
+  if (!isPlainObject(a) || typeof a.type !== 'string') return t('rules.validate.actionType');
   if (a.type === 'hideTool' && !(Array.isArray(a.toolNames) && a.toolNames.length > 0)) {
-    return 'action requires a non-empty "toolNames" array';
+    return t('rules.validate.toolNamesRequired');
   }
   if (a.type === 'rewriteArgs' && !isPlainObject(a.arguments)) {
-    return 'action requires an "arguments" object';
+    return t('rules.validate.argumentsRequired');
   }
   if (a.type === 'injectMessage' && !(typeof a.content === 'string' && a.content !== '')) {
-    return 'action requires a non-empty "content" string';
+    return t('rules.validate.contentRequired');
   }
   if (a.type === 'addDescription' && !(typeof a.description === 'string' && a.description !== '')) {
-    return 'action requires a non-empty "description" string';
+    return t('rules.validate.descriptionRequired');
   }
   return null;
 }
 // Step 3 (Details): the rule fields — enabled must be a boolean and priority,
 // when set, must be a number (description is optional).
 function validateRuleFields(spec) {
-  if (typeof spec.enabled !== 'boolean') return '"enabled" must be a boolean';
+  if (typeof spec.enabled !== 'boolean') return t('rules.validate.enabledBoolean');
   if (spec.priority !== undefined && typeof spec.priority !== 'number') {
-    return '"priority" must be a number';
+    return t('rules.validate.priorityNumber');
   }
   return null;
 }
@@ -536,7 +542,7 @@ export function collectSpec() {
   var pr = $('rule-priority').value.trim();
   if (pr !== '') {
     var n = Number(pr);
-    if (isNaN(n)) return { error: '"priority" must be a number' };
+    if (isNaN(n)) return { error: t('rules.validate.priorityNumber') };
     spec.priority = n;
   }
   var verr = clientValidate(spec);
@@ -575,7 +581,7 @@ export function collectStep(n) {
     var pr = prEl.value.trim();
     if (pr !== '') {
       var num = Number(pr);
-      if (isNaN(num)) return { error: '"priority" must be a number' };
+      if (isNaN(num)) return { error: t('rules.validate.priorityNumber') };
       spec.priority = num;
     }
   }
@@ -647,10 +653,18 @@ export function updateFormMode() {
   // Cancel is now a persistent footer action (visible in both add and edit
   // modes); only the Save button's label and the editor title reflect mode.
   var addBtn = $('btn-add');
-  if (addBtn) addBtn.textContent = editing ? 'Save changes' : 'Add rule';
+  if (addBtn) addBtn.textContent = editing ? t('rules.saveChanges') : t('rules.addRule');
   var title = $('rule-editor-title');
-  if (title) title.textContent = editing ? 'Edit rule' : 'New rule';
+  if (title) title.textContent = editing ? t('rules.editTitle') : t('rules.newRule');
 }
+
+// Locale switch: re-render the rule list from the cached specs and refresh the
+// editor title/button and live previews (static texts are handled by applyI18n).
+onLocaleChange(function () {
+  if (Array.isArray(state.rules)) renderRules(state.rules);
+  updateFormMode();
+  updatePreviews();
+});
 // Submit the form: POST (add) or PATCH (edit) a RuleSpec, then re-render.
 export async function saveRule(spec) {
   try {
@@ -665,15 +679,15 @@ export async function saveRule(spec) {
     var data = null;
     try { data = await res.json(); } catch (_e) { /* non-JSON (204 / error text) */ }
     if (!res.ok) {
-      showFormError(data && data.error ? data.error : 'Request failed (' + res.status + ')');
+      showFormError(data && data.error ? data.error : t('rules.notice.requestFailed', { status: res.status }));
       return;
     }
     var wasEdit = state.editingId !== '';
     resetForm();
-    flashSavedNote(wasEdit ? 'Changes saved.' : 'Rule added.');
+    flashSavedNote(wasEdit ? t('rules.notice.saved') : t('rules.notice.added'));
     location.hash = '#/rules'; // return to the list so the change is visible
   } catch (e) {
-    showFormError('Network error: ' + errMsg(e));
+    showFormError(t('rules.notice.networkError', { error: errMsg(e) }));
   }
 }
 export function submitRule(e) {
@@ -720,9 +734,9 @@ export function updatePreviews() {
   var mSum = matcherSummary(m);
   var aSum = actionSummary(a, m);
   var when = $('rule-when-preview');
-  if (when) when.textContent = 'Fires when: ' + mSum;
+  if (when) when.textContent = t('rules.preview.firesWhen', { summary: mSum });
   var then = $('rule-then-preview');
-  if (then) then.textContent = 'Then: ' + aSum;
+  if (then) then.textContent = t('rules.preview.then', { summary: aSum });
   var chip = $('rule-target-chip');
   if (chip) {
     // hideTool names its own target (the toolNames patterns) — derive it from
@@ -731,14 +745,14 @@ export function updatePreviews() {
       chip.textContent = hideToolTargetLabel(a.toolNames, m);
     } else {
       var name = matcherTargetToolName(m);
-      chip.textContent = name ? 'Target: ' + name : 'Applies to matching tool(s)';
+      chip.textContent = name ? t('rules.preview.target', { name: name }) : t('rules.preview.appliesMatching');
     }
   }
   var combined = $('rule-combined-preview');
   if (combined) {
     var en = $('rule-enabled');
     var on = en ? !!en.checked : true;
-    combined.textContent = 'When ' + mSum + ' \u2192 then ' + aSum + '. ' + (on ? 'Enabled' : 'Disabled');
+    combined.textContent = t('rules.preview.combined', { matcher: mSum, action: aSum, state: on ? t('rules.card.enabled') : t('rules.card.disabled') });
   }
 }
 
@@ -787,6 +801,7 @@ function updateStepIndicator() {
     item.classList.toggle('is-done', s !== currentStep && validateStep(s) === null);
     item.classList.toggle('is-reachable', isReachable(s));
     item.setAttribute('aria-current', s === currentStep ? 'step' : 'false');
+    item.setAttribute('aria-selected', s === currentStep ? 'true' : 'false');
   });
 }
 // Refresh the footer: Back shows from step 2 on; Save is the primary action on
@@ -890,12 +905,12 @@ export async function openEditRuleForm(id) {
       renderRules(await res.json());
       spec = (state.rules || []).find(function (r) { return r && r.id === id; });
     } catch (e) {
-      showNotice('Rules unavailable: ' + errMsg(e));
+      showNotice(t('rules.notice.unavailable', { error: errMsg(e) }));
       return;
     }
   }
   if (!spec) {
-    showNotice('Rule not found: ' + id);
+    showNotice(t('rules.notice.notFound', { id: id }));
     location.hash = '#/rules';
     return;
   }

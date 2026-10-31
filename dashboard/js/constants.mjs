@@ -14,8 +14,5 @@ export const WS_KEEPALIVE_MS = 10000;   // periodic keepalive text frame while t
 export const WS_DEAD_AFTER_MS = WS_KEEPALIVE_MS * 3; // ~3 unanswered keepalive windows => dead
 export const MAX_SEEN_EVENTS = 1000;    // cap on the dedup set of already-rendered event keys
 
-// Tooltip shown on a stat value / table cell that is still empty ("—").
-export const NO_DATA_TIP = 'No data yet \u2014 appears once tool results arrive.';
-
 // Preset minute values for the quick time-range selector (window ends at selection time).
 export const TIME_PRESETS = { '5m': 5, '15m': 15, '1h': 60 };

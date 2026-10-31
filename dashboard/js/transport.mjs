@@ -11,6 +11,7 @@
  * keepaliveTimer / ws) so the lifecycle stays observable across modules.
  * ========================================================================== */
 import { $ } from './dom.mjs';
+import { t, onLocaleChange } from './i18n/index.mjs';
 import { state } from './state.mjs';
 import { WS_RECONNECT_MS, EVENTS_POLL_MS, WS_KEEPALIVE_MS, WS_DEAD_AFTER_MS } from './constants.mjs';
 import { handleWsMessage, ingestEvent } from './ingest.mjs';
@@ -18,22 +19,28 @@ import { handleWsMessage, ingestEvent } from './ingest.mjs';
 // Reflect live/polling connectivity: toggle the header indicator classes, set a
 // short header label, and show/hide the near-list #stream-status banner that
 // explains we're falling back to /api/events polling when no WS is available.
+let connState = false;
+
 export function setConnected(on) {
-  var bannerText = 'Live stream is down — showing recent tool calls via /api/events polling. Upgrades to live automatically once a WebSocket connects.';
+  connState = !!on;
+  var bannerText = t('conn.bannerDown');
   var s = $('conn-status');
   if (s) {
     s.classList.toggle('connected', !!on);
     s.classList.toggle('disconnected', !on);
-    s.title = on ? 'Live stream connected' : bannerText;
+    s.title = on ? t('conn.connectedTitle') : bannerText;
   }
   var label = $('conn-label');
-  if (label) label.textContent = on ? 'Live' : 'Polling';
+  if (label) label.textContent = on ? t('conn.live') : t('conn.polling');
   var banner = $('stream-status');
   if (banner) {
     banner.hidden = !!on;
     banner.textContent = on ? '' : bannerText;
   }
 }
+
+// Re-translate the current connectivity state (applyI18n resets these static nodes).
+onLocaleChange(function () { setConnected(connState); });
 
 // True when the current socket is actually open (WebSocket.OPEN).
 export function wsIsOpen() { return !!(state.ws && state.ws.readyState === WebSocket.OPEN); }

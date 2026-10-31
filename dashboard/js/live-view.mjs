@@ -15,6 +15,7 @@ import { state } from './state.mjs';
 import { MAX_LIST_ITEMS } from './constants.mjs';
 import { inTimeRange } from './time.mjs';
 import { createRule, prefillNewRule, refreshRules, findDuplicatePolicyRule } from './rules.mjs';
+import { t, getLocale, onLocaleChange } from './i18n/index.mjs';
 
 // Prepend a row to a <ul>, keeping at most `max` children (newest-first).
 export function prependTrim(listEl, node, max) {
@@ -35,21 +36,31 @@ export function prependTrim(listEl, node, max) {
 // The three token cells are returned so the turn-usage application can update them in place.
 export function appendTokenAndSizeCells(main, ev) {
   var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
-  var inCell = el('span', 's-tokens-in col-num', typeof ev.callTokens === 'number' ? formatCount(ev.callTokens) : '—');
-  inCell.title = 'Call tokens (est) — estimate of the tokens spent invoking the tool (name + arguments), not provider-reported.';
-  main.appendChild(inCell);
-  var outCell = el('span', 's-tokens-out col-num', typeof ev.tokens === 'number' ? formatCount(ev.tokens) : '—');
-  outCell.title = 'Result tokens (est) — estimate of the resolved result payload (chars/4).';
-  main.appendChild(outCell);
-  var totCell = el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '—');
-  totCell.title = 'Turn tokens — the full upstream turn total (context size), not a per-tool cost.';
-  main.appendChild(totCell);
-  var sizeCell = el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '—');
-  sizeCell.title = 'Result payload size (characters)';
-  main.appendChild(sizeCell);
+  var cells = {
+    in: el('span', 's-tokens-in col-num', typeof ev.callTokens === 'number' ? formatCount(ev.callTokens) : '—'),
+    out: el('span', 's-tokens-out col-num', typeof ev.tokens === 'number' ? formatCount(ev.tokens) : '—'),
+    total: el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '—'),
+    size: el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '—')
+  };
+  applyTokenTitles(cells);
+  main.appendChild(cells.in);
+  main.appendChild(cells.out);
+  main.appendChild(cells.total);
+  main.appendChild(cells.size);
   // Return the token + size cells so callers (turn-usage application / result pairing) can
   // update them in place by stored reference (the test stub's querySelector is a no-op).
-  return { in: inCell, out: outCell, total: totCell, size: sizeCell };
+  return cells;
+}
+// Set the hover titles of the four numeric cells to the active locale.
+function applyTokenTitles(cells) {
+  cells.in.title = t('live.tokens.inTitle');
+  cells.out.title = t('live.tokens.outTitle');
+  cells.total.title = t('live.tokens.totalTitle');
+  cells.size.title = t('live.tokens.sizeTitle');
+}
+// Locale-formatted absolute time for a row's time tooltip ('' when absent).
+function localeTimeTitle(at) {
+  return typeof at === 'number' ? new Date(at).toLocaleString(getLocale()) : '';
 }
 // Update a numeric cell's text from an optional value; leave it unchanged ('—') when absent.
 export function setNumCellText(cell, v, fmt) {
@@ -63,16 +74,17 @@ export function setNumCellText(cell, v, fmt) {
 // 10-track grid template used by createCallRow() rows. Normalizing the
 // header at init guarantees correct structure regardless of the served HTML
 // state (stale cache / service worker / older copy); idempotent by design.
+// Each entry is [i18n key, class name].
 var STREAM_HEAD_CELLS = [
-  ['Status', ''],
-  ['Tool', ''],
-  ['Session', ''],
-  ['Time', ''],
-  ['Dur (ms)', 'num-col'],
-  ['In (est)', 'num-col'],
-  ['Out (est)', 'num-col'],
-  ['Context Size', 'num-col'],
-  ['Size', 'num-col'],
+  ['col.status', ''],
+  ['col.tool', ''],
+  ['col.session', ''],
+  ['col.time', ''],
+  ['col.durMs', 'num-col'],
+  ['col.inEst', 'num-col'],
+  ['col.outEst', 'num-col'],
+  ['col.contextSize', 'num-col'],
+  ['col.size', 'num-col'],
 ];
 // Rebuild the .stream-head so it contains exactly the canonical 10 cells,
 // mirroring the .row-main layout. Container attributes are left intact; the
@@ -81,10 +93,13 @@ export function normalizeStreamHead() {
   var head = $('stream-head');
   if (!head) return;
   while (head.firstChild) head.removeChild(head.firstChild);
-  STREAM_HEAD_CELLS.forEach(function (c) {
+  // Unit suffix per cell index (In/Out/Context Size -> tok, Size -> ch); CSS ::after renders attr(data-unit).
+  var unitKeys = [null, null, null, null, null, 'units.tok', 'units.tok', 'units.tok', 'units.chars'];
+  STREAM_HEAD_CELLS.forEach(function (c, i) {
     var th = el('th', c[1]);
-    th.textContent = c[0];
+    th.textContent = t(c[0]);
     th.setAttribute('scope', 'col');
+    if (unitKeys[i]) th.setAttribute('data-unit', t(unitKeys[i]));
     head.appendChild(th);
   });
   var empty = el('th', '');
@@ -109,18 +124,18 @@ export function createCallRow(ev) {
   li.dataset.at = ev.at;
 
   var main = el('div', 'row-main');
-  main.appendChild(el('span', 'badge badge-pending', 'pending'));
+  main.appendChild(el('span', 'badge badge-pending', t('live.badge.pending')));
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
   var sess = el('span', 's-session muted', ev.sessionKey || '');
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
-  var t = el('time', 's-time', fmtTime(ev.at));
-  t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
-  main.appendChild(t);
+  var timeEl = el('time', 's-time', fmtTime(ev.at));
+  timeEl.title = localeTimeTitle(ev.at);
+  main.appendChild(timeEl);
   var dur = el('span', 's-duration col-num', '\u2014');
-  dur.title = 'Duration (ms)';
+  dur.title = t('live.duration.title');
   main.appendChild(dur);
   var tokenCells = appendTokenAndSizeCells(main, ev);
   var exp = el('span', 's-expand', '\u25BE');
@@ -153,7 +168,7 @@ export function updateCallRowWithResult(rs, ev) {
   var badge = rs.li.querySelector('.badge');
   if (badge) {
     badge.className = 'badge ' + (ev.ok === false ? 'badge-fail' : 'badge-ok');
-    badge.textContent = ev.ok === false ? 'fail' : 'ok';
+    badge.textContent = t(ev.ok === false ? 'live.badge.fail' : 'live.badge.ok');
   }
   var dur = rs.li.querySelector('.s-duration');
   if (dur && typeof ev.durationMs === 'number') dur.textContent = fmtOpt(ev.durationMs);
@@ -211,18 +226,18 @@ export function createOrphanResultRow(ev) {
 
   var isErr = ev.ok === false;
   var main = el('div', 'row-main');
-  main.appendChild(el('span', 'badge ' + (isErr ? 'badge-fail' : 'badge-ok'), isErr ? 'fail' : 'ok'));
+  main.appendChild(el('span', 'badge ' + (isErr ? 'badge-fail' : 'badge-ok'), t(isErr ? 'live.badge.fail' : 'live.badge.ok')));
   var tool = el('span', 's-tool', ev.toolName || '');
   tool.title = ev.toolName || '';
   main.appendChild(tool);
   var sess = el('span', 's-session muted', ev.sessionKey || '');
   sess.title = ev.sessionKey || '';
   main.appendChild(sess);
-  var t = el('time', 's-time', fmtTime(ev.at));
-  t.title = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
-  main.appendChild(t);
+  var timeEl = el('time', 's-time', fmtTime(ev.at));
+  timeEl.title = localeTimeTitle(ev.at);
+  main.appendChild(timeEl);
   var dur = el('span', 's-duration col-num', typeof ev.durationMs === 'number' ? fmtOpt(ev.durationMs) : '\u2014');
-  dur.title = 'Duration (ms)';
+  dur.title = t('live.duration.title');
   main.appendChild(dur);
   var tokenCells = appendTokenAndSizeCells(main, ev);
   var exp = el('span', 's-expand', '\u25BE');
@@ -235,7 +250,7 @@ export function createOrphanResultRow(ev) {
   li.appendChild(main);
   li.appendChild(detail);
 
-  var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'fail' : 'ok', expanded: false };
+  var rs = { li: li, callEv: null, resultEv: ev, status: isErr ? 'fail' : 'ok', expanded: false, tokenCells: tokenCells };
   state.orphanResultEntries.push({ li: li, ev: ev, rs: rs });
   prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
   $('stream-empty').hidden = true;
@@ -308,8 +323,7 @@ export function renderRowDetail(rs) {
   if (!rs.activeTab) rs.activeTab = 'arguments';
   var html = '<div class="rd-tabs">';
   ['arguments', 'response', 'details'].forEach(function (tab) {
-    var label = tab.charAt(0).toUpperCase() + tab.slice(1);
-    html += '<button type="button" class="rd-tab' + (rs.activeTab === tab ? ' active' : '') + '" data-tab="' + tab + '">' + label + '</button>';
+    html += '<button type="button" class="rd-tab' + (rs.activeTab === tab ? ' active' : '') + '" data-tab="' + tab + '">' + esc(t(TAB_LABEL_KEYS[tab])) + '</button>';
   });
   html += '</div>';
   html += '<div class="rd-tab-panel" data-panel="arguments">' + buildArgsPanel(rs) + '</div>';
@@ -336,6 +350,13 @@ export function renderRowDetail(rs) {
   if (rs.activeTab === 'response') maybeFetchResponse(rs, detailEl);
   bindPolicySection(rs, detailEl);
 }
+
+// Dictionary keys for the detail tab strip, keyed by the data-tab value.
+var TAB_LABEL_KEYS = {
+  arguments: 'live.tab.arguments',
+  response: 'live.tab.response',
+  details: 'live.tab.details'
+};
 
 // Wire the policy quick-action buttons built by buildPolicySection: the Policy
 // section's Hide / Override / New controls. Called by renderRowDetail
@@ -369,7 +390,7 @@ function buildArgsPanel(rs) {
   if (rs.callEv && rs.callEv.args != null) {
     return '<pre class="rd-pre">' + esc(typeof rs.callEv.args === 'string' ? rs.callEv.args : JSON.stringify(rs.callEv.args, null, 2)) + '</pre>';
   }
-  return '<div class="muted small">No arguments.</div>';
+  return '<div class="muted small">' + esc(t('live.args.none')) + '</div>';
 }
 
 // Build the "Description" section for a row's detail panel: the tool.call
@@ -380,8 +401,9 @@ function buildArgsPanel(rs) {
 export function buildDescriptionSection(rs) {
   var ev = rs.callEv || rs.resultEv;
   var desc = ev && typeof ev.description === 'string' ? ev.description : '';
-  var html = '<div class="rd-section description-section" role="group" aria-label="Description">';
-  html += '<div class="rd-label">Description</div>';
+  var label = esc(t('live.description'));
+  var html = '<div class="rd-section description-section" role="group" aria-label="' + label + '">';
+  html += '<div class="rd-label">' + label + '</div>';
   html += '<div class="rd-value">' + (desc !== '' ? esc(desc) : '\u2014') + '</div>';
   html += '</div>';
   return html;
@@ -395,13 +417,13 @@ export function buildPolicySection(rs) {
   var ev = rs.callEv || rs.resultEv;
   var name = ev && typeof ev.toolName === 'string' ? ev.toolName : '';
   if (!name) return '';
-  var label = 'Policy actions for ' + name;
+  var label = t('live.policy.actionsFor', { name: name });
   return '<div class="rd-section policy-section" role="group" aria-label="' + esc(label) + '">'
-    + '<div class="rd-label">Policy</div>'
+    + '<div class="rd-label">' + esc(t('live.policy.title')) + '</div>'
     + '<div class="policy-actions">'
-    + '<button type="button" class="btn btn-primary policy-btn" data-policy="hide" aria-label="Hide tool ' + esc(name) + '">Hide</button>'
-    + '<button type="button" class="btn policy-btn policy-add-desc" data-policy="addDescription" aria-label="Override description for tool ' + esc(name) + '">Override</button>'
-    + '<button type="button" class="btn policy-btn policy-new" data-policy="new" aria-label="Create new policy rule for tool ' + esc(name) + '">New policy \u2192</button>'
+    + '<button type="button" class="btn btn-primary policy-btn" data-policy="hide" aria-label="' + esc(t('live.policy.hideAria', { name: name })) + '">' + esc(t('live.policy.hide')) + '</button>'
+    + '<button type="button" class="btn policy-btn policy-add-desc" data-policy="addDescription" aria-label="' + esc(t('live.policy.overrideAria', { name: name })) + '">' + esc(t('live.policy.override')) + '</button>'
+    + '<button type="button" class="btn policy-btn policy-new" data-policy="new" aria-label="' + esc(t('live.policy.newAria', { name: name })) + '">' + esc(t('live.policy.new')) + '</button>'
     + '</div>'
     + '</div>';
 }
@@ -442,13 +464,13 @@ export async function createPolicyRule(name, spec) {
   var actionType = spec.action && spec.action.type;
   var dup = findDuplicatePolicyRule(state.rules, name, actionType);
   if (dup && dup.enabled === true) {
-    showNotice(name + ' is already hidden by an existing policy rule');
+    showNotice(t('live.policy.alreadyHidden', { name: name }));
     return;
   }
   try {
     await createRule(spec);
     await refreshRules(); // re-sync the rendered list + state.rules
-    showNotice(name + ' \u2192 policy rule created');
+    showNotice(t('live.policy.created', { name: name }));
   } catch (e) {
     // createRule already called showNotice('Rule not created: ...')
     console.warn('createPolicyRule failed for ' + name, e);
@@ -464,44 +486,44 @@ export function buildDetailsPanel(rs) {
   var res = rs.resultEv;
   var html = buildDescriptionSection(rs);
   if (res) {
-    html += '<div class="rd-section"><div class="rd-label">Result</div>';
-    html += '<div class="rd-kv"><span>ok:</span> ' + esc(String(res.ok === true)) + '</div>';
-    html += '<div class="rd-kv"><span>chars:</span> ' + (typeof res.chars === 'number' ? formatSize(res.chars) : '\u2014') + '</div>';
-    html += '<div class="rd-kv"><span>durationMs:</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
+    html += '<div class="rd-section"><div class="rd-label">' + esc(t('live.details.result')) + '</div>';
+    html += '<div class="rd-kv"><span>' + esc(t('live.details.ok')) + '</span> ' + esc(String(res.ok === true)) + '</div>';
+    html += '<div class="rd-kv"><span>' + esc(t('live.details.chars')) + '</span> ' + (typeof res.chars === 'number' ? formatSize(res.chars) : '\u2014') + '</div>';
+    html += '<div class="rd-kv"><span>' + esc(t('live.details.durationMs')) + '</span> ' + (typeof res.durationMs === 'number' ? String(res.durationMs) : '\u2014') + '</div>';
     html += '</div>';
   }
   // The row's effective turn usage (input / cache-hit input / output / total): the applied
   // turn.usage bound via rs.turnTokens, or a result/carried turn-usage object. The per-tool
   // In/Out columns are separate; this surfaces the REPORTED turn usage breakdown. Omitted
   // when unknown.
-  var t = (res && res.tokens && typeof res.tokens.total === 'number') ? res.tokens
+  var tk = (res && res.tokens && typeof res.tokens.total === 'number') ? res.tokens
        : (rs.turnTokens && typeof rs.turnTokens.total === 'number') ? rs.turnTokens
        : (ev && ev.tokens && typeof ev.tokens.total === 'number') ? ev.tokens
        : null;
-  if (t) {
+  if (tk) {
     var parts = [];
-    if (typeof t.input === 'number') parts.push('in ' + formatCount(t.input));
-    if (typeof t.cacheHitInput === 'number') parts.push('cache ' + formatCount(t.cacheHitInput));
-    if (typeof t.output === 'number') parts.push('out ' + formatCount(t.output));
-    if (typeof t.total === 'number') parts.push('total ' + formatCount(t.total));
-    if (parts.length) html += '<div class="rd-kv"><span>tokens (turn):</span> ' + parts.join(' · ') + '</div>';
+    if (typeof tk.input === 'number') parts.push(t('live.tokens.in', { n: formatCount(tk.input) }));
+    if (typeof tk.cacheHitInput === 'number') parts.push(t('live.tokens.cache', { n: formatCount(tk.cacheHitInput) }));
+    if (typeof tk.output === 'number') parts.push(t('live.tokens.out', { n: formatCount(tk.output) }));
+    if (typeof tk.total === 'number') parts.push(t('live.tokens.total', { n: formatCount(tk.total) }));
+    if (parts.length) html += '<div class="rd-kv"><span>' + esc(t('live.details.tokensTurn')) + '</span> ' + parts.join(' · ') + '</div>';
   }
   var fullSession = (ev && ev.sessionKey) || '';
   if (fullSession) {
-    html += '<div class="rd-section"><div class="rd-label">Session</div><div class="rd-value">' + esc(fullSession) + '</div></div>';
+    html += '<div class="rd-section"><div class="rd-label">' + esc(t('live.details.session')) + '</div><div class="rd-value">' + esc(fullSession) + '</div></div>';
     var ivs = state.interventionsBySession.get(fullSession);
     if (ivs && ivs.length) {
-      html += '<div class="rd-section"><div class="rd-label">Intervention</div>';
+      html += '<div class="rd-section"><div class="rd-label">' + esc(t('live.details.intervention')) + '</div>';
       ivs.forEach(function (iv) {
-        html += '<div class="rd-kv"><span>rule:</span> ' + esc(iv.ruleId || '') + '</div>';
-        html += '<div class="rd-kv"><span>action:</span> ' + esc(iv.action || '') + '</div>';
-        if (iv.detail) html += '<div class="rd-kv"><span>detail:</span> ' + esc(iv.detail) + '</div>';
+        html += '<div class="rd-kv"><span>' + esc(t('live.details.rule')) + '</span> ' + esc(iv.ruleId || '') + '</div>';
+        html += '<div class="rd-kv"><span>' + esc(t('live.details.action')) + '</span> ' + esc(iv.action || '') + '</div>';
+        if (iv.detail) html += '<div class="rd-kv"><span>' + esc(t('live.details.detail')) + '</span> ' + esc(iv.detail) + '</div>';
       });
       html += '</div>';
     }
   }
   html += buildPolicySection(rs);
-  return html || '<div class="muted small">No additional details.</div>';
+  return html || '<div class="muted small">' + esc(t('live.details.none')) + '</div>';
 }
 
 // Derive the stable per-row id used to look up the stored tool result via REST.
@@ -518,7 +540,7 @@ function maybeFetchResponse(rs, detailEl) {
   if (!panelEl) return;
   var id = deriveResponseId(rs);
   if (!id) {
-    panelEl.innerHTML = '<div class="muted small">Not available.</div>';
+    panelEl.innerHTML = '<div class="muted small">' + esc(t('live.response.unavailable')) + '</div>';
     return;
   }
   // Already dispatched (in-flight or settled) — just render the cached state
@@ -529,7 +551,7 @@ function maybeFetchResponse(rs, detailEl) {
   }
   // First activation: fire exactly one fetch and store the result in row state.
   rs.response = { state: 'loading' };
-  panelEl.innerHTML = '<div class="muted small">Loading\u2026</div>';
+  panelEl.innerHTML = '<div class="muted small">' + esc(t('live.response.loading')) + '</div>';
   fetch('api/tool-results/' + encodeURIComponent(id))
     .then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -550,13 +572,13 @@ function maybeFetchResponse(rs, detailEl) {
 // Render the Response tab panel content from the cached rs.response state.
 function renderResponseValue(rs) {
   var r = rs.response;
-  if (!r || r.state === 'loading') return '<div class="muted small">Loading\u2026</div>';
-  if (r.state === 'notfound') return '<div class="muted small">Not available / not stored.</div>';
-  if (r.state === 'error') return '<div class="rd-err">' + esc(r.errMsg || 'Error') + '</div>';
+  if (!r || r.state === 'loading') return '<div class="muted small">' + esc(t('live.response.loading')) + '</div>';
+  if (r.state === 'notfound') return '<div class="muted small">' + esc(t('live.response.notStored')) + '</div>';
+  if (r.state === 'error') return '<div class="rd-err">' + esc(r.errMsg || t('live.response.errorFallback')) + '</div>';
   // state === 'ok'
   var content = r.data.content;
   var chars = r.data.chars;
-  if (typeof content !== 'string' || content === '') return '<div class="muted small">Empty.</div>';
+  if (typeof content !== 'string' || content === '') return '<div class="muted small">' + esc(t('live.response.empty')) + '</div>';
   var html;
   try {
     html = '<pre class="rd-pre">' + esc(JSON.stringify(JSON.parse(content), null, 2)) + '</pre>';
@@ -564,7 +586,7 @@ function renderResponseValue(rs) {
     html = '<pre class="rd-pre">' + esc(content) + '</pre>';
   }
   if (typeof chars === 'number' && content.length < chars) {
-    html += '<div class="muted small rd-trunc">\u2026 (' + formatSize(chars) + ' total chars)</div>';
+    html += '<div class="muted small rd-trunc">' + t('live.response.truncated', { size: formatSize(chars) }) + '</div>';
   }
   return html;
 }
@@ -654,7 +676,7 @@ export function applyFilters() {
   var countEl = $('stream-count');
   if (countEl) {
     var anyFilter = !!(f.tool || f.status || f.session || state.timeRange.mode !== 'all');
-    countEl.textContent = anyFilter ? 'showing ' + visible + ' of ' + total : '';
+    countEl.textContent = anyFilter ? t('live.count.showing', { visible: visible, total: total }) : '';
   }
 
   // The intervention log has no tool/status, so it is constrained only by the
@@ -722,7 +744,7 @@ export function addInterventionRow(ev) {
 function setInterventionRowCells(li, ev) {
   li.dataset.at = ev.at;
   li.dataset.session = ev.sessionKey || '';
-  var when = typeof ev.at === 'number' ? new Date(ev.at).toLocaleString() : '';
+  var when = localeTimeTitle(ev.at);
 
   var timeEl = childByClass(li, 'iv-time') || el('time', 'iv-time');
   timeEl.textContent = fmtTime(ev.at);
@@ -730,10 +752,10 @@ function setInterventionRowCells(li, ev) {
 
   var ruleEl = childByClass(li, 'iv-rule') || el('span', 'iv-rule muted');
   ruleEl.textContent = ev.ruleId || '';
-  if (ev.ruleId) ruleEl.title = 'Rule id: ' + ev.ruleId;
+  if (ev.ruleId) ruleEl.title = t('live.intervention.ruleId', { id: ev.ruleId });
 
   var actionEl = childByClass(li, 'iv-action') || el('span', 'badge badge-interv iv-action');
-  actionEl.textContent = ev.action || 'intervention';
+  actionEl.textContent = ev.action || t('live.action.fallback');
 
   var detailEl = childByClass(li, 'iv-detail') || el('span', 'iv-detail');
   detailEl.textContent = ev.detail || '';
@@ -766,3 +788,26 @@ export function updateLiveCounters() {
   $('live-results').textContent = String(state.localCounts.results);
   $('live-interventions').textContent = String(state.localCounts.interventions);
 }
+
+// Re-render the runtime-generated text of this module in the active locale:
+// stream head, row badges / tooltips, open detail panels, intervention rows and
+// the filter count. Row structure and state are kept; only text is rewritten.
+function relabelStreamRow(rs) {
+  var badge = rs.li.querySelector('.badge');
+  if (badge) badge.textContent = t('live.badge.' + rs.status);
+  var dur = rs.li.querySelector('.s-duration');
+  if (dur) dur.title = t('live.duration.title');
+  var timeEl = rs.li.querySelector('.s-time');
+  var ev = rs.callEv || rs.resultEv;
+  if (timeEl && ev) timeEl.title = localeTimeTitle(ev.at);
+  if (rs.tokenCells) applyTokenTitles(rs.tokenCells);
+  if (rs.expanded) renderRowDetail(rs);
+}
+function refreshLiveViewText() {
+  normalizeStreamHead();
+  state.callRows.forEach(function (rs) { relabelStreamRow(rs); });
+  state.orphanResultEntries.forEach(function (entry) { relabelStreamRow(entry.rs); });
+  state.interventionRowData.forEach(function (d, li) { setInterventionRowCells(li, d); });
+  if ($('stream-list')) applyFilters();
+}
+onLocaleChange(refreshLiveViewText);

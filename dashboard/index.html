@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>aitoolgate · tool-monitoring dashboard</title>
+    <title data-i18n="index.title">aitoolgate · tool-monitoring dashboard</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' role='img' aria-hidden='true'%3E%3Cpath fill='%234c8dff' fill-rule='evenodd' d='M9 1 H23 A8 8 0 0 1 31 9 V23 A8 8 0 0 1 23 31 H9 A8 8 0 0 1 1 23 V9 A8 8 0 0 1 9 1 Z M10 25.5 V14.5 a6 6 0 0 1 12 0 V25.5 Z'/%3E%3C/svg%3E" />
     <script>(function(){var d=document.documentElement,t=null;try{t=localStorage.getItem('aitoolgate.theme');}catch(e){}if(t!=='light'&&t!=='dark'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}d.setAttribute('data-theme',t);})();</script>
     <link rel="stylesheet" href="styles.css" />
@@ -26,24 +26,24 @@
          The "Clear" button now lives in the #stream-panel .stream-filters row (below),
          so the top bar keeps only the time-range and export controls. -->
     <div id="dash-controls" class="dash-controls">
-      <div class="ctl-group" role="group" aria-label="Time range">
-        <span class="ctl-label">Time</span>
-        <select id="filter-time" title="Filter displayed calls and interventions by time window (client-side, over retained buffered events)">
-          <option value="all">All retained</option>
-          <option value="5m">Last 5 min</option>
-          <option value="15m">Last 15 min</option>
-          <option value="1h">Last hour</option>
-          <option value="custom">Custom…</option>
+      <div class="ctl-group" role="group" aria-label="Time range" data-i18n-attr="aria-label:controls.timeRange">
+        <span class="ctl-label" data-i18n="controls.time">Time</span>
+        <select id="filter-time" title="Filter displayed calls and interventions by time window (client-side, over retained buffered events)" data-i18n-attr="title:controls.timeTitle">
+          <option value="all" data-i18n="time.all">All retained</option>
+          <option value="5m" data-i18n="time.5m">Last 5 min</option>
+          <option value="15m" data-i18n="time.15m">Last 15 min</option>
+          <option value="1h" data-i18n="time.1h">Last hour</option>
+          <option value="custom" data-i18n="time.custom">Custom…</option>
         </select>
-        <input id="filter-time-from" type="datetime-local" class="time-custom" hidden aria-label="Time from" />
-        <input id="filter-time-to" type="datetime-local" class="time-custom" hidden aria-label="Time to" />
+        <input id="filter-time-from" type="datetime-local" class="time-custom" hidden aria-label="Time from" data-i18n-attr="aria-label:controls.timeFrom" />
+        <input id="filter-time-to" type="datetime-local" class="time-custom" hidden aria-label="Time to" data-i18n-attr="aria-label:controls.timeTo" />
       </div>
-      <div class="ctl-group" role="group" aria-label="Export">
-        <span class="ctl-label">Export</span>
-        <button type="button" id="btn-export-calls-json" class="btn" title="Download the currently-visible/filtered call rows as JSON">Calls · JSON</button>
-        <button type="button" id="btn-export-calls-csv" class="btn" title="Download the currently-visible/filtered call rows as CSV">Calls · CSV</button>
-        <button type="button" id="btn-export-interventions-json" class="btn" title="Download the currently-visible/filtered intervention rows as JSON">Interventions · JSON</button>
-        <button type="button" id="btn-export-interventions-csv" class="btn" title="Download the currently-visible/filtered intervention rows as CSV">Interventions · CSV</button>
+      <div class="ctl-group" role="group" aria-label="Export" data-i18n-attr="aria-label:controls.export">
+        <span class="ctl-label" data-i18n="controls.export">Export</span>
+        <button type="button" id="btn-export-calls-json" class="btn" title="Download the currently-visible/filtered call rows as JSON" data-i18n="export.callsJson" data-i18n-attr="title:export.callsJsonTitle">Calls · JSON</button>
+        <button type="button" id="btn-export-calls-csv" class="btn" title="Download the currently-visible/filtered call rows as CSV" data-i18n="export.callsCsv" data-i18n-attr="title:export.callsCsvTitle">Calls · CSV</button>
+        <button type="button" id="btn-export-interventions-json" class="btn" title="Download the currently-visible/filtered intervention rows as JSON" data-i18n="export.interventionsJson" data-i18n-attr="title:export.interventionsJsonTitle">Interventions · JSON</button>
+        <button type="button" id="btn-export-interventions-csv" class="btn" title="Download the currently-visible/filtered intervention rows as CSV" data-i18n="export.interventionsCsv" data-i18n-attr="title:export.interventionsCsvTitle">Interventions · CSV</button>
       </div>
     </div>
 
@@ -56,70 +56,70 @@
         <div class="dash-grid">
           <!-- Panel 1: live tool-call stream (+ interleaved result status) -->
           <section id="stream-panel" class="card">
-        <h2>Live tool calls</h2>
+        <h2 data-i18n="stream.h2">Live tool calls</h2>
         <!-- Shown (by app.js) only when no WebSocket is available; explains the polling fallback -->
         <div id="stream-status" class="stream-status" role="status" hidden
              style="margin:0 0 0.8rem;padding:0.5rem 0.75rem;border:1px solid var(--border);border-left:3px solid var(--amber);background:var(--amber-tint);color:var(--c-st-amber);border-radius:var(--radius);font-size:0.88rem;"></div>
         <div class="stream-filters">
-          <input id="filter-tool" type="text" placeholder="Tool name…" />
+          <input id="filter-tool" type="text" placeholder="Tool name…" data-i18n-attr="placeholder:filter.toolPlaceholder" />
           <select id="filter-status">
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="ok">OK</option>
-            <option value="fail">Fail</option>
-            <option value="intervention">Intervention</option>
-            <option value="unmatched">Unmatched result</option>
+            <option value="" data-i18n="status.all">All statuses</option>
+            <option value="pending" data-i18n="status.pending">Pending</option>
+            <option value="ok" data-i18n="status.ok">OK</option>
+            <option value="fail" data-i18n="status.fail">Fail</option>
+            <option value="intervention" data-i18n="status.intervention">Intervention</option>
+            <option value="unmatched" data-i18n="status.unmatched">Unmatched result</option>
           </select>
-          <input id="filter-session" type="text" placeholder="Session key…" />
+          <input id="filter-session" type="text" placeholder="Session key…" data-i18n-attr="placeholder:filter.sessionPlaceholder" />
           <span id="stream-count" class="muted small"></span>
-          <button type="button" id="btn-clear-history" class="btn btn-danger"
-                  title="Clears tool calls currently shown in this dashboard (client-side only)">Clear</button>
+          <button type="button" id="btn-clear-history" class="btn btn-ghost"
+                  title="Clears tool calls currently shown in this dashboard (client-side only)" data-i18n="action.clear" data-i18n-attr="title:stream.clearTitle">Clear</button>
         </div>
         <div class="list-wrap">
-          <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns">
-            <th scope="col">Status</th>
-            <th scope="col">Tool</th>
-            <th scope="col">Session</th>
-            <th scope="col">Time</th>
-            <th scope="col" class="num-col">Dur (ms)</th>
-            <th scope="col" class="num-col">In (est)</th>
-            <th scope="col" class="num-col">Out (est)</th>
-            <th scope="col" class="num-col">Context Size</th>
-            <th scope="col" class="num-col">Size</th>
+          <div id="stream-head" class="stream-head" role="row" aria-label="Live call columns" data-i18n-attr="aria-label:stream.headAria">
+            <th scope="col" data-i18n="col.status">Status</th>
+            <th scope="col" data-i18n="col.tool">Tool</th>
+            <th scope="col" data-i18n="col.session">Session</th>
+            <th scope="col" data-i18n="col.time">Time</th>
+            <th scope="col" class="num-col" data-i18n="col.durMs">Dur (ms)</th>
+            <th scope="col" class="num-col" data-i18n="col.inEst">In (est)</th>
+            <th scope="col" class="num-col" data-i18n="col.outEst">Out (est)</th>
+            <th scope="col" class="num-col" data-i18n="col.contextSize">Context Size</th>
+            <th scope="col" class="num-col" data-i18n="col.size">Size</th>
             <th scope="col" aria-hidden="true"></th>
           </div>
           <ul id="stream-list" class="stream-list"></ul>
-          <div id="stream-empty" class="empty">Waiting for tool calls…</div>
+          <div id="stream-empty" class="empty" data-i18n="stream.empty">Waiting for tool calls…</div>
         </div>
-        <div class="muted small">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters. The tool description (from the request's tool definitions) is shown in the row's detail panel; “—” means the request provided none.</div>
+        <div class="muted small" data-i18n="stream.footnote">Token cells show the upstream provider's reported usage per turn; "—" means no usage was captured. Total is the full turn total (in+out), dominated by resent history, not a single tool's cost. Size is the result payload length in characters. The tool description (from the request's tool definitions) is shown in the row's detail panel; “—” means the request provided none.</div>
       </section>
 
       <!-- Panel 2: counts + top tools (kept fresh by polling /api/stats) -->
       <section id="stats-panel" class="card">
         <div class="card-head">
-          <h2>Counts &amp; top tools</h2>
-          <button type="button" class="btn btn-danger" id="btn-clear-stats" title="Clears all server-side stats (counts + top tools)">Clear</button>
+          <h2 data-i18n="stats.h2">Counts &amp; top tools</h2>
+          <button type="button" class="btn btn-ghost" id="btn-clear-stats" title="Clears all server-side stats (counts + top tools)" data-i18n="action.clear" data-i18n-attr="title:stats.clearTitle">Clear</button>
         </div>
         <div class="stat-row">
-          <div class="stat"><span id="total-calls" class="num">0</span><label>calls</label></div>
-          <div class="stat"><span id="total-results" class="num">0</span><label>results</label></div>
+          <div class="stat"><span id="total-calls" class="num">0</span><label data-i18n="stat.calls">calls</label></div>
+          <div class="stat"><span id="total-results" class="num">0</span><label data-i18n="stat.results">results</label></div>
         </div>
         <div class="stat-row">
-          <div class="stat"><span id="total-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>tokens</label></div>
-          <div class="stat"><span id="cache-hit-input-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>cache hit</label></div>
-          <div class="stat"><span id="input-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>input</label></div>
-          <div class="stat"><span id="output-tokens" class="num small" title="No data yet — appears once tool results arrive.">—</span><label>output</label></div>
+          <div class="stat"><span id="total-tokens" class="num small" title="No data yet — appears once tool results arrive." data-i18n-attr="title:noData.tip">—</span><label data-i18n="stat.tokens">tokens</label></div>
+          <div class="stat"><span id="cache-hit-input-tokens" class="num small" title="No data yet — appears once tool results arrive." data-i18n-attr="title:noData.tip">—</span><label data-i18n="stat.cacheHit">cache hit</label></div>
+          <div class="stat"><span id="input-tokens" class="num small" title="No data yet — appears once tool results arrive." data-i18n-attr="title:noData.tip">—</span><label data-i18n="stat.input">input</label></div>
+          <div class="stat"><span id="output-tokens" class="num small" title="No data yet — appears once tool results arrive." data-i18n-attr="title:noData.tip">—</span><label data-i18n="stat.output">output</label></div>
         </div>
         <div class="stat-row live">
-          <div class="stat"><span id="live-calls" class="num small">0</span><label>this session</label></div>
-          <div class="stat"><span id="live-results" class="num small">0</span><label>results</label></div>
-          <div class="stat"><span id="live-interventions" class="num small">0</span><label>interventions</label></div>
+          <div class="stat"><span id="live-calls" class="num small">0</span><label data-i18n="stat.thisSession">this session</label></div>
+          <div class="stat"><span id="live-results" class="num small">0</span><label data-i18n="stat.results">results</label></div>
+          <div class="stat"><span id="live-interventions" class="num small">0</span><label data-i18n="stat.interventions">interventions</label></div>
         </div>
         <div class="tools-scroll">
           <div id="top-tools"></div>
         </div>
-        <div class="muted small">Values shown as "—" have no data yet; they populate as tool results arrive.</div>
-        <div class="muted small">Interventions retained: <span id="interventions-retained">0</span></div>
+        <div class="muted small" data-i18n="stats.valuesNote">Values shown as "—" have no data yet; they populate as tool results arrive.</div>
+        <div class="muted small"><span data-i18n="stats.retained">Interventions retained:</span> <span id="interventions-retained">0</span></div>
       </section>
 
       <!-- Panel 3: intervention log -->
@@ -128,16 +128,16 @@
              their client-side state), NOT the tool-call stream. Mirrors the stats
              panel's card-head Clear pattern (heading left, action button right). -->
         <div class="card-head">
-          <h2>Intervention log</h2>
-          <button type="button" class="btn btn-danger" id="btn-clear-interventions"
-                  title="Clears the intervention log currently shown in this dashboard (client-side only)">Clear</button>
+          <h2 data-i18n="interventions.h2">Intervention log</h2>
+          <button type="button" class="btn btn-ghost" id="btn-clear-interventions"
+                  title="Clears the intervention log currently shown in this dashboard (client-side only)" data-i18n="action.clear" data-i18n-attr="title:interventions.clearTitle">Clear</button>
         </div>
         <div class="list-wrap">
           <ul id="intervention-list" class="stream-list"></ul>
           <div id="intervention-empty" class="empty iv-empty">
             <svg class="iv-empty-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.5-7 4 14 2.5-7H21"/></svg>
-            <div>No interventions yet</div>
-            <div class="small muted">Policy rule actions applied to live tool calls will appear here.</div>
+            <div data-i18n="interventions.empty">No interventions yet</div>
+            <div class="small muted" data-i18n="interventions.emptyHint">Policy rule actions applied to live tool calls will appear here.</div>
           </div>
         </div>
       </section>

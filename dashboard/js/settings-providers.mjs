@@ -6,15 +6,16 @@
  * lives in the createProvidersPane() closure (one instance per settings modal).
  * Raw apiKeys are only shown in the editor form, never in list rows.
  *
- * Import graph: this -> dom.mjs only. Consumed by settings.mjs.
+ * Import graph: this -> dom.mjs, i18n/index.mjs. Consumed by settings.mjs.
  * ==================================================================== */
 import { $, el, errMsg } from './dom.mjs';
+import { t, applyI18n, onLocaleChange } from './i18n/index.mjs';
 
 // Provider TYPES offered by the form; adapterId is what the server stores.
 const PROVIDER_TYPES = [
-  { adapterId: 'generic-openai', label: 'OpenAI-compatible' },
-  { adapterId: 'generic-anthropic', label: 'Anthropic' },
-  { adapterId: 'copilot', label: 'GitHub Copilot' }
+  { adapterId: 'generic-openai', labelKey: 'providers.type.openai' },
+  { adapterId: 'generic-anthropic', labelKey: 'providers.type.anthropic' },
+  { adapterId: 'copilot', labelKey: 'providers.type.copilot' }
 ];
 const ACTIVE_RADIO_NAME = 'settings-provider-active'; // native radio group: one checked at most in the DOM too
 const PROVIDERS_BASE = 'api/api-providers';          // relative base path, matching the dashboard convention
@@ -24,6 +25,15 @@ const DEVICE_POLL_URL = PROVIDERS_BASE + '/device-flow/poll';   // POST {flowId}
 const DEVICE_CONFIRM_URL = PROVIDERS_BASE + '/device-flow/confirm'; // POST {pendingId, model|null, name?, providerId?} => {status:'done', provider}; persists once
 const DEVICE_DEFAULT_INTERVAL_S = 5;                 // fallback poll interval when the server omits one
 
+/* Runtime message = {key, params, tone} (or an array of them). Stored so the pane
+ * can re-translate the last visible message on locale change. */
+function rtMsg(key, params, tone) { return { key: key, params: params || null, tone: tone || null }; }
+function trText(m) {
+  if (!m) return '';
+  if (Array.isArray(m)) return m.map(trText).join(' ');
+  return t(m.key, m.params);
+}
+
 /* ---- pure helpers (unit-testable without any network or DOM) --------- */
 /* Client-side validation mirroring the server rules (non-empty name/baseUrl;
  * model is optional): returns {ok, errors{field:message}} BEFORE any submit
@@ -31,8 +41,8 @@ const DEVICE_DEFAULT_INTERVAL_S = 5;                 // fallback poll interval w
 export function validateClientSide(input) {
   var v = input || {};
   var errors = {};
-  if (!String(v.name == null ? '' : v.name).trim()) errors.name = 'Name is required.';
-  if (!String(v.baseUrl == null ? '' : v.baseUrl).trim()) errors.baseUrl = 'Base URL is required.';
+  if (!String(v.name == null ? '' : v.name).trim()) errors.name = t('providers.validate.nameRequired');
+  if (!String(v.baseUrl == null ? '' : v.baseUrl).trim()) errors.baseUrl = t('providers.validate.baseUrlRequired');
   return { ok: Object.keys(errors).length === 0, errors: errors };
 }
 
@@ -47,7 +57,7 @@ function providerTypeOf(p) {
 }
 function typeLabelOf(adapterId) {
   var hit = PROVIDER_TYPES.filter(function (t) { return t.adapterId === adapterId; })[0];
-  return hit ? hit.label : PROVIDER_TYPES[0].label;
+  return t(hit ? hit.labelKey : PROVIDER_TYPES[0].labelKey);
 }
 
 /* Display-only projection of a provider row record (list items show masked
@@ -58,7 +68,7 @@ export function formatProviderRow(provider) {
   var typeId = providerTypeOf(p);
   return {
     id: p.id != null ? String(p.id) : '',
-    name: name || '(unnamed)',
+    name: name || t('providers.unnamed'),
     baseUrl: String(p.baseUrl == null ? '' : p.baseUrl),
     model: String(p.model == null ? '' : p.model),
     typeId: typeId,
@@ -78,92 +88,92 @@ const PROVIDER_PANE_HTML =
     '<div id="prov-error" class="form-error" role="alert" hidden></div>' +
     '<section id="prov-list-view" class="prov-view">' +
       '<div class="prov-bar">' +
-        '<button type="button" class="btn btn-primary" id="prov-add-btn">+ Add Provider</button>' +
-        '<span class="muted small prov-hint">Click a provider row to edit it \u00B7 select a radio circle to make that provider active.</span>' +
+        '<button type="button" class="btn btn-primary" id="prov-add-btn" data-i18n="providers.add">+ Add Provider</button>' +
+        '<span class="muted small prov-hint" data-i18n="providers.hint">Click a provider row to edit it \u00B7 select a radio circle to make that provider active.</span>' +
       '</div>' +
       '<ul id="prov-list" class="provider-list"></ul>' +
-      '<div id="prov-status" class="small muted" hidden>Loading\u2026</div>' +
-      '<div id="prov-empty" class="empty" hidden>No API providers yet \u2014 click "+ Add Provider" to configure an LLM engine.</div>' +
+      '<div id="prov-status" class="small muted" data-i18n="providers.loading" hidden>Loading\u2026</div>' +
+      '<div id="prov-empty" class="empty" data-i18n="providers.empty" hidden>No API providers yet \u2014 click "+ Add Provider" to configure an LLM engine.</div>' +
     '</section>' +
     '<section id="prov-form-view" class="prov-view is-hidden">' +
       '<section id="prov-editor" class="prov-editor">' +
-        '<h3 id="prov-editor-title" class="section-title">Provider</h3>' +
+        '<h3 id="prov-editor-title" class="section-title" data-i18n="providers.editor.titleDefault">Provider</h3>' +
         '<form id="prov-form" novalidate>' +
           '<div class="field-row">' +
             '<div class="field" id="pf-type-field">' +
-              '<label for="pf-type">Type</label>' +
+              '<label for="pf-type" data-i18n="providers.form.type">Type</label>' +
               '<select id="pf-type">' +
-                '<option value="generic-openai">OpenAI-compatible</option>' +
-                '<option value="generic-anthropic">Anthropic</option>' +
-                '<option value="copilot">GitHub Copilot</option>' +
+                '<option value="generic-openai" data-i18n="providers.type.openai">OpenAI-compatible</option>' +
+                '<option value="generic-anthropic" data-i18n="providers.type.anthropic">Anthropic</option>' +
+                '<option value="copilot" data-i18n="providers.type.copilot">GitHub Copilot</option>' +
               '</select>' +
-              '<div class="hint">GitHub Copilot signs in with a device code; no base URL or API key is needed.</div>' +
+              '<div class="hint" data-i18n="providers.form.typeHint">GitHub Copilot signs in with a device code; no base URL or API key is needed.</div>' +
             '</div>' +
           '</div>' +
           '<div class="field-row">' +
             '<div class="field">' +
-              '<label for="pf-name">Name</label>' +
-              '<input id="pf-name" type="text" placeholder="e.g. OpenAI local" />' +
-              '<div class="hint">Required. Shown as the provider label in the list.</div>' +
+              '<label for="pf-name" data-i18n="providers.form.name">Name</label>' +
+              '<input id="pf-name" type="text" data-i18n-attr="placeholder:providers.form.namePlaceholder" placeholder="e.g. OpenAI local" />' +
+              '<div class="hint" data-i18n="providers.form.nameHint">Required. Shown as the provider label in the list.</div>' +
             '</div>' +
             '<div class="field" id="pf-base-url-field">' +
-              '<label for="pf-base-url">Base URL</label>' +
+              '<label for="pf-base-url" data-i18n="providers.form.baseUrl">Base URL</label>' +
               '<input id="pf-base-url" type="text" placeholder="https://host.example/v1" />' +
-              '<div class="hint">Required. Endpoint base for this engine (OpenAI- or Anthropic-style).</div>' +
+              '<div class="hint" data-i18n="providers.form.baseUrlHint">Required. Endpoint base for this engine (OpenAI- or Anthropic-style).</div>' +
             '</div>' +
           '</div>' +
           '<div class="field-row" id="pf-model-row">' +
             '<div class="field">' +
-              '<label for="pf-model">Model</label>' +
+              '<label for="pf-model" data-i18n="providers.form.model">Model</label>' +
               '<select id="pf-model" class="pf-model-select"></select>' +
-              '<div class="hint">\u201CFrom Request\u201D routes each request to the model the client asks for. Test or change the Base URL to list models.</div>' +
+              '<div class="hint" data-i18n="providers.form.modelHint">\u201CFrom Request\u201D routes each request to the model the client asks for. Test or change the Base URL to list models.</div>' +
             '</div>' +
           '</div>' +
           '<div class="field field-key" id="pf-api-key-field">' +
-            '<label for="pf-api-key">API key</label>' +
+            '<label for="pf-api-key" data-i18n="providers.form.apiKey">API key</label>' +
             '<div class="key-line">' +
               '<input id="pf-api-key" class="pf-password" type="password" autocomplete="off" spellcheck="false" />' +
-              '<button type="button" class="btn key-toggle" id="pf-key-toggle">Reveal</button>' +
+              '<button type="button" class="btn key-toggle" id="pf-key-toggle" data-i18n="providers.key.reveal">Reveal</button>' +
             '</div>' +
-            '<div class="hint">Optional. Leave blank for no key; saving an empty value clears any stored key.</div>' +
+            '<div class="hint" data-i18n="providers.form.apiKeyHint">Optional. Leave blank for no key; saving an empty value clears any stored key.</div>' +
           '</div>' +
           '<div id="pf-copilot" class="copilot-login" hidden>' +
             '<div id="pf-copilot-auth" class="small muted" hidden></div>' +
-            '<button type="button" class="btn btn-primary" id="pf-copilot-login">Login with GitHub Copilot</button>' +
+            '<button type="button" class="btn btn-primary" id="pf-copilot-login" data-i18n="providers.copilot.login">Login with GitHub Copilot</button>' +
             '<div id="pf-copilot-success" class="copilot-success" role="status" hidden>' +
               '<span class="copilot-tick" aria-hidden="true">\u2713</span>' +
-              '<span class="copilot-success-label">Signed in to GitHub Copilot</span>' +
+              '<span class="copilot-success-label" data-i18n="providers.copilot.signedInLabel">Signed in to GitHub Copilot</span>' +
             '</div>' +
             '<div id="pf-copilot-popup" class="device-popup-backdrop" hidden>' +
               '<div class="device-popup card" role="dialog" aria-modal="true" aria-labelledby="pf-copilot-popup-title" tabindex="-1">' +
-                '<h3 id="pf-copilot-popup-title" class="section-title">Sign in to GitHub Copilot</h3>' +
+                '<h3 id="pf-copilot-popup-title" class="section-title" data-i18n="providers.copilot.popupTitle">Sign in to GitHub Copilot</h3>' +
                 '<div id="pf-copilot-device" class="copilot-device">' +
-                  '<div class="copilot-code-line">Open this link on GitHub:</div>' +
+                  '<div class="copilot-code-line" data-i18n="providers.copilot.openLink">Open this link on GitHub:</div>' +
                   '<a id="pf-copilot-link" class="copilot-link" target="_blank" rel="noopener noreferrer"></a>' +
-                  '<div class="copilot-code-line">Then enter this code:</div>' +
+                  '<div class="copilot-code-line" data-i18n="providers.copilot.enterCode">Then enter this code:</div>' +
                   '<div class="device-code-row">' +
                     '<code id="pf-copilot-code" class="copilot-code"></code>' +
-                    '<button type="button" class="btn" id="pf-copilot-copy">Copy</button>' +
+                    '<button type="button" class="btn" id="pf-copilot-copy" data-i18n="providers.copilot.copy">Copy</button>' +
                     '<span id="pf-copilot-copy-msg" class="device-copy-msg" role="status" hidden></span>' +
                   '</div>' +
                 '</div>' +
                 '<div class="device-popup-foot">' +
-                  '<button type="button" class="btn" id="pf-copilot-popup-close">Close</button>' +
+                  '<button type="button" class="btn" id="pf-copilot-popup-close" data-i18n="providers.copilot.close">Close</button>' +
                 '</div>' +
               '</div>' +
             '</div>' +
             '<div id="pf-copilot-status" class="small muted" role="status" hidden></div>' +
             '<div id="pf-copilot-confirm" class="copilot-confirm" hidden>' +
-              '<button type="button" class="btn btn-primary" id="pf-copilot-confirm-btn">Save provider</button>' +
+              '<button type="button" class="btn btn-primary" id="pf-copilot-confirm-btn" data-i18n="providers.copilot.save">Save provider</button>' +
             '</div>' +
           '</div>' +
           '<div id="pf-test-result" class="probe-result" role="status" hidden></div>' +
           '<div class="prov-foot">' +
-            '<button type="submit" class="btn btn-primary" id="pf-save">Save</button>' +
-            '<button type="button" class="btn" id="pf-test">Test</button>' +
+            '<button type="submit" class="btn btn-primary" id="pf-save" data-i18n="providers.save">Save</button>' +
+            '<button type="button" class="btn" id="pf-test" data-i18n="providers.test">Test</button>' +
             '<span class="spacer"></span>' +
-            '<button type="button" class="btn" id="pf-reset" title="Discard changes and reload the latest saved values" hidden>Reset to saved</button>' +
-            '<button type="button" class="btn" id="pf-cancel">Cancel</button>' +
+            '<button type="button" class="btn" id="pf-reset" data-i18n="providers.reset" data-i18n-attr="title:providers.resetTitle" title="Discard changes and reload the latest saved values" hidden>Reset to saved</button>' +
+            '<button type="button" class="btn" id="pf-cancel" data-i18n="providers.cancel">Cancel</button>' +
           '</div>' +
           '<div id="pf-error" class="form-error" role="alert" hidden></div>' +
         '</form>' +
@@ -177,8 +187,10 @@ export function createProvidersPane(opts) {
   var doFetch = opts.doFetch;
   var els = {};                       // providers-pane ids, cached after mount
   var providerRows = [];              // last fetched list rows (apiKeySet only, never raw keys)
+  var providerOrder = [];             // provider ids in first-seen display order (keeps the list stable across reloads)
   var editorId = '';                  // '' => unsaved draft / neutral; string id => editing an existing saved record
   var isDraft = false;                // user is authoring a NEW (unsaved) provider in the form
+  var titleName = '';                 // provider name shown in the editor title (edit mode)
   var provView = 'list';             // 'list' | 'form' — internal sub-view selector for the providers pane (not a route)
   var busyActive = false;             // guards overlapping PATCH {isActive:true} calls
   var busySave = false;               // guards overlapping create/update submits
@@ -190,6 +202,7 @@ export function createProvidersPane(opts) {
   var deviceTimer = null;             // pending device-flow poll timer handle (cleared on cancel)
   var deviceBusy = false;             // a copilot login is in flight (start or polling); guards the login button
   var pendingId = '';                 // poll 'done' token awaiting the user's model confirm ('' => nothing to confirm)
+  var live = {};                      // last runtime messages per visible slot (re-translated on locale change)
 
   function detailUrl(id) { return PROVIDERS_BASE + '/' + encodeURIComponent(id); }
 
@@ -220,28 +233,53 @@ export function createProvidersPane(opts) {
     var tpl = document.createElement('template');
     tpl.innerHTML = PROVIDER_PANE_HTML.trim();
     var pane = tpl.content.firstElementChild;   // not yet connected: resolve ids from the pane itself
+    applyI18n(pane);                            // static texts in the active locale before first show
     bindProvidersEvents(pane);
+    onLocaleChange(relocalize);
     return pane;
   }
 
+  /* Re-renders every runtime-generated text in the pane after a locale switch.
+     Static [data-i18n] nodes are already re-applied by setLocale(). */
+  function relocalize() {
+    paintProvError();
+    paintPfError();
+    paintStatus();
+    paintProbe();
+    paintDeviceStatus();
+    paintCopyMsg();
+    renderProviders({ providers: providerRows });
+    var sel = findEl('pf-model');
+    if (sel) renderModelOptions(Array.prototype.map.call(sel.options, function (o) { return o.value; }).filter(Boolean), sel.value);
+    var keyInput = findEl('pf-api-key');
+    if (keyInput) findEl('pf-key-toggle').textContent = t(keyInput.type === 'text' ? 'providers.key.hide' : 'providers.key.reveal');
+    paintEditorTitle();
+    syncAdapterView();
+    var auth = findEl('pf-copilot-auth');
+    if (auth) renderLoginStatus(!auth.hidden);
+  }
+
   /* ====================== list: rendering + actions ==================== */
-  function setProvError(msg) {
+  function setProvError(m) { live.provError = m || null; paintProvError(); }
+  function paintProvError() {
     var n = findEl('prov-error');
     if (!n) return;
-    n.textContent = msg || '';
-    n.hidden = !msg;
+    n.textContent = trText(live.provError);
+    n.hidden = !live.provError;
   }
-  function setPfError(msg) {
+  function setPfError(m) { live.pfError = m || null; paintPfError(); }
+  function paintPfError() {
     var n = findEl('pf-error');
     if (!n) return;
-    n.textContent = msg || '';
-    n.hidden = !msg;
+    n.textContent = trText(live.pfError);
+    n.hidden = !live.pfError;
   }
-  function setStatus(text) {
+  function setStatus(m) { live.status = m || null; paintStatus(); }
+  function paintStatus() {
     var n = findEl('prov-status');
     if (!n) return;
-    n.textContent = text || '';
-    n.hidden = !text;
+    n.textContent = trText(live.status);
+    n.hidden = !live.status;
   }
 
   /* Sub-view toggle: the API Providers pane alternates between a LIST view and an
@@ -272,7 +310,12 @@ export function createProvidersPane(opts) {
   // Render rows from a freshly fetched list payload ({providers:[...], activeId}).
   // Raw keys never appear here.
   function renderProviders(data) {
-    providerRows = data && Array.isArray(data.providers) ? data.providers.slice() : [];
+    // Keep the first-seen id order across reloads: the server re-inserts a row on PATCH, so its list order shifts on select.
+    var incoming = data && Array.isArray(data.providers) ? data.providers.slice() : [];
+    var seenOrder = providerOrder.slice();
+    incoming.forEach(function (p) { if (seenOrder.indexOf(p.id) < 0) seenOrder.push(p.id); });
+    providerOrder = seenOrder.filter(function (id) { return incoming.some(function (p) { return p.id === id; }); });
+    providerRows = incoming.sort(function (a, b) { return providerOrder.indexOf(a.id) - providerOrder.indexOf(b.id); });
     var list = findEl('prov-list');
     var emptyEl = findEl('prov-empty');
     if (!list) return;
@@ -288,7 +331,7 @@ export function createProvidersPane(opts) {
       radio.name = ACTIVE_RADIO_NAME;
       radio.value = d.id;
       radio.checked = d.active;                       // mirrors server invariant: at most one checked
-      radio.setAttribute('aria-label', 'Make "' + d.name + '" the active provider');
+      radio.setAttribute('aria-label', t('providers.activeAria', { name: d.name }));
 
       var info = el('div', 'provider-info');
       info.appendChild(el('span', 'provider-name', d.name));
@@ -299,8 +342,8 @@ export function createProvidersPane(opts) {
       var chip = el('span', 'badge proto-chip ' + chipClass, d.typeLabel);
       var delBtn = el('button', 'btn-ghost prov-del', '\u00D7');
       delBtn.type = 'button';
-      delBtn.title = 'Delete this provider';
-      delBtn.setAttribute('aria-label', 'Delete provider "' + d.name + '"');
+      delBtn.title = t('providers.deleteTitle');
+      delBtn.setAttribute('aria-label', t('providers.deleteAria', { name: d.name }));
       aux.appendChild(chip); aux.appendChild(delBtn);
 
       li.appendChild(radio); li.appendChild(info); li.appendChild(aux);
@@ -311,12 +354,12 @@ export function createProvidersPane(opts) {
 
   async function refreshList() {
     setProvError(null);
-    setStatus('Loading\u2026');
+    setStatus(rtMsg('providers.loading'));
     try {
       var data = await fetchJson(PROVIDERS_BASE);
       renderProviders(data);
     } catch (e) {
-      setProvError('Failed to load providers: ' + errMsg(e));
+      setProvError(rtMsg('providers.error.load', { detail: errMsg(e) }));
     } finally {
       setStatus(null);
     }
@@ -336,7 +379,7 @@ export function createProvidersPane(opts) {
       });
       await refreshList();                  // authoritative reload: mirrors the server's single-active row
     } catch (e) {
-      setProvError('Could not make active: ' + errMsg(e));
+      setProvError(rtMsg('providers.error.activate', { detail: errMsg(e) }));
       var r2 = findEl('prov-list')?.querySelector('input.prov-radio[value="' + id + '"]');
       if (r2) r2.checked = false;           // revert optimistic UI state when the request fails
     } finally { busyActive = false; }
@@ -344,8 +387,8 @@ export function createProvidersPane(opts) {
 
   async function deleteProvider(id) {
     var p = rowById(id);
-    var label = p ? formatProviderRow(p).name : '(unknown)';
-    if (!window.confirm('Delete provider "' + label + '"? This cannot be undone.')) return;
+    var label = p ? formatProviderRow(p).name : t('providers.unknownName');
+    if (!window.confirm(t('providers.confirmDelete', { name: label }))) return;
     try {
       var res = await doFetch(detailUrl(id), { method: 'DELETE' });
       if (!res.ok && res.status !== 404) {
@@ -356,7 +399,7 @@ export function createProvidersPane(opts) {
       await refreshList(); // auto-promotion of a remaining provider is reflected here
       if (String(editorId) === String(id)) discardEditor();
     } catch (e) {
-      setProvError('Delete failed: ' + errMsg(e));
+      setProvError(rtMsg('providers.error.delete', { detail: errMsg(e) }));
     }
   }
 
@@ -386,7 +429,7 @@ export function createProvidersPane(opts) {
     add(selected);
     sel.textContent = '';
     values.forEach(function (v) {
-      var o = el('option', null, v ? v : 'From Request');
+      var o = el('option', null, v ? v : t('providers.model.fromRequest'));
       o.value = v;
       sel.appendChild(o);
     });
@@ -411,12 +454,14 @@ export function createProvidersPane(opts) {
     setProbeResult(null);
   }
 
-  function setProbeResult(text, tone) {
+  function setProbeResult(m) { live.probe = m || null; paintProbe(); }
+  function paintProbe() {
     var n = findEl('pf-test-result');
     if (!n) return;
-    n.textContent = text || '';
-    n.className = 'probe-result' + (tone ? ' is-' + tone : '');
-    n.hidden = !text;
+    var m = live.probe;
+    n.textContent = trText(m);
+    n.className = 'probe-result' + (m && m.tone ? ' is-' + m.tone : '');
+    n.hidden = !m;
   }
 
   // Probe the current form values. manual=true (Test button) always runs; auto probes
@@ -430,7 +475,7 @@ export function createProvidersPane(opts) {
       probeSeq++;
       resultKey = null;
       renderModelOptions([], findEl('pf-model').value);
-      setProbeResult(manual ? 'Enter a Base URL to test.' : null, manual ? 'fail' : null);
+      setProbeResult(manual ? rtMsg('providers.probe.enterBaseUrl', null, 'fail') : null);
       return;
     }
     var body = { protocol: probeProtocol(), baseUrl: baseUrl, apiKey: apiKey || null };
@@ -446,7 +491,7 @@ export function createProvidersPane(opts) {
   // Sends one probe. Its result applies only while the inputs key and probe sequence are still current.
   async function requestProbe(body, key) {
     var seq = ++probeSeq;
-    setProbeResult('Probing\u2026', 'probing');
+    setProbeResult(rtMsg('providers.probe.probing', null, 'probing'));
     try {
       var data = await fetchJson(PROBE_URL, {
         method: 'POST',
@@ -459,7 +504,7 @@ export function createProvidersPane(opts) {
     } catch (e) {
       if (seq !== probeSeq || key !== inputsKey()) return;
       renderModelOptions([], findEl('pf-model').value);
-      setProbeResult('Probe failed: ' + errMsg(e), 'fail');
+      setProbeResult(rtMsg('providers.probe.failedFetch', { detail: errMsg(e) }, 'fail'));
     }
   }
 
@@ -468,11 +513,17 @@ export function createProvidersPane(opts) {
     if (data && data.ok) {
       var models = Array.isArray(data.models) ? data.models : [];
       renderModelOptions(models, findEl('pf-model').value);
-      setProbeResult('Connected \u00B7 ' + models.length + (models.length === 1 ? ' model' : ' models') + ' \u00B7 ' + ms + ' ms', 'ok');
+      setProbeResult(models.length === 1
+        ? rtMsg('providers.probe.connectedOne', { ms: ms }, 'ok')
+        : rtMsg('providers.probe.connectedMany', { count: models.length, ms: ms }, 'ok'));
     } else {
       renderModelOptions([], findEl('pf-model').value);
-      var detail = data && typeof data.error === 'string' && data.error ? data.error : 'unknown error';
-      setProbeResult('Probe failed' + (data && data.status ? ' (HTTP ' + data.status + ')' : '') + ': ' + detail + ' \u00B7 ' + ms + ' ms', 'fail');
+      var detail = data && typeof data.error === 'string' && data.error ? data.error : '';
+      var http = data && data.status ? data.status : '';
+      var key = detail
+        ? (http ? 'providers.probe.failedHttp' : 'providers.probe.failed')
+        : (http ? 'providers.probe.failedNoDetailHttp' : 'providers.probe.failedNoDetail');
+      setProbeResult(rtMsg(key, { detail: detail, status: http, ms: ms }, 'fail'));
     }
   }
 
@@ -491,20 +542,26 @@ export function createProvidersPane(opts) {
   function ensureKeyHidden() {
     var key = findEl('pf-api-key');
     key.type = 'password';
-    findEl('pf-key-toggle').textContent = 'Reveal';
+    findEl('pf-key-toggle').textContent = t('providers.key.reveal');
   }
   function toggleKeyVisibility() {
     var key = findEl('pf-api-key');
     var showing = key.type === 'text';
     key.type = showing ? 'password' : 'text';
-    findEl('pf-key-toggle').textContent = showing ? 'Reveal' : 'Hide';
+    findEl('pf-key-toggle').textContent = t(showing ? 'providers.key.reveal' : 'providers.key.hide');
     if (!showing) key.focus();
   }
 
   function updateEditorTitle(name) {
-    var t = findEl('prov-editor-title');
-    if (!t) return;
-    t.textContent = isDraft ? 'New provider' : name ? 'Edit \u201C' + name + '\u201D' : 'Provider';
+    titleName = name || '';
+    paintEditorTitle();
+  }
+  function paintEditorTitle() {
+    var node = findEl('prov-editor-title');
+    if (!node) return;
+    node.textContent = isDraft
+      ? t('providers.editor.titleNew')
+      : titleName ? t('providers.editor.titleEdit', { name: titleName }) : t('providers.editor.titleDefault');
   }
   function showReset(show) { findEl('pf-reset').hidden = !show; }
 
@@ -543,10 +600,10 @@ export function createProvidersPane(opts) {
       showFormView();                        // enter the FORM sub-view (edit mode, prefilled)
     } catch (e) {
       if (e && e.status === 404) {
-        setPfError('Provider not found \u2014 it may have been deleted.');
+        setPfError(rtMsg('providers.error.notFound'));
         refreshList();                       // resync the list with the server
       } else {
-        setPfError('Could not load provider: ' + errMsg(e));
+        setPfError(rtMsg('providers.error.loadRecord', { detail: errMsg(e) }));
       }
     }
   }
@@ -584,11 +641,11 @@ export function createProvidersPane(opts) {
       populateForm(rec, true);               // latest saved values win, in-progress edits discarded
     } catch (e) {
       if (e && e.status === 404) {
-        setPfError('Provider not found \u2014 it may have been deleted.');
+        setPfError(rtMsg('providers.error.notFound'));
         discardEditor();
         refreshList();
       } else {
-        setPfError('Reset failed: ' + errMsg(e));
+        setPfError(rtMsg('providers.error.reset', { detail: errMsg(e) }));
       }
     }
   }
@@ -611,9 +668,10 @@ export function createProvidersPane(opts) {
     var v = readValues();
     var errors = validateClientSide(v).errors;               // inline errors before ANY submit attempt
     if (copilot) delete errors.baseUrl;                      // copilot rows have no base URL input
-    var msgs = Object.keys(errors).map(function (k) { return errors[k]; });
+    var errKeys = { name: 'providers.validate.nameRequired', baseUrl: 'providers.validate.baseUrlRequired' };
+    var msgs = Object.keys(errors).map(function (k) { return rtMsg(errKeys[k]); });
     if (msgs.length) {
-      setPfError(msgs.join(' '));
+      setPfError(msgs);
       return;
     }
     // model null => From Request; copilot (deviceOAuth) rows never send apiKey
@@ -630,12 +688,14 @@ export function createProvidersPane(opts) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      if (!rec || typeof rec.id !== 'string') throw new Error('Unexpected response from server');
+      if (!rec || typeof rec.id !== 'string') throw new Error(t('providers.error.unexpected'));
       populateForm(rec, true);               // created/updated full record: edit state now tracks its id
       await refreshList();                   // list + radios reflect the change immediately (hot-apply)
       showListView();                        // return to the LIST sub-view (refreshed)
     } catch (e) {
-      setPfError((creating ? 'Create failed: ' : 'Update failed: ') + errMsg(e));
+      setPfError(creating
+        ? rtMsg('providers.error.create', { detail: errMsg(e) })
+        : rtMsg('providers.error.update', { detail: errMsg(e) }));
     } finally {
       busySave = false;
     }
@@ -655,16 +715,16 @@ export function createProvidersPane(opts) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      if (!data || !data.provider) throw new Error('Unexpected response from server');
+      if (!data || !data.provider) throw new Error(t('providers.error.unexpected'));
       clearPendingLogin();
       await refreshList();                   // the saved copilot row is now in the list
       discardEditor();                       // back to the list view (clears the draft)
     } catch (e) {
       if (e.status === 404 || e.status === 410) {
         clearPendingLogin();
-        setDeviceStatus('Login session expired. Click \u201CLogin with GitHub Copilot\u201D to try again.', 'fail');
+        setDeviceStatus(rtMsg('providers.error.sessionExpired', null, 'fail'));
       } else {
-        setPfError('Save failed: ' + errMsg(e));
+        setPfError(rtMsg('providers.error.save', { detail: errMsg(e) }));
       }
     } finally {
       busySave = false;
@@ -698,7 +758,7 @@ export function createProvidersPane(opts) {
     setHiddenEl('pf-save', copilot && !isSavedRecord());   // copilot Save only for saved rows; adds use the confirm step
     setHiddenEl('pf-test', copilot);
     var login = findEl('pf-copilot-login');
-    if (login) login.textContent = isSavedRecord() ? 'Re-login with GitHub Copilot' : 'Login with GitHub Copilot';
+    if (login) login.textContent = t(isSavedRecord() ? 'providers.copilot.relogin' : 'providers.copilot.login');
     placeModelRow();
   }
 
@@ -739,14 +799,14 @@ export function createProvidersPane(opts) {
     } catch (e) {
       if (pid !== pendingId) return;
       renderModelOptions([], findEl('pf-model').value);
-      setDeviceStatus('Could not load models: ' + errMsg(e) + '. Save uses From Request.', 'fail');
+      setDeviceStatus(rtMsg('providers.copilot.modelsFailed', { detail: errMsg(e) }, 'fail'));
     }
   }
 
   function renderLoginStatus(signedIn) {
     var n = findEl('pf-copilot-auth');
     if (!n) return;
-    n.textContent = signedIn ? 'Signed in with GitHub Copilot.' : '';
+    n.textContent = signedIn ? t('providers.copilot.signedInAuth') : '';
     n.hidden = !signedIn;
   }
 
@@ -757,12 +817,14 @@ export function createProvidersPane(opts) {
     if (!isCopilotType()) onProbeInput();
   }
 
-  function setDeviceStatus(text, tone) {
+  function setDeviceStatus(m) { live.deviceStatus = m || null; paintDeviceStatus(); }
+  function paintDeviceStatus() {
     var n = findEl('pf-copilot-status');
     if (!n) return;
-    n.textContent = text || '';
-    n.className = 'small copilot-status' + (tone ? ' is-' + tone : ' muted');
-    n.hidden = !text;
+    var m = live.deviceStatus;
+    n.textContent = trText(m);
+    n.className = 'small copilot-status' + (m && m.tone ? ' is-' + m.tone : ' muted');
+    n.hidden = !m;
   }
 
   function setLoginEnabled(on) {
@@ -791,14 +853,14 @@ export function createProvidersPane(opts) {
   }
 
   // Terminal state of a login attempt: keeps the message visible, re-enables the button.
-  function finishDeviceFlow(msg, tone) {
+  function finishDeviceFlow(m) {
     deviceSeq++;
     if (deviceTimer) clearTimeout(deviceTimer);
     deviceTimer = null;
     deviceBusy = false;
     setLoginEnabled(true);
     setHiddenEl('pf-copilot-popup', true);          // error/expired/denied: popup closes, message shows on the add screen
-    setDeviceStatus(msg, tone);
+    setDeviceStatus(m);
   }
 
 // Device-code popup: the user code + verification link live only here (never inline on the add screen).
@@ -812,12 +874,14 @@ export function createProvidersPane(opts) {
     setHiddenEl('pf-copilot-popup', false);
   }
 
-  function setCopyMessage(text, tone) {
+  function setCopyMessage(m) { live.copyMsg = m || null; paintCopyMsg(); }
+  function paintCopyMsg() {
     var n = findEl('pf-copilot-copy-msg');
     if (!n) return;
-    n.textContent = text || '';
-    n.className = 'device-copy-msg' + (tone ? ' is-' + tone : '');
-    n.hidden = !text;
+    var m = live.copyMsg;
+    n.textContent = trText(m);
+    n.className = 'device-copy-msg' + (m && m.tone ? ' is-' + m.tone : '');
+    n.hidden = !m;
   }
 
   // Close (button, backdrop, Esc) is the same as Cancel: stops polling and restores the login button.
@@ -835,13 +899,13 @@ export function createProvidersPane(opts) {
     var code = String(findEl('pf-copilot-code').textContent);
     var clip = globalThis.navigator && globalThis.navigator.clipboard;
     if (!clip || typeof clip.writeText !== 'function') {
-      setCopyMessage('Copy unavailable \u2014 select the code to copy it.', 'fail');
+      setCopyMessage(rtMsg('providers.copilot.copyUnavailable', null, 'fail'));
       return;
     }
     Promise.resolve().then(function () { return clip.writeText(code); }).then(function () {
-      if (devicePopupOpen()) setCopyMessage('Copied', 'ok');
+      if (devicePopupOpen()) setCopyMessage(rtMsg('providers.copilot.copied', null, 'ok'));
     }, function (e) {
-      if (devicePopupOpen()) setCopyMessage('Copy failed: ' + errMsg(e), 'fail');
+      if (devicePopupOpen()) setCopyMessage(rtMsg('providers.copilot.copyFailed', { detail: errMsg(e) }, 'fail'));
     });
   }
 
@@ -878,12 +942,12 @@ export function createProvidersPane(opts) {
     } catch (e) {
       if (flow.seq !== deviceSeq) return;
       if (e.status === 502) {                          // transient GitHub error: keep polling until TTL
-        setDeviceStatus('GitHub did not respond; retrying\u2026', 'probing');
+        setDeviceStatus(rtMsg('providers.copilot.retrying', null, 'probing'));
         schedulePoll(flow);
         return;
       }
-      if (e.status === 404) finishDeviceFlow('Login session expired. Click \u201CLogin with GitHub Copilot\u201D to try again.', 'fail');
-      else finishDeviceFlow('Login failed: ' + errMsg(e), 'fail');
+      if (e.status === 404) finishDeviceFlow(rtMsg('providers.error.sessionExpired', null, 'fail'));
+      else finishDeviceFlow(rtMsg('providers.error.loginFailed', { detail: errMsg(e) }, 'fail'));
       return;
     }
     if (flow.seq !== deviceSeq) return;
@@ -894,23 +958,23 @@ export function createProvidersPane(opts) {
       flow.ms = deviceIntervalMs(data.interval);
       schedulePoll(flow);
     } else if (status === 'expired') {
-      finishDeviceFlow('Login code expired. Click \u201CLogin with GitHub Copilot\u201D to get a new code.', 'fail');
+      finishDeviceFlow(rtMsg('providers.error.loginCodeExpired', null, 'fail'));
     } else if (status === 'denied') {
-      finishDeviceFlow('Access was denied on GitHub. Login cancelled.', 'fail');
+      finishDeviceFlow(rtMsg('providers.error.accessDenied', null, 'fail'));
     } else if (status === 'done') {
       cancelDeviceFlow();                              // stop polling; nothing is saved until the user confirms
       if (!data || typeof data.pendingId !== 'string' || !data.pendingId) {
-        finishDeviceFlow('Unexpected login response from server.', 'fail');
+        finishDeviceFlow(rtMsg('providers.error.unexpectedLogin', null, 'fail'));
         return;
       }
       pendingId = data.pendingId;
       renderLoginSuccess(true);                        // tick + label replace the login button
       setHiddenEl('pf-copilot-confirm', false);        // model step: the model select below the login block + Save provider
       placeModelRow();
-      setDeviceStatus('Signed in with GitHub Copilot. Choose a model, then save the provider.', 'ok');
+      setDeviceStatus(rtMsg('providers.copilot.signedInChoose', null, 'ok'));
       loadCopilotModels(pendingId);                    // one fetch per successful login
     } else {
-      finishDeviceFlow('Unexpected login response from server.', 'fail');
+      finishDeviceFlow(rtMsg('providers.error.unexpectedLogin', null, 'fail'));
     }
   }
 
@@ -921,17 +985,17 @@ export function createProvidersPane(opts) {
     clearPendingLogin();                               // a new login replaces any unconfirmed one
     setLoginEnabled(false);
     setHiddenEl('pf-copilot-popup', true);
-    setDeviceStatus('Starting GitHub login\u2026', 'probing');
+    setDeviceStatus(rtMsg('providers.copilot.starting', null, 'probing'));
     try {
       var data = await fetchJson(DEVICE_START_URL, { method: 'POST' });
       if (seq !== deviceSeq) return;                   // cancelled while starting
-      if (!data || typeof data.flowId !== 'string' || !data.flowId) throw new Error('Unexpected response from server');
+      if (!data || typeof data.flowId !== 'string' || !data.flowId) throw new Error(t('providers.error.unexpected'));
       renderDeviceCode(data);
-      setDeviceStatus('Waiting for authorization on GitHub\u2026', 'probing');
+      setDeviceStatus(rtMsg('providers.copilot.waiting', null, 'probing'));
       schedulePoll({ flowId: data.flowId, seq: seq, ms: deviceIntervalMs(data.interval) });
     } catch (e) {
       if (seq !== deviceSeq) return;
-      finishDeviceFlow('Login failed: ' + errMsg(e), 'fail');
+      finishDeviceFlow(rtMsg('providers.error.loginFailed', { detail: errMsg(e) }, 'fail'));
     }
   }
 
@@ -972,6 +1036,13 @@ export function createProvidersPane(opts) {
     // Delegated row interactions — survive every list re-render. Row BODY clicks
     // load the editor; radio checks and delete buttons are handled separately.
     var list = findEl('prov-list');
+    var RADIO_HALO_PX = 12;                         // click slop around the radio that still counts as a radio click
+    var nearRadio = function (radio, ev) {
+      if (typeof radio.getBoundingClientRect !== 'function' || typeof ev.clientX !== 'number') return false;
+      var r = radio.getBoundingClientRect();
+      return ev.clientX >= r.left - RADIO_HALO_PX && ev.clientX <= r.right + RADIO_HALO_PX &&
+             ev.clientY >= r.top - RADIO_HALO_PX && ev.clientY <= r.bottom + RADIO_HALO_PX;
+    };
     list.addEventListener('click', function (ev) {
       var delBtn = ev.target.closest ? ev.target.closest('.prov-del') : null;
       if (delBtn) {
@@ -981,11 +1052,15 @@ export function createProvidersPane(opts) {
       }
       if (ev.target.tagName === 'INPUT') return;   // radio activation goes through `change`
       var row = ev.target.closest ? ev.target.closest('.provider-row') : null;
-      if (row) loadEditorFor(row.getAttribute('data-provider-id'));
+      if (!row) return;
+      var infoHit = ev.target.closest ? ev.target.closest('.provider-info') : null;
+      var rowRadio = row.querySelector('input.prov-radio');
+      if (!infoHit && rowRadio && nearRadio(rowRadio, ev)) { rowRadio.click(); return; }   // halo around the radio = radio click (one `change`)
+      loadEditorFor(row.getAttribute('data-provider-id'));
     });
     list.addEventListener('change', function (ev) {
-      var t = ev.target;
-      if (t && t.type === 'radio' && t.name === ACTIVE_RADIO_NAME) activateProvider(t.value);
+      var target = ev.target;
+      if (target && target.type === 'radio' && target.name === ACTIVE_RADIO_NAME) activateProvider(target.value);
     });
   }
 

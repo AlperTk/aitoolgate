@@ -20,13 +20,14 @@
  * non-finite values render as '—' (mirroring dom.mjs's fmtOpt) so callers keep
  * their "no data yet" tooltip behavior.
  *
- * Leaf: no imports; safe to import anywhere.
+ * Leaf: imports only the i18n t() helper (unit suffixes); no DOM access.
  * ========================================================================== */
+import { t } from './i18n/index.mjs';
 
 // Largest-first unit tables, entries are [scale, suffix]. Count suffixes are
 // appended directly ("M"); size suffixes carry a leading space (" MB").
-var COUNT_UNITS = [[1e12, 'T'], [1e9, 'G'], [1e6, 'M'], [1e3, 'k']];
-var SIZE_UNITS = [[1e9, ' GB'], [1e6, ' MB'], [1e3, ' KB']];
+var COUNT_UNITS = [[1e12, 'units.T'], [1e9, 'units.G'], [1e6, 'units.M'], [1e3, 'units.k']];
+var SIZE_UNITS = [[1e9, 'units.sizeGB'], [1e6, 'units.sizeMB'], [1e3, 'units.sizeKB']];
 
 // Compact `x` (>= 1000) into a 1-decimal mantissa + the suffix of the largest
 // unit (largest-first `units`) whose rounded mantissa stays below 1000.
@@ -43,7 +44,7 @@ function compactUnit(x, units) {
   var unit = units[unitIndex];
   var s = (Math.round(x / unit[0] * 10) / 10).toFixed(1);
   if (s.slice(-2) === '.0') s = s.slice(0, -2);
-  return s + unit[1];
+  return s + t(unit[1]);
 }
 
 // Compact a token/char count (turn totals, per-tool token aggregates): a plain
@@ -62,6 +63,6 @@ export function formatSize(bytes) {
   if (typeof bytes !== 'number' || !isFinite(bytes)) return '\u2014';
   var sign = bytes < 0 ? '-' : '';
   var x = Math.abs(bytes);
-  if (x < 1000) return sign + String(Math.round(x)) + ' B';
+  if (x < 1000) return sign + String(Math.round(x)) + t('units.sizeB');
   return sign + compactUnit(x, SIZE_UNITS);
 }

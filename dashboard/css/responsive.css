@@ -40,6 +40,12 @@
   /* Safety net so the wide top-tools table can't push the page wider either. */
   .tools-scroll { overflow-x: auto; }
 }
+/* Below 600px the live-call header and rows share one min-width (sum of the 7 visible track
+   floors + gaps + padding), so no column collapses and .list-wrap scrolls sideways. */
+@media (max-width: 600px) {
+  .stream-head,
+  .row-main { min-width: 31.5rem; }
+}
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
   /* Stack the header: brand on top, grouped controls wrap below; drop the subtitle
@@ -74,20 +80,24 @@
     flex-wrap: wrap;   /* let a group's own controls (e.g. the 4 Export buttons) wrap onto new lines */
     gap: 0.5rem;
   }
-  /* Header at phone width: nav on its own row; theme toggle, settings gear and Live
-     badge form one compact cluster on the row below, with 35px square icon buttons. */
-  .app-header-right { gap: 0.5rem; }
+  /* Header at phone width: brand on row 1; nav takes full row 2; language select,
+     theme toggle, settings gear and Live badge share one compact row below it. */
+  .app-header-right { gap: 0.5rem; row-gap: 0.5rem; }
   .app-nav { flex: 1 1 100%; }
+  .app-header-right > :not(.app-nav) { flex: 0 0 auto; }
   .app-header-right #theme-toggle,
   .app-header-right #open-settings {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: none;
+    flex: 0 0 auto;
     width: 35px;
+    min-width: 35px;
     height: 35px;
     padding: 0;
   }
+  .app-header-right #theme-toggle svg,
+  .app-header-right #open-settings svg { flex: none; }
 }
 
 /* Viewport-fit cap: at >=961px the whole dashboard grid fits one screen —

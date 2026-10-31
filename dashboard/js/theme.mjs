@@ -1,5 +1,7 @@
 // Light/dark palette: resolve, apply, persist, and bind the header toggle.
 // The head script in index.html applies the same logic before first paint.
+import { t, onLocaleChange } from './i18n/index.mjs';
+
 const KEY = 'aitoolgate.theme';
 const TOGGLE_ID = 'theme-toggle';
 
@@ -33,7 +35,7 @@ function syncToggle(theme) {
   if (!btn) return;
   const light = theme === 'light';
   btn.setAttribute('aria-pressed', String(light));
-  const action = light ? 'Switch to dark theme' : 'Switch to light theme';
+  const action = t(light ? 'theme.toDark' : 'theme.toLight');
   btn.title = action;
   btn.setAttribute('aria-label', action);
 }
@@ -49,6 +51,8 @@ export function initTheme() {
   applyTheme(readStored() || systemTheme());
   if (toggleBound) return;
   toggleBound = true;
+  // applyI18n resets the toggle's data-i18n-attr labels to the light-mode text; re-apply the current state.
+  onLocaleChange(() => syncToggle(currentTheme()));
   // Capture phase on document: runs before any bubbling handler in the page can
   // stopPropagation(), so a real pointer click on #theme-toggle always flips the theme.
   document.addEventListener('click', (e) => {

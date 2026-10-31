@@ -22,6 +22,7 @@
  * String entries are normalized to { key:s, label:s }.
  * ========================================================================== */
 import { el } from './dom.mjs';
+import { t } from './i18n/index.mjs';
 
 // A value counts as "absent" when it is null/undefined or an empty string.
 function isAbsent(v) { return v == null || String(v) === ''; }
@@ -49,8 +50,8 @@ export function createDataTable(options) {
   var columns = (options.columns || []).map(normalizeColumn);
   var filterable = options.filterable !== false;
   var showCount = !!options.showCount;
-  var filterPlaceholder = options.filterPlaceholder != null ? options.filterPlaceholder : 'Filter\u2026';
-  var emptyMessage = options.emptyMessage != null ? options.emptyMessage : 'No rows';
+  var filterPlaceholder = options.filterPlaceholder != null ? options.filterPlaceholder : t('table.filterPlaceholder');
+  var emptyMessage = options.emptyMessage != null ? options.emptyMessage : t('table.noRows');
   var defaultOpt = options.defaultSort || null;
 
   var rows = Array.isArray(options.rows) ? options.rows.slice() : [];
@@ -221,7 +222,7 @@ export function createDataTable(options) {
       filterInput.type = 'text';
       filterInput.className = 'dt-filter';
       filterInput.placeholder = filterPlaceholder;
-      filterInput.setAttribute('aria-label', 'Filter rows');
+      filterInput.setAttribute('aria-label', t('table.filterAria'));
       filterInput.addEventListener('input', function () { setFilter(this.value); });
       bar.appendChild(filterInput);
     }

@@ -16,6 +16,9 @@
 .btn-primary:hover { background: var(--primary-fill-hover); }
 .btn-danger { color: var(--danger-text); border-color: var(--danger-border); background: var(--danger-tint); }
 .btn-danger:hover { background: var(--danger-tint-hover); border-color: var(--danger-border-hover); }
+/* Neutral ghost variant (e.g. table-toolbar Clear); red stays for destructive buttons. */
+.btn.btn-ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+.btn.btn-ghost:hover { background: var(--hover-bg); color: var(--text); border-color: var(--border); }
 .btn[hidden] { display: none; }
 
 /* Global controls toolbar: time range + clear on-screen history + export. */
@@ -36,6 +39,7 @@
   letter-spacing: 0.4px;
 }
 .dash-controls select,
+.app-header-right select,
 .dash-controls input[type="datetime-local"] {
   background: var(--input-bg);
   color: var(--text);
@@ -46,6 +50,7 @@
   font-size: var(--fs-sm);
 }
 .dash-controls select:focus,
+.app-header-right select:focus,
 .dash-controls input[type="datetime-local"]:focus {
   outline: none;
   border-color: var(--accent);

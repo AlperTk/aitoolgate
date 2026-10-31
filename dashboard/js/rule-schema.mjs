@@ -5,28 +5,31 @@
  * (`readField` and `makeField`) interpret `kind`, and `clientValidate`
  * enforces the required fields the server's validateSpec also requires. This
  * keeps the emitted RuleSpec in sync with src/api/ruleSpec.ts without any
- * framework. Zero dependencies; no imports.
+ * framework. Only import: the i18n `t()` for labels and hints.
  *
  * Field labels and hints are written human-first: the plain phrase leads and
  * internal jargon is dropped or deferred to the value itself. The type-select
  * labels (matcher / action type) live in js/rules.mjs.
+ *
+ * Label and hint are getters so each read re-translates on locale change.
  * ========================================================================== */
+import { t } from './i18n/index.mjs';
 
 export const MATCHER_FIELDS = {
   loop: [
-    { key: 'window', label: 'Window', kind: 'number', hint: 'How many repeated calls in a row to flag (server default 4)' },
-    { key: 'requireConsecutive', label: 'Require consecutive', kind: 'bool', def: true, hint: 'Only flag when the repeated calls are the most recent in the run' },
-    { key: 'paramIdentity', label: 'Param identity', kind: 'select', options: ['', 'exact', 'normalized'], hint: 'How the repeated arguments are compared. Blank = default (normalized).' },
-    { key: 'resultIdentity', label: 'Result identity', kind: 'select', options: ['', 'exact', 'normalized'], hint: 'How the repeated results are compared. Blank = default (normalized).' }
+    { key: 'window', get label() { return t('schema.loop.window.label'); }, kind: 'number', get hint() { return t('schema.loop.window.hint'); } },
+    { key: 'requireConsecutive', get label() { return t('schema.loop.requireConsecutive.label'); }, kind: 'bool', def: true, get hint() { return t('schema.loop.requireConsecutive.hint'); } },
+    { key: 'paramIdentity', get label() { return t('schema.loop.paramIdentity.label'); }, kind: 'select', options: ['', 'exact', 'normalized'], get hint() { return t('schema.loop.paramIdentity.hint'); } },
+    { key: 'resultIdentity', get label() { return t('schema.loop.resultIdentity.label'); }, kind: 'select', options: ['', 'exact', 'normalized'], get hint() { return t('schema.loop.resultIdentity.hint'); } }
   ],
   toolName: [
-    { key: 'toolName', label: 'Tool name', kind: 'text', hint: 'A single tool to match' },
-    { key: 'toolNames', label: 'Tool names', kind: 'list', hint: 'Comma-separated list of tools; matches any listed name' }
+    { key: 'toolName', get label() { return t('schema.toolName.toolName.label'); }, kind: 'text', get hint() { return t('schema.toolName.toolName.hint'); } },
+    { key: 'toolNames', get label() { return t('schema.toolName.toolNames.label'); }, kind: 'list', get hint() { return t('schema.toolName.toolNames.hint'); } }
   ],
   argPattern: [
-    { key: 'toolName', label: 'Tool name', kind: 'text', hint: 'Restrict to this tool (leave blank to match any tool)' },
-    { key: 'toolNames', label: 'Tool names', kind: 'list', hint: 'Comma-separated list of tools (leave blank to match any tool)' },
-    { key: 'pattern', label: 'Argument pattern', kind: 'text', required: true, hint: 'A case-sensitive pattern (regex) matched against the tool’s arguments' }
+    { key: 'toolName', get label() { return t('schema.argPattern.toolName.label'); }, kind: 'text', get hint() { return t('schema.argPattern.toolName.hint'); } },
+    { key: 'toolNames', get label() { return t('schema.argPattern.toolNames.label'); }, kind: 'list', get hint() { return t('schema.argPattern.toolNames.hint'); } },
+    { key: 'pattern', get label() { return t('schema.argPattern.pattern.label'); }, kind: 'text', required: true, get hint() { return t('schema.argPattern.pattern.hint'); } }
   ]
 };
 
@@ -34,20 +37,20 @@ export const ACTION_FIELDS = {
   hideTool: [
     {
       key: 'toolNames',
-      label: 'Tools to hide',
+      get label() { return t('schema.hideTool.toolNames.label'); },
       kind: 'list',
       required: true,
-      hint: 'Tool name(s) or patterns — a block-list by default (hide the matching tools). Add a leading ! to any entry to make it an allow-list (keep only the matching tools, hide the rest). E.g. codebase_* hides codebase tools; !codebase_* keeps only codebase tools; !knowledge_*, !codebase_* keeps only knowledge + codebase tools. * = wildcard; entries are OR-combined.'
+      get hint() { return t('schema.hideTool.toolNames.hint'); }
     }
   ],
   rewriteArgs: [
-    { key: 'toolName', label: 'Tool name', kind: 'text', hint: 'Target this tool by name' },
-    { key: 'toolCallId', label: 'Tool call id', kind: 'text', hint: 'Target a specific call by id (takes precedence over the name)' },
-    { key: 'arguments', label: 'Arguments (JSON object)', kind: 'json', required: true, hint: 'A JSON object of new arguments — a full replacement or a partial merge' },
-    { key: 'mode', label: 'Mode', kind: 'select', options: ['', 'replace', 'merge'], hint: 'replace = swap all arguments; merge = update only the listed keys. Blank = default (replace).' }
+    { key: 'toolName', get label() { return t('schema.rewriteArgs.toolName.label'); }, kind: 'text', get hint() { return t('schema.rewriteArgs.toolName.hint'); } },
+    { key: 'toolCallId', get label() { return t('schema.rewriteArgs.toolCallId.label'); }, kind: 'text', get hint() { return t('schema.rewriteArgs.toolCallId.hint'); } },
+    { key: 'arguments', get label() { return t('schema.rewriteArgs.arguments.label'); }, kind: 'json', required: true, get hint() { return t('schema.rewriteArgs.arguments.hint'); } },
+    { key: 'mode', get label() { return t('schema.rewriteArgs.mode.label'); }, kind: 'select', options: ['', 'replace', 'merge'], get hint() { return t('schema.rewriteArgs.mode.hint'); } }
   ],
   injectMessage: [
-    { key: 'role', label: 'Role', kind: 'select', options: ['', 'user', 'system'], hint: 'Which role the message appears as. Blank = default (user).' },
-    { key: 'content', label: 'Content', kind: 'area', required: true, hint: 'The message text shown to the model' }
+    { key: 'role', get label() { return t('schema.injectMessage.role.label'); }, kind: 'select', options: ['', 'user', 'system'], get hint() { return t('schema.injectMessage.role.hint'); } },
+    { key: 'content', get label() { return t('schema.injectMessage.content.label'); }, kind: 'area', required: true, get hint() { return t('schema.injectMessage.content.hint'); } }
   ]
 };

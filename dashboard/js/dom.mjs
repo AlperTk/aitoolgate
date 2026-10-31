@@ -3,10 +3,9 @@
  *
  * Pure, framework-free helpers: by-id DOM access, element construction,
  * untrusted-text escaping, time/number formatting, and notice + form-error
- * banner updates. The only cross-module dependency is the shared "no data
- * yet" tooltip constant, imported from ./constants.mjs.
+ * banner updates. The only cross-module dependency is the i18n t() helper.
  * ========================================================================== */
-import { NO_DATA_TIP } from './constants.mjs';
+import { t } from './i18n/index.mjs';
 
 /* ---- tiny DOM helpers ---------------------------------------------- */
 export function $(id) { return document.getElementById(id); }
@@ -53,7 +52,7 @@ export function setStatValue(id, v, fmt) {
   var f = typeof fmt === 'function' ? fmt : fmtOpt;
   var txt = f(v);
   tileEl.textContent = txt;
-  if (txt === '\u2014') tileEl.title = NO_DATA_TIP; else tileEl.removeAttribute('title');
+  if (txt === '\u2014') tileEl.title = t('noData.tip'); else tileEl.removeAttribute('title');
 }
 
 /* ============================== notices ============================ */

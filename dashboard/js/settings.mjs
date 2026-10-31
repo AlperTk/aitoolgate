@@ -9,24 +9,30 @@
  * settings-providers.mjs). Framework-free DOM + global fetch (injectable for
  * unit tests); all failures surface as inline messages — never crashes the page.
  *
- * Import graph: this -> dom.mjs, settings-providers.mjs. Wired once from app.js
+ * Import graph: this -> dom.mjs, i18n/index.mjs, settings-providers.mjs. Wired once from app.js
  * init() AFTER mountLayout() has mounted the header fragment that hosts the trigger.
  * ==================================================================== */
 import { $, el } from './dom.mjs';
+import { t, applyI18n, onLocaleChange } from './i18n/index.mjs';
 import { createProvidersPane } from './settings-providers.mjs';
 
 export { validateClientSide, formatProviderRow } from './settings-providers.mjs';
 
 /* ---- extensible settings-section registry ---------------------------- */
 /* Adding a future category = append one entry here; its left-rail item and
-   right-panel stub (or real pane) are generated automatically below. */
+   right-panel stub (or real pane) are generated automatically below.
+   `label` is the English fallback; `labelKey` is the i18n key used for display. */
 export const SETTINGS_SECTIONS = [
-  { id: 'apiProviders', label: 'API Providers' }
+  { id: 'apiProviders', label: 'API Providers', labelKey: 'settings.section.apiProviders' }
 ];
 
 const DEFAULT_SECTION = SETTINGS_SECTIONS[0].id; // first registered section wins on open
 
 let initialized = false; // single-instance guard: initSettings() runs exactly once even if called twice
+
+function sectionLabel(section) {
+  return section.labelKey ? t(section.labelKey) : section.label;
+}
 
 export function initSettings(options) {
   var opts = options || {};
@@ -48,11 +54,11 @@ export function initSettings(options) {
     '<div class="settings-backdrop" hidden>' +
       '<div class="settings-card card" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">' +
         '<div class="settings-head">' +
-          '<h2 id="settings-title">Settings</h2>' +
-          '<button type="button" class="btn icon-btn" id="settings-close" aria-label="Close settings">&#215;</button>' +
+          '<h2 id="settings-title" data-i18n="settings.title">Settings</h2>' +
+          '<button type="button" class="btn icon-btn" id="settings-close" data-i18n-attr="aria-label:settings.close" aria-label="Close settings">&#215;</button>' +
         '</div>' +
         '<div class="settings-body">' +
-          '<nav class="settings-rail-nav" aria-label="Settings sections">' +
+          '<nav class="settings-rail-nav" data-i18n-attr="aria-label:settings.sectionsNav" aria-label="Settings sections">' +
             '<ul id="settings-rail" class="settings-rail"></ul>' +
           '</nav>' +
           '<main id="settings-panel" class="settings-panel"></main>' +
@@ -64,6 +70,7 @@ export function initSettings(options) {
     var tpl = document.createElement('template');
     tpl.innerHTML = BACKDROP_HTML.trim();
     backdrop = tpl.content.firstElementChild;
+    applyI18n(backdrop);                     // static texts in the active locale before the modal is connected
     dialogEl = $('settings-dialog') || backdrop.firstElementChild;
     document.body.appendChild(tpl.content);
   }
@@ -72,8 +79,10 @@ export function initSettings(options) {
   function placeholderPane(section) {
     var pane = el('section', 'settings-subpane settings-placeholder');
     pane.setAttribute('data-pane', section.id);
-    var h3 = el('h3', 'section-title', section.label);
-    var p = el('p', 'small muted', 'Coming soon.');
+    var h3 = el('h3', 'section-title', sectionLabel(section));
+    if (section.labelKey) h3.setAttribute('data-i18n', section.labelKey);
+    var p = el('p', 'small muted', t('settings.comingSoon'));
+    p.setAttribute('data-i18n', 'settings.comingSoon');
     pane.appendChild(h3); pane.appendChild(p);
     return pane;
   }
@@ -91,7 +100,7 @@ export function initSettings(options) {
     railEl.textContent = '';
     SETTINGS_SECTIONS.forEach(function (section) {
       var li = el('li');
-      var btn = el('button', 'rail-item' + (section.id === currentSection ? ' is-active' : ''), section.label);
+      var btn = el('button', 'rail-item' + (section.id === currentSection ? ' is-active' : ''), sectionLabel(section));
       btn.type = 'button';
       btn.setAttribute('data-section-id', section.id);
       if (section.id === currentSection) btn.setAttribute('aria-current', 'true'); else btn.removeAttribute('aria-current');
@@ -144,6 +153,7 @@ export function initSettings(options) {
   panelEl = $('settings-panel');
   ensurePanesBuilt();
   renderRail();
+  onLocaleChange(renderRail);                // rail labels follow the active locale
   Array.prototype.forEach.call(panelEl.children, function (pane) { pane.hidden = pane.getAttribute('data-pane') !== currentSection; });
   bindOverlayEvents();
 

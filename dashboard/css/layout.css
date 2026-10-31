@@ -79,6 +79,14 @@
 /* Header navigation: two client-side page links (Dashboard / Policy Rules).
    The active link gets an accent background + underline so the current page
    is obvious at a glance. */
+/* Header language select, theme toggle and settings gear share the time-filter
+   select height and dark input surface (select rule: controls.css). */
+.app-header-right #open-settings,
+.app-header-right #theme-toggle {
+  height: 1.95rem;
+  box-sizing: border-box;
+  background: var(--input-bg);
+}
 .app-nav { display: inline-flex; align-items: center; gap: 0.25rem; }
 .nav-link {
   color: var(--muted);
