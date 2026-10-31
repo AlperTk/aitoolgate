@@ -51,15 +51,15 @@ function mobileBlockNorm(): string {
 }
 
 const GRID =
-  'grid-template-columns: minmax(0, 4.6rem) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 4.4rem) minmax(0, 3.5rem) minmax(0, 3.5rem) 1.2rem';
+  'grid-template-columns: minmax(0, 4.6rem) minmax(6.5rem, 1fr) minmax(4rem, 1fr) minmax(0, 4.4rem) minmax(3.5rem, 1fr) minmax(3.5rem, 1fr) 1.2rem';
 
 // The <960px stream is exactly the 7-column template: Status | Tool | Session |
-// Time | In (est) | Out (est) | expand, with In/Out as fixed minmax(0, 3.5rem)
-// tracks and Tool/Session the flexible minmax(0, 1fr) tracks.
+// Time | In (est) | Out (est) | expand, with In/Out as minmax(3.5rem, 1fr) tracks
+// (readable minimum, per responsive.css) and Tool/Session as minmax(6.5rem|4rem, 1fr).
 test('mobile (<960px) stream grid is the 7-column template with In/Out tracks', () => {
   const b = mobileBlockNorm();
   assert.ok(b.includes(GRID), 'the <960px stream grid is exactly the 7-column template');
-  assert.ok(b.includes('minmax(0, 3.5rem) minmax(0, 3.5rem) 1.2rem'), 'In (est) + Out (est) are minmax(0, 3.5rem) tracks ahead of the expand track');
+  assert.ok(b.includes('minmax(3.5rem, 1fr) minmax(3.5rem, 1fr) 1.2rem'), 'In (est) + Out (est) are minmax(3.5rem, 1fr) tracks ahead of the expand track');
 });
 
 // Exactly the three low-priority numeric columns (Dur (ms) / Context Size / Size)

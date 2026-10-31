@@ -178,7 +178,7 @@ test('type select offers the three provider types and no protocol select', async
   assert.ok(html.length > 0, 'pane markup includes the type select');
   const select = html.match(/<select id="pf-type">([\s\S]*?)<\/select>/);
   assert.ok(select, 'type select is present');
-  const options = [...select![1].matchAll(/<option value="([^"]+)">([^<]+)<\/option>/g)].map((m) => [m[1], m[2]]);
+  const options = [...select![1].matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(options, [
     ['generic-openai', 'OpenAI-compatible'],
     ['generic-anthropic', 'Anthropic'],
