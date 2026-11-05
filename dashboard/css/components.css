@@ -331,6 +331,42 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 .stream-head.is-grouped > th:nth-child(3) { display: none; }
 .stream-row.is-collapsed { display: none; }
 
+/* Same-turn call batch: one header row (li.stream-batch-head) above its member rows.
+   Members get a connector bar via inset shadow, so grid columns stay aligned. */
+.stream-batch-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-tint);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.stream-batch-head.is-collapsed { display: none; }
+.stream-batch-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+.stream-batch-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stream-batch-label { font-weight: var(--fw-semibold); white-space: nowrap; }
+.stream-row.batch-child { box-shadow: inset 3px 0 0 var(--accent); }
+.stream-row.batch-child.is-batch-collapsed { display: none; }
+/* Inset only the tool-name cell (grid item padding), so every column track stays aligned. */
+.stream-row.batch-child .s-tool { padding-left: 0.75rem; }
+
 /* Badges (status + action type). */
 .badge {
   flex: 0 0 auto;

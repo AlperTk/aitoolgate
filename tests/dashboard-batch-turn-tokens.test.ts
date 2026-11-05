@@ -47,6 +47,7 @@ before(async () => {
   LV = await import(base + '/js/live-view.mjs');
   ING = await import(base + '/js/ingest.mjs');
   ST = (await import(base + '/js/state.mjs')).state;
+  LV.bindFilterEvents();
 });
 
 // Each scenario starts from a clean stream (shared state persists across tests).
@@ -261,4 +262,96 @@ test('an orphan result row shows In = — and Out = its own result estimate', ()
   const orphan2 = ST.orphanResultEntries[ST.orphanResultEntries.length - 1].li;
   assert.equal(tokenCells(orphan2).in.textContent, '—', 'In placeholder with no callTokens');
   assert.equal(tokenCells(orphan2).out.textContent, '—', 'Out stays a placeholder when the result carries no estimate');
+});
+
+// Batch group: calls sharing (sessionKey, at) render under ONE header row (li.stream-batch-head)
+// placed above the member rows (marked batch-child). The header appears at the second member and
+// its count tracks every later sibling. Child rows carry no per-call batch badge.
+const listEl = (): any => S.byId('stream-list')!;
+function batchHeadsIn(): any[] {
+  return listEl().children.filter((c: any) => c.classList.contains('stream-batch-head'));
+}
+function headAt(at: number): any {
+  return batchHeadsIn().find((h: any) => h.dataset.batch === 'sess-batch\u0000' + at);
+}
+function batchBadgeOf(li: any): boolean {
+  const main = li.children.find((c: any) => String(c.className || '').includes('row-main'));
+  const tool = main.children.find((c: any) => String(c.className || '').includes('s-tool'));
+  return tool.children.some((c: any) => String(c.className || '').includes('s-batch'));
+}
+function clickIn(target: any): void {
+  ((listEl() as any)._listeners.click || []).slice().forEach((fn: any) => fn.call(listEl(), { target }));
+}
+
+test('same-turn calls render under exactly one batch header with the count; no per-call badges', () => {
+  ING.ingestEvent(callEv('b1', 5000, 'read_file'));
+  assert.equal(batchHeadsIn().length, 0, 'a lone call has no header');
+  ING.ingestEvent(callEv('b2', 5000, 'write_file'));
+  assert.equal(batchHeadsIn().length, 1, 'the second member creates exactly one header');
+  assert.equal(headAt(5000).children[1].textContent, 'Toplu çağrı · 2 araç', 'header shows the count');
+  ING.ingestEvent(callEv('b3', 5000, 'list_dir'));
+  assert.equal(batchHeadsIn().length, 1, 'later siblings do not add headers');
+  assert.equal(headAt(5000).children[1].textContent, 'Toplu çağrı · 3 araç', 'count updates on every sibling');
+  const idx = listEl().children.indexOf(headAt(5000));
+  for (const id of ['b1', 'b2', 'b3']) {
+    const li = ST.callRows.get(id).li;
+    assert.equal(li.classList.contains('batch-child'), true, 'member is a batch child');
+    assert.equal(batchBadgeOf(li), false, 'no per-call batch badge');
+    assert.ok(listEl().children.indexOf(li) > idx, 'members follow their header');
+  }
+});
+
+test('an unrelated turn gets its own header; a standalone call gets none', () => {
+  ING.ingestEvent(callEv('u1', 6000, 'read_file'));
+  ING.ingestEvent(callEv('u2', 6000, 'write_file'));
+  ING.ingestEvent(callEv('u3', 7000, 'list_dir'));
+  assert.equal(batchHeadsIn().length, 1, 'only the two-call turn has a header');
+  assert.equal(headAt(6000).children[1].textContent, 'Toplu çağrı · 2 araç');
+  assert.equal(ST.callRows.get('u1').li.classList.contains('batch-child'), true);
+  assert.equal(ST.callRows.get('u2').li.classList.contains('batch-child'), true);
+  assert.equal(ST.callRows.get('u3').li.classList.contains('batch-child'), false, 'standalone row is not a batch child');
+  assert.equal(headAt(7000), undefined, 'standalone turn has no header');
+});
+
+test('batch header toggles collapse: members hidden (kept in DOM) and aria-expanded flips', () => {
+  ING.ingestEvent(callEv('c1', 9000, 'read_file'));
+  ING.ingestEvent(callEv('c2', 9000, 'write_file'));
+  const kids = [ST.callRows.get('c1').li, ST.callRows.get('c2').li];
+  assert.equal(headAt(9000).children[0].getAttribute('aria-expanded'), 'true', 'expanded by default');
+  assert.ok(kids.every((k: any) => !k.classList.contains('is-batch-collapsed')));
+
+  clickIn(headAt(9000).children[0]);
+  assert.equal(headAt(9000).children[0].getAttribute('aria-expanded'), 'false', 'collapsed after toggle');
+  assert.ok(kids.every((k: any) => k.classList.contains('is-batch-collapsed')), 'members hidden');
+  assert.ok(kids.every((k: any) => listEl().children.indexOf(k) >= 0), 'members kept in the DOM');
+
+  clickIn(headAt(9000).children[0]);
+  assert.equal(headAt(9000).children[0].getAttribute('aria-expanded'), 'true', 'expanded again');
+  assert.ok(kids.every((k: any) => !k.classList.contains('is-batch-collapsed')), 'members restored');
+});
+
+test('a reset list does not keep a stale collapsed batch for a new batch with the same key', () => {
+  ING.ingestEvent(callEv('r1', 9500, 'read_file'));
+  ING.ingestEvent(callEv('r2', 9500, 'write_file'));
+  clickIn(headAt(9500).children[0]);
+  assert.ok([ST.callRows.get('r1').li, ST.callRows.get('r2').li].every((k: any) => k.classList.contains('is-batch-collapsed')));
+
+  LV.resetSessionGroupState();
+  listEl().children.length = 0;
+  ST.callRows.clear();
+  ST.seenEventKeys.clear();
+
+  ING.ingestEvent(callEv('r3', 9500, 'read_file'));
+  ING.ingestEvent(callEv('r4', 9500, 'write_file'));
+  assert.equal(headAt(9500).children[0].getAttribute('aria-expanded'), 'true', 'new batch with the same key starts expanded');
+  assert.ok([ST.callRows.get('r3').li, ST.callRows.get('r4').li].every((k: any) => !k.classList.contains('is-batch-collapsed')));
+});
+
+test('calls missing sessionKey or at never group accidentally', () => {
+  ING.ingestEvent({ type: 'tool.call', sessionKey: 'sess-batch', toolName: 'a', id: 'n1' });
+  ING.ingestEvent({ type: 'tool.call', sessionKey: 'sess-batch', toolName: 'b', id: 'n2' });
+  ING.ingestEvent({ type: 'tool.call', toolName: 'c', at: 8000, id: 'n3' });
+  ING.ingestEvent({ type: 'tool.call', toolName: 'd', at: 8000, id: 'n4' });
+  assert.equal(batchHeadsIn().length, 0, 'no batch header without a complete (sessionKey, at) key');
+  for (const r of rowsOf()) assert.equal(r.li.classList.contains('batch-child'), false, 'no batch child without a complete key');
 });

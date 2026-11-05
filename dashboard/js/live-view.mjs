@@ -124,6 +124,8 @@ export function createCallRow(ev) {
   li.dataset.session = ev.sessionKey || '';
   li.dataset.status = 'pending';
   li.dataset.at = ev.at;
+  var batchKey = batchKeyOf(ev);
+  if (batchKey) li.dataset.batch = batchKey;
   li.streamSeq = ++state.streamSeq;
 
   var main = el('div', 'row-main');
@@ -153,7 +155,7 @@ export function createCallRow(ev) {
 
   // Key the row state by the unique event id so each distinct batched same-name
   // call gets its own row (retaining the empty-id fallback for legacy events).
-  var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false, tokenCells: tokenCells };
+  var rs = { li: li, callEv: ev, resultEv: null, status: 'pending', expanded: false, tokenCells: tokenCells, batchKey: batchKey };
   if (callId) state.callRows.set(callId, rs);
   prependTrim($('stream-list'), li, MAX_LIST_ITEMS);
   $('stream-empty').hidden = true;
@@ -161,6 +163,79 @@ export function createCallRow(ev) {
   bindRowClick(li, rs);
   applyFilters();
   return rs;
+}
+
+// Calls emitted for one assistant response share (sessionKey, at). Rows missing either
+// field get no batch key, so they can never group accidentally.
+function batchKeyOf(ev) {
+  if (!ev || !ev.sessionKey || ev.at === undefined || ev.at === null || ev.at === '') return '';
+  return ev.sessionKey + '\u0000' + String(ev.at);
+}
+
+// Re-render the batch marker on every row of `key` (incl. `self` when not yet in
+// state.callRows). Standalone rows (member count < 2) stay unmarked.
+// Batch keys whose member rows are collapsed under their header.
+var collapsedBatches = new Set();
+
+// Rebuild batch headers from the current DOM order: one header directly above the first
+// member row of each batch with 2+ member rows (so it stays inside its session group).
+// Singleton rows get no header and no batch classes.
+function layoutBatchHeads(list) {
+  var i, c;
+  for (i = list.children.length - 1; i >= 0; i--) {
+    c = list.children[i];
+    if (c.classList.contains('stream-batch-head')) list.removeChild(c);
+  }
+  var members = new Map();
+  for (i = 0; i < list.children.length; i++) {
+    c = list.children[i];
+    c.classList.remove('batch-child', 'is-batch-collapsed');
+    if (!c.classList.contains('stream-row') || !c.dataset.batch) continue;
+    if (!members.has(c.dataset.batch)) members.set(c.dataset.batch, []);
+    members.get(c.dataset.batch).push(c);
+  }
+  members.forEach(function (rows, key) {
+    if (rows.length < 2) return;
+    var visible = rows.filter(function (r) { return r.style.display !== 'none'; }).length;
+    var head = buildBatchHead(key, visible);
+    head.classList.toggle('is-collapsed', rows[0].classList.contains('is-collapsed'));
+    list.insertBefore(head, rows[0]);
+    var collapsed = collapsedBatches.has(key);
+    rows.forEach(function (r) {
+      r.classList.add('batch-child');
+      r.classList.toggle('is-batch-collapsed', collapsed);
+    });
+  });
+}
+
+function buildBatchHead(key, visible) {
+  var collapsed = collapsedBatches.has(key);
+  var head = el('li', 'stream-batch-head');
+  head.dataset.batch = key;
+  var label = 'Toplu çağrı · ' + visible + ' araç';
+  var btn = el('button', 'stream-batch-toggle', collapsed ? '\u25B8' : '\u25BE');
+  btn.type = 'button';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  // Clicks are delegated from #stream-list (onStreamListClick), like session headers.
+  head.appendChild(btn);
+  head.appendChild(el('span', 'stream-batch-label', label));
+  if (!visible) head.style.display = 'none';
+  return head;
+}
+
+function focusBatchToggle(key) {
+  var list = $('stream-list');
+  if (!list) return;
+  for (var i = 0; i < list.children.length; i++) {
+    var c = list.children[i];
+    if (c.classList.contains('stream-batch-head') && c.dataset.batch === key) {
+      var b = c.firstChild;
+      if (b && typeof b.focus === 'function') b.focus();
+      return;
+    }
+  }
 }
 
 // Update an existing call row in place when its tool.result arrives.
@@ -238,6 +313,7 @@ export function resetSessionGroupState() {
   promptHistoryBySession.clear();
   state.turnUsageBySession.clear();
   state.collapsedSessions.clear();
+  collapsedBatches.clear(); // reset empties the list, so no batch group survives
 }
 
 // Create a standalone row for a tool.result that could not be paired to any call.
@@ -857,13 +933,17 @@ export function regroupStream() {
     if (c.classList.contains('stream-group-head')) heads++;
     else if (c.classList.contains('stream-row')) rows.push(c);
   }
-  if (!state.groupBySession && !heads) return;
+  if (!state.groupBySession && !heads) {
+    layoutBatchHeads(list);
+    return;
+  }
 
   rows.sort(function (a, b) { return (b.streamSeq || 0) - (a.streamSeq || 0); });
   while (list.firstChild) list.removeChild(list.firstChild);
 
   if (!state.groupBySession) {
     rows.forEach(function (row) { row.classList.remove('is-collapsed'); list.appendChild(row); });
+    layoutBatchHeads(list);
     return;
   }
 
@@ -903,6 +983,7 @@ export function regroupStream() {
       list.appendChild(row);
     });
   });
+  layoutBatchHeads(list);
 }
 
 function buildGroupHead(key, visible) {
@@ -940,8 +1021,16 @@ function buildGroupHead(key, visible) {
 function onStreamListClick(e) {
   var list = $('stream-list');
   var n = e && e.target;
-  while (n && n !== list && !(n.classList && n.classList.contains('stream-group-head'))) n = n.parentNode;
+  while (n && n !== list && !(n.classList && (n.classList.contains('stream-group-head') || n.classList.contains('stream-batch-head')))) n = n.parentNode;
   if (!n || n === list) return;
+  if (n.classList.contains('stream-batch-head')) {
+    var bkey = n.dataset.batch || '';
+    if (collapsedBatches.has(bkey)) collapsedBatches.delete(bkey);
+    else collapsedBatches.add(bkey);
+    layoutBatchHeads(list);
+    focusBatchToggle(bkey);
+    return;
+  }
   var key = n.dataset.session || '';
   if (state.collapsedSessions.has(key)) state.collapsedSessions.delete(key);
   else state.collapsedSessions.add(key);
