@@ -35,6 +35,8 @@ export function eventKey(ev) {
   // resolves. Deterministic + bounded; a legitimate duplicate replay (same toolCallId) still
   // dedupes, and non-result events keep their exact prior key shape (byte-identical).
   if (ev.type === 'tool.result') base += '|' + (ev.toolCallId || '');
+  // Session context: a prompt version is a distinct entry even when two requests share a millisecond.
+  if (ev.type === 'session.context') base += '|' + (ev.promptVersion || '');
   return base;
 }
 

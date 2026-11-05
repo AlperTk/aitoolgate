@@ -6,7 +6,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDomStub } from './dom-stub';
-import { extractSessionContext } from '../src/proxy/context';
+import { extractSessionContext, nextPromptVersion } from '../src/proxy/context';
 
 const base = '../..' + '/dashboard';
 
@@ -45,6 +45,42 @@ test('Anthropic: top-level system (string or text blocks) and tools extracted', 
 test('absent system/tools and non-object bodies yield empty context', () => {
   assert.deepEqual(extractSessionContext({ messages: [{ role: 'user', content: 'x' }] }), { systemPrompt: '', tools: [] });
   assert.deepEqual(extractSessionContext(null), { systemPrompt: '', tools: [] });
+});
+
+test('prompt version: v1 first, unchanged keeps version, change increments, A→B→A is v3, sessions independent', () => {
+  assert.equal(nextPromptVersion('pv-1', 'A'), 1);
+  assert.equal(nextPromptVersion('pv-1', 'A'), 1);
+  assert.equal(nextPromptVersion('pv-1', 'B'), 2);
+  assert.equal(nextPromptVersion('pv-1', 'A'), 3);
+  assert.equal(nextPromptVersion('pv-2', 'A'), 1);
+  assert.equal(nextPromptVersion('pv-1', 'A'), 3);
+});
+
+test('prompt version: tool definitions are not part of the fingerprint (version depends only on prompt text)', () => {
+  const withTools = extractSessionContext({ system: 'same', tools: [{ name: 'a' }] });
+  const otherTools = extractSessionContext({ system: 'same', tools: [{ name: 'b' }] });
+  assert.equal(nextPromptVersion('pv-tools', withTools.systemPrompt), 1);
+  assert.equal(nextPromptVersion('pv-tools', otherTools.systemPrompt), 1);
+});
+
+test('dashboard: prompt versions render v-current with prior prompts inspectable; replay dedupes', () => {
+  const { ingest, lv } = M;
+  const ev = (systemPrompt: string, promptVersion: number, at: number) =>
+    ({ type: 'session.context', sessionKey: 'VER', systemPrompt, tools: [], promptVersion, at });
+  ingest.ingestEvent(ev('prompt <b>one</b>', 1, 100));
+  ingest.ingestEvent(ev('prompt two', 2, 200));
+  ingest.ingestEvent(ev('prompt two', 2, 200)); // WS + replay duplicate
+  ingest.ingestEvent(ev('prompt <b>one</b>', 1, 100)); // replay of older event
+  ingest.ingestEvent(ev('prompt one again', 3, 300));
+  const html = lv.buildSessionContextHtml('VER');
+  assert.ok(html.includes('System prompt v3 (current)'));
+  assert.ok(html.includes('Prior prompt versions (2)'));
+  assert.ok(html.includes('<summary class="small">v2</summary>'));
+  assert.ok(html.includes('<summary class="small">v1</summary>'));
+  assert.ok(html.includes('prompt two'));
+  assert.ok(html.includes('prompt &lt;b&gt;one&lt;/b&gt;'));
+  assert.ok(!html.includes('<b>one</b>'));
+  assert.equal(html.split('<summary class="small">v2</summary>').length - 1, 1);
 });
 
 test('dashboard: details show only the session’s latest context, escaped, with empty state', () => {

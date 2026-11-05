@@ -312,13 +312,26 @@ export function storeInterventionForDrillDown(ev) {
 // Latest client context (system prompt + tool definitions) per session key. Only the most recent
 // session.context event per session is kept; an older (replayed) event never overwrites a newer one.
 const contextBySession = new Map();
+const promptHistoryBySession = new Map();
 export function storeContextForDrillDown(ev) {
   var sk = ev.sessionKey || '';
   if (!sk) return;
+  var version = typeof ev.promptVersion === 'number' ? ev.promptVersion : 0;
+  if (version > 0) rememberPromptVersion(sk, version, ev);
   var prev = contextBySession.get(sk);
   if (prev && typeof ev.at === 'number' && typeof prev.at === 'number' && ev.at < prev.at) return;
-  contextBySession.set(sk, { systemPrompt: ev.systemPrompt, tools: ev.tools, at: ev.at });
+  contextBySession.set(sk, { systemPrompt: ev.systemPrompt, tools: ev.tools, at: ev.at, version: version });
   if (state.groupBySession) regroupStream();
+}
+
+// Distinct prompt versions per session (keyed by version, so replay/WS duplicates collapse to one entry).
+// Bounded per session; the newest versions are kept.
+var MAX_PROMPT_VERSIONS = 20;
+function rememberPromptVersion(sk, version, ev) {
+  var versions = promptHistoryBySession.get(sk);
+  if (!versions) { versions = new Map(); promptHistoryBySession.set(sk, versions); }
+  if (!versions.has(version)) versions.set(version, { systemPrompt: ev.systemPrompt || '', at: ev.at });
+  while (versions.size > MAX_PROMPT_VERSIONS) versions.delete(versions.keys().next().value);
 }
 
 // Render one details <pre> block of text (escaped; never injected as HTML).
@@ -329,14 +342,29 @@ function contextPre(text) {
 // Session-level context block (system prompt + client tools) for a group's expanded body.
 // Returns '' when the session has no context. Text is escaped via contextPre/esc.
 export function buildSessionContextHtml(key) {
-  var ctx = contextBySession.get(key || '');
+  var sk = key || '';
+  var ctx = contextBySession.get(sk);
   if (!ctx) return '';
   var toolsList = Array.isArray(ctx.tools) ? ctx.tools : [];
   var prompt = ctx.systemPrompt || '';
+  var current = ctx.version || 0;
   var html = '<div class="rd-section ctx-section"><details class="ctx-disclosure">';
-  html += '<summary class="rd-label">System prompt' + (prompt ? ' (' + prompt.length + ' chars)' : '') + '</summary>';
+  html += '<summary class="rd-label">System prompt' + (current ? ' v' + current + ' (current)' : '') + (prompt ? ' (' + prompt.length + ' chars)' : '') + '</summary>';
   html += prompt ? contextPre(prompt) : '<div class="muted small">No system prompt in the latest request</div>';
   html += '</details></div>';
+  var versions = promptHistoryBySession.get(sk);
+  if (versions && versions.size > 1) {
+    var prior = Array.from(versions.keys()).filter(function (v) { return v !== current; }).sort(function (a, b) { return b - a; });
+    html += '<div class="rd-section ctx-section"><details class="ctx-disclosure">';
+    html += '<summary class="rd-label">Prior prompt versions (' + prior.length + ')</summary>';
+    prior.forEach(function (v) {
+      var entry = versions.get(v);
+      html += '<details class="ctx-disclosure ctx-tool"><summary class="small">v' + v + '</summary>';
+      html += entry.systemPrompt ? contextPre(entry.systemPrompt) : '<div class="muted small">Empty system prompt</div>';
+      html += '</details>';
+    });
+    html += '</details></div>';
+  }
   html += '<div class="rd-section ctx-section"><details class="ctx-disclosure">';
   html += '<summary class="rd-label">Client tools (' + toolsList.length + ')</summary>';
   if (toolsList.length === 0) {
@@ -826,12 +854,25 @@ export function regroupStream() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   });
+  // Sessions that have a request/context but no call rows yet still get a group.
+  // A zero-row session cannot match a tool/status filter, so only the session and
+  // time-window filters apply to it.
+  var f = readStreamFilters();
+  contextBySession.forEach(function (ctx, key) {
+    if (groups.has(key)) return; // already has rows: one group per session
+    if (f.tool || f.status) return;
+    if (f.session && key.toLowerCase().indexOf(f.session) === -1) return;
+    if (!inTimeRange(ctx.at)) return;
+    groups.set(key, []);
+  });
   groups.forEach(function (groupRows, key) {
     var visible = groupRows.filter(function (r) { return r.style.display !== 'none'; }).length;
-    list.appendChild(buildGroupHead(key, visible));
+    var head = buildGroupHead(key, visible);
+    if (!groupRows.length) head.style.display = ''; // context-only group stays visible
+    list.appendChild(head);
     var collapsed = state.collapsedSessions.has(key);
     var ctxHtml = buildSessionContextHtml(key);
-    if (ctxHtml && !collapsed && visible > 0) {
+    if (ctxHtml && !collapsed && (visible > 0 || !groupRows.length)) {
       var ctxLi = el('li', 'stream-group-context');
       ctxLi.dataset.session = key;
       ctxLi.innerHTML = ctxHtml;

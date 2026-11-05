@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type http from 'node:http';
 import type { Transform } from 'node:stream';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
@@ -303,6 +304,27 @@ function textOfContent(content: unknown): string {
 }
 
 /** Emit one latest-context `session.context` event for the request (no-op without a bus or a session key). */
+const PROMPT_VERSION_SESSION_CAP = 1000;
+const promptVersionBySession = new Map<string, { fingerprint: string; version: number }>();
+
+/**
+ * Per-session system-prompt version: 1 for the first prompt seen; +1 only when its exact content differs from the
+ * session's last version (A→B→A yields v3). Keeps only a SHA-256 fingerprint + version per session, capped at
+ * PROMPT_VERSION_SESSION_CAP sessions (oldest evicted), so no prompt text is retained here.
+ */
+export function nextPromptVersion(sessionKey: string, systemPrompt: string): number {
+  const fingerprint = createHash('sha256').update(systemPrompt).digest('hex');
+  const prev = promptVersionBySession.get(sessionKey);
+  if (prev !== undefined && prev.fingerprint === fingerprint) return prev.version;
+  const version = prev === undefined ? 1 : prev.version + 1;
+  promptVersionBySession.delete(sessionKey);
+  promptVersionBySession.set(sessionKey, { fingerprint, version });
+  while (promptVersionBySession.size > PROMPT_VERSION_SESSION_CAP) {
+    promptVersionBySession.delete(promptVersionBySession.keys().next().value as string);
+  }
+  return version;
+}
+
 function emitSessionContext(
   bus: TelemetryEmitter | undefined,
   requestCtx: RequestContext,
@@ -314,7 +336,8 @@ function emitSessionContext(
   const { systemPrompt, tools } = extractSessionContext(requestCtx.raw);
   const clientId = toClientId(requestCtx.client);
   const at = (now ?? helpers?.now ?? Date.now)();
-  safeEmit(bus, { type: 'session.context', sessionKey, ...(clientId !== undefined ? { clientId } : {}), systemPrompt, tools, at });
+  const promptVersion = nextPromptVersion(sessionKey, systemPrompt);
+  safeEmit(bus, { type: 'session.context', sessionKey, ...(clientId !== undefined ? { clientId } : {}), systemPrompt, tools, promptVersion, at });
 }
 
 /** Re-exported from `telemetry/protocol-common` (the single source of truth for this shape). */

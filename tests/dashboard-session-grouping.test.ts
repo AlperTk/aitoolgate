@@ -216,3 +216,30 @@ test('a brand-new session call while grouped creates a group placed before all e
   assert.deepEqual(seq, ['H:z', 'c0', 'H:', 'c4', 'H:a', 'c3', 'c1', 'H:b', 'c2']);
   assert.equal(headFor('z').children[2].textContent, '1 rows');
 });
+
+test('context-only session (zero tool rows) gets a group with its prompt/tools; a later row does not duplicate it', async () => {
+  const ingest = await import(base + '/js/ingest.mjs');
+  toggleGroups(true);
+  ingest.ingestEvent({ type: 'session.context', sessionKey: 'ctx-only', systemPrompt: 'SYS-ONLY', tools: [{ name: 'shell' }], promptVersion: 1, at: 5000 });
+  assert.equal(ST.collapsedSessions.has('ctx-only'), false);
+  assert.equal(heads().filter((h) => h.dataset.session === 'ctx-only').length, 1);
+  assert.equal(headFor('ctx-only').style.display, '', 'zero-row group header is visible');
+  assert.equal(headFor('ctx-only').children[2].textContent, '0 rows');
+  const ctx = () => SL.children.filter((c) => c.classList.contains('stream-group-context') && c.dataset.session === 'ctx-only');
+  assert.equal(ctx().length, 1, 'session-level context block rendered');
+  const html = (ctx()[0] as any).innerHTML as string;
+  assert.ok(html.includes('SYS-ONLY'));
+  assert.ok(html.includes('shell'));
+
+  FT.value = 'read';
+  FT.emit('input');
+  assert.equal(heads().filter((h) => h.dataset.session === 'ctx-only').length, 0, 'tool filter hides zero-row session group');
+  FT.value = '';
+  FT.emit('input');
+
+  addCall('c9', 'ctx-only', 'read');
+  assert.equal(heads().filter((h) => h.dataset.session === 'ctx-only').length, 1, 'no duplicate group after a tool row');
+  assert.equal(headFor('ctx-only').children[2].textContent, '1 rows');
+  assert.equal(ctx().length, 1, 'context block still rendered once');
+  assert.deepEqual(rowIds().filter((id) => id === 'c9'), ['c9']);
+});

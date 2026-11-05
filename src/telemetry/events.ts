@@ -171,6 +171,8 @@ export type SessionContextEvent = {
   systemPrompt: string;
   /** Full raw client tool definitions (OpenAI `tools` / Anthropic `tools`); empty when absent. */
   tools: unknown[];
+  /** Per-session system-prompt version: 1 for the first prompt seen, +1 only when its exact content changes (tools excluded). */
+  promptVersion: number;
   /** When the request was observed (epoch milliseconds). */
   at: number;
 };
