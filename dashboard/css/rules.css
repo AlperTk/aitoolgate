@@ -217,7 +217,7 @@
 /* The rule editor is a 3-step wizard (1 When · 2 Then · 3 Details). The
    step indicator is a row of numbered, clickable items; only the active step
    panel is visible; a persistent footer bar carries Back / Next / Save /
-   Cancel. State (classes) is toggled by js/rules.mjs (showStep). */
+   Cancel. State (classes) is toggled by js/rules/rules.mjs (showStep). */
 
 /* Step indicator: numbered, clickable step items in a horizontal row. */
 .rule-steps {

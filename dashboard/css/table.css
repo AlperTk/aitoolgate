@@ -1,6 +1,6 @@
 /* aitoolgate dashboard css — table: dependency-free DataTable widget styles (.dt-*) */
 /* ------------------------------- data table (.dt-*) ------------------- */
-/* Generic dependency-free table widget built by dashboard/js/table.mjs
+/* Generic dependency-free table widget built by dashboard/js/core/table.mjs
    (createDataTable). Reuses the dark-theme tokens and mirrors the top-tools
    styling conventions: .num-col for right-aligned cells, .sortable cursor/
    hover + .active highlight on headers, .dt-ind ▲▼ sort indicator. */

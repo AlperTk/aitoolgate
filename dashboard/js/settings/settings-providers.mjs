@@ -1,0 +1,1071 @@
+/* ==========================================================================
+ * aitoolgate dashboard — Settings: API Providers pane.
+ *
+ * Builds the "API Providers" master–detail pane (provider list + add/edit
+ * form) over the /api/api-providers REST contract. All module-local state
+ * lives in the createProvidersPane() closure (one instance per settings modal).
+ * Raw apiKeys are only shown in the editor form, never in list rows.
+ *
+ * Import graph: this -> ../core/dom.mjs, i18n/index.mjs. Consumed by settings.mjs.
+ * ==================================================================== */
+import { $, el, errMsg } from '../core/dom.mjs';
+import { t, applyI18n, onLocaleChange } from '../i18n/index.mjs';
+
+// Provider TYPES offered by the form; adapterId is what the server stores.
+const PROVIDER_TYPES = [
+  { adapterId: 'generic-openai', labelKey: 'providers.type.openai' },
+  { adapterId: 'generic-anthropic', labelKey: 'providers.type.anthropic' },
+  { adapterId: 'copilot', labelKey: 'providers.type.copilot' }
+];
+const ACTIVE_RADIO_NAME = 'settings-provider-active'; // native radio group: one checked at most in the DOM too
+const PROVIDERS_BASE = 'api/api-providers';          // relative base path, matching the dashboard convention
+const PROBE_URL = PROVIDERS_BASE + '/probe';         // POST {protocol, baseUrl, apiKey?, id?} => {ok, latencyMs, models, error?}
+const DEVICE_START_URL = PROVIDERS_BASE + '/device-flow/start'; // POST => {flowId, userCode, verificationUri, interval, expiresIn}
+const DEVICE_POLL_URL = PROVIDERS_BASE + '/device-flow/poll';   // POST {flowId} => {status: pending|slow_down|expired|denied|done, ...}
+const DEVICE_CONFIRM_URL = PROVIDERS_BASE + '/device-flow/confirm'; // POST {pendingId, model|null, name?, providerId?} => {status:'done', provider}; persists once
+const DEVICE_DEFAULT_INTERVAL_S = 5;                 // fallback poll interval when the server omits one
+
+/* Runtime message = {key, params, tone} (or an array of them). Stored so the pane
+ * can re-translate the last visible message on locale change. */
+function rtMsg(key, params, tone) { return { key: key, params: params || null, tone: tone || null }; }
+function trText(m) {
+  if (!m) return '';
+  if (Array.isArray(m)) return m.map(trText).join(' ');
+  return t(m.key, m.params);
+}
+
+/* ---- pure helpers (unit-testable without any network or DOM) --------- */
+/* Client-side validation mirroring the server rules (non-empty name/baseUrl;
+ * model is optional): returns {ok, errors{field:message}} BEFORE any submit
+ * hits network. */
+export function validateClientSide(input) {
+  var v = input || {};
+  var errors = {};
+  if (!String(v.name == null ? '' : v.name).trim()) errors.name = t('providers.validate.nameRequired');
+  if (!String(v.baseUrl == null ? '' : v.baseUrl).trim()) errors.baseUrl = t('providers.validate.baseUrlRequired');
+  return { ok: Object.keys(errors).length === 0, errors: errors };
+}
+
+/* Provider type (adapterId) of a record: copilot for device-login rows, otherwise the
+ * generic adapter matching the stored adapterId, falling back to the wire protocol. */
+function providerTypeOf(p) {
+  var rec = p || {};
+  var adapterId = String(rec.adapterId == null ? '' : rec.adapterId);
+  if (adapterId === 'copilot' || rec.authType === 'deviceOAuth') return 'copilot';
+  if (adapterId === 'generic-openai' || adapterId === 'generic-anthropic') return adapterId;
+  return rec.protocol === 'anthropic' ? 'generic-anthropic' : 'generic-openai';
+}
+function typeLabelOf(adapterId) {
+  var hit = PROVIDER_TYPES.filter(function (t) { return t.adapterId === adapterId; })[0];
+  return t(hit ? hit.labelKey : PROVIDER_TYPES[0].labelKey);
+}
+
+/* Display-only projection of a provider row record (list items show masked
+ * key status via apiKeySet; raw keys are NEVER rendered here). */
+export function formatProviderRow(provider) {
+  var p = provider || {};
+  var name = String(p.name == null ? '' : p.name);
+  var typeId = providerTypeOf(p);
+  return {
+    id: p.id != null ? String(p.id) : '',
+    name: name || t('providers.unnamed'),
+    baseUrl: String(p.baseUrl == null ? '' : p.baseUrl),
+    model: String(p.model == null ? '' : p.model),
+    typeId: typeId,
+    typeLabel: typeLabelOf(typeId),
+    keySet: !!p.apiKeySet,
+    active: !!p.isActive
+  };
+}
+
+// Static skeleton of the API Providers pane, split into two sub-views toggled
+// by internal state (NOT a URL route — the modal isn't routed): a LIST view
+// (action bar + providers table, the default) and a FORM view (the add/edit
+// form). The pane-level error banner sits outside both so list failures stay
+// visible in either view. Only dynamic values are injected later.
+const PROVIDER_PANE_HTML =
+  '<section class="settings-subpane" data-pane="apiProviders">' +
+    '<div id="prov-error" class="form-error" role="alert" hidden></div>' +
+    '<section id="prov-list-view" class="prov-view">' +
+      '<div class="prov-bar">' +
+        '<button type="button" class="btn btn-primary" id="prov-add-btn" data-i18n="providers.add">+ Add Provider</button>' +
+        '<span class="muted small prov-hint" data-i18n="providers.hint">Click a provider row to edit it \u00B7 select a radio circle to make that provider active.</span>' +
+      '</div>' +
+      '<ul id="prov-list" class="provider-list"></ul>' +
+      '<div id="prov-status" class="small muted" data-i18n="providers.loading" hidden>Loading\u2026</div>' +
+      '<div id="prov-empty" class="empty" data-i18n="providers.empty" hidden>No API providers yet \u2014 click "+ Add Provider" to configure an LLM engine.</div>' +
+    '</section>' +
+    '<section id="prov-form-view" class="prov-view is-hidden">' +
+      '<section id="prov-editor" class="prov-editor">' +
+        '<h3 id="prov-editor-title" class="section-title" data-i18n="providers.editor.titleDefault">Provider</h3>' +
+        '<form id="prov-form" novalidate>' +
+          '<div class="field-row">' +
+            '<div class="field" id="pf-type-field">' +
+              '<label for="pf-type" data-i18n="providers.form.type">Type</label>' +
+              '<select id="pf-type">' +
+                '<option value="generic-openai" data-i18n="providers.type.openai">OpenAI-compatible</option>' +
+                '<option value="generic-anthropic" data-i18n="providers.type.anthropic">Anthropic</option>' +
+                '<option value="copilot" data-i18n="providers.type.copilot">GitHub Copilot</option>' +
+              '</select>' +
+              '<div class="hint" data-i18n="providers.form.typeHint">GitHub Copilot signs in with a device code; no base URL or API key is needed.</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="field-row">' +
+            '<div class="field">' +
+              '<label for="pf-name" data-i18n="providers.form.name">Name</label>' +
+              '<input id="pf-name" type="text" data-i18n-attr="placeholder:providers.form.namePlaceholder" placeholder="e.g. OpenAI local" />' +
+              '<div class="hint" data-i18n="providers.form.nameHint">Required. Shown as the provider label in the list.</div>' +
+            '</div>' +
+            '<div class="field" id="pf-base-url-field">' +
+              '<label for="pf-base-url" data-i18n="providers.form.baseUrl">Base URL</label>' +
+              '<input id="pf-base-url" type="text" placeholder="https://host.example/v1" />' +
+              '<div class="hint" data-i18n="providers.form.baseUrlHint">Required. Endpoint base for this engine (OpenAI- or Anthropic-style).</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="field-row" id="pf-model-row">' +
+            '<div class="field">' +
+              '<label for="pf-model" data-i18n="providers.form.model">Model</label>' +
+              '<select id="pf-model" class="pf-model-select"></select>' +
+              '<div class="hint" data-i18n="providers.form.modelHint">\u201CFrom Request\u201D routes each request to the model the client asks for. Test or change the Base URL to list models.</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="field field-key" id="pf-api-key-field">' +
+            '<label for="pf-api-key" data-i18n="providers.form.apiKey">API key</label>' +
+            '<div class="key-line">' +
+              '<input id="pf-api-key" class="pf-password" type="password" autocomplete="off" spellcheck="false" />' +
+              '<button type="button" class="btn key-toggle" id="pf-key-toggle" data-i18n="providers.key.reveal">Reveal</button>' +
+            '</div>' +
+            '<div class="hint" data-i18n="providers.form.apiKeyHint">Optional. Leave blank for no key; saving an empty value clears any stored key.</div>' +
+          '</div>' +
+          '<div id="pf-copilot" class="copilot-login" hidden>' +
+            '<div id="pf-copilot-auth" class="small muted" hidden></div>' +
+            '<button type="button" class="btn btn-primary" id="pf-copilot-login" data-i18n="providers.copilot.login">Login with GitHub Copilot</button>' +
+            '<div id="pf-copilot-success" class="copilot-success" role="status" hidden>' +
+              '<span class="copilot-tick" aria-hidden="true">\u2713</span>' +
+              '<span class="copilot-success-label" data-i18n="providers.copilot.signedInLabel">Signed in to GitHub Copilot</span>' +
+            '</div>' +
+            '<div id="pf-copilot-popup" class="device-popup-backdrop" hidden>' +
+              '<div class="device-popup card" role="dialog" aria-modal="true" aria-labelledby="pf-copilot-popup-title" tabindex="-1">' +
+                '<h3 id="pf-copilot-popup-title" class="section-title" data-i18n="providers.copilot.popupTitle">Sign in to GitHub Copilot</h3>' +
+                '<div id="pf-copilot-device" class="copilot-device">' +
+                  '<div class="copilot-code-line" data-i18n="providers.copilot.openLink">Open this link on GitHub:</div>' +
+                  '<a id="pf-copilot-link" class="copilot-link" target="_blank" rel="noopener noreferrer"></a>' +
+                  '<div class="copilot-code-line" data-i18n="providers.copilot.enterCode">Then enter this code:</div>' +
+                  '<div class="device-code-row">' +
+                    '<code id="pf-copilot-code" class="copilot-code"></code>' +
+                    '<button type="button" class="btn" id="pf-copilot-copy" data-i18n="providers.copilot.copy">Copy</button>' +
+                    '<span id="pf-copilot-copy-msg" class="device-copy-msg" role="status" hidden></span>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="device-popup-foot">' +
+                  '<button type="button" class="btn" id="pf-copilot-popup-close" data-i18n="providers.copilot.close">Close</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div id="pf-copilot-status" class="small muted" role="status" hidden></div>' +
+            '<div id="pf-copilot-confirm" class="copilot-confirm" hidden>' +
+              '<button type="button" class="btn btn-primary" id="pf-copilot-confirm-btn" data-i18n="providers.copilot.save">Save provider</button>' +
+            '</div>' +
+          '</div>' +
+          '<div id="pf-test-result" class="probe-result" role="status" hidden></div>' +
+          '<div class="prov-foot">' +
+            '<button type="submit" class="btn btn-primary" id="pf-save" data-i18n="providers.save">Save</button>' +
+            '<button type="button" class="btn" id="pf-test" data-i18n="providers.test">Test</button>' +
+            '<span class="spacer"></span>' +
+            '<button type="button" class="btn" id="pf-reset" data-i18n="providers.reset" data-i18n-attr="title:providers.resetTitle" title="Discard changes and reload the latest saved values" hidden>Reset to saved</button>' +
+            '<button type="button" class="btn" id="pf-cancel" data-i18n="providers.cancel">Cancel</button>' +
+          '</div>' +
+          '<div id="pf-error" class="form-error" role="alert" hidden></div>' +
+        '</form>' +
+      '</section>' +
+    '</section>' +
+  '</section>';
+
+/* Builds one API Providers pane instance. opts.doFetch: bound fetch impl.
+ * Returns { buildPane(): HTMLElement (unconnected), onShow(): refreshes list }. */
+export function createProvidersPane(opts) {
+  var doFetch = opts.doFetch;
+  var els = {};                       // providers-pane ids, cached after mount
+  var providerRows = [];              // last fetched list rows (apiKeySet only, never raw keys)
+  var providerOrder = [];             // provider ids in first-seen display order (keeps the list stable across reloads)
+  var editorId = '';                  // '' => unsaved draft / neutral; string id => editing an existing saved record
+  var isDraft = false;                // user is authoring a NEW (unsaved) provider in the form
+  var titleName = '';                 // provider name shown in the editor title (edit mode)
+  var provView = 'list';             // 'list' | 'form' — internal sub-view selector for the providers pane (not a route)
+  var busyActive = false;             // guards overlapping PATCH {isActive:true} calls
+  var busySave = false;               // guards overlapping create/update submits
+  var savedModel = '';                // concrete model of the loaded record ('' => From Request); always kept as a select option
+  var probeSeq = 0;                   // bumped per probe start/reset; responses from older probes are ignored
+  var probeTimer = null;              // debounce timer for input-driven auto-probes
+  var resultKey = null;               // inputsKey() of the last applied probe result (blur re-probes only when inputs differ)
+  var deviceSeq = 0;                  // bumped per copilot login start/finish/cancel; stale poll callbacks are ignored
+  var deviceTimer = null;             // pending device-flow poll timer handle (cleared on cancel)
+  var deviceBusy = false;             // a copilot login is in flight (start or polling); guards the login button
+  var pendingId = '';                 // poll 'done' token awaiting the user's model confirm ('' => nothing to confirm)
+  var live = {};                      // last runtime messages per visible slot (re-translated on locale change)
+
+  function detailUrl(id) { return PROVIDERS_BASE + '/' + encodeURIComponent(id); }
+
+  /* JSON request helper: parses ok-responses as data, throws Error{status,message}
+     otherwise using the server's {error} text when present. Never leaks network errors up. */
+  async function fetchJson(url, init) {
+    var res = await doFetch(url, init);
+    var data = null;
+    try { data = await res.json(); } catch (_e) { /* non-JSON body — status below suffices */ }
+    if (!res.ok) {
+      var msg = data && typeof data.error === 'string' ? data.error : 'HTTP ' + res.status;
+      var err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  function rowById(id) {
+    for (var i = 0; i < providerRows.length; i++) {
+      if (providerRows[i] && String(providerRows[i].id) === String(id)) return providerRows[i];
+    }
+    return null;
+  }
+  function findEl(id) { return els[id] || $(id); }
+
+  function providersPane() {
+    var tpl = document.createElement('template');
+    tpl.innerHTML = PROVIDER_PANE_HTML.trim();
+    var pane = tpl.content.firstElementChild;   // not yet connected: resolve ids from the pane itself
+    applyI18n(pane);                            // static texts in the active locale before first show
+    bindProvidersEvents(pane);
+    onLocaleChange(relocalize);
+    return pane;
+  }
+
+  /* Re-renders every runtime-generated text in the pane after a locale switch.
+     Static [data-i18n] nodes are already re-applied by setLocale(). */
+  function relocalize() {
+    paintProvError();
+    paintPfError();
+    paintStatus();
+    paintProbe();
+    paintDeviceStatus();
+    paintCopyMsg();
+    renderProviders({ providers: providerRows });
+    var sel = findEl('pf-model');
+    if (sel) renderModelOptions(Array.prototype.map.call(sel.options, function (o) { return o.value; }).filter(Boolean), sel.value);
+    var keyInput = findEl('pf-api-key');
+    if (keyInput) findEl('pf-key-toggle').textContent = t(keyInput.type === 'text' ? 'providers.key.hide' : 'providers.key.reveal');
+    paintEditorTitle();
+    syncAdapterView();
+    var auth = findEl('pf-copilot-auth');
+    if (auth) renderLoginStatus(!auth.hidden);
+  }
+
+  /* ====================== list: rendering + actions ==================== */
+  function setProvError(m) { live.provError = m || null; paintProvError(); }
+  function paintProvError() {
+    var n = findEl('prov-error');
+    if (!n) return;
+    n.textContent = trText(live.provError);
+    n.hidden = !live.provError;
+  }
+  function setPfError(m) { live.pfError = m || null; paintPfError(); }
+  function paintPfError() {
+    var n = findEl('pf-error');
+    if (!n) return;
+    n.textContent = trText(live.pfError);
+    n.hidden = !live.pfError;
+  }
+  function setStatus(m) { live.status = m || null; paintStatus(); }
+  function paintStatus() {
+    var n = findEl('prov-status');
+    if (!n) return;
+    n.textContent = trText(live.status);
+    n.hidden = !live.status;
+  }
+
+  /* Sub-view toggle: the API Providers pane alternates between a LIST view and an
+     add/edit FORM view driven by module-local state (not a URL route). The form
+     view starts hidden; the list view is the default on open / section-select. */
+  function showListView() {
+    provView = 'list';
+    syncProvViews();
+  }
+  function showFormView() {
+    provView = 'form';
+    syncProvViews();
+  }
+  function syncProvViews() {
+    var lv = findEl('prov-list-view');
+    var fv = findEl('prov-form-view');
+    if (lv) lv.classList.toggle('is-hidden', provView !== 'list');
+    if (fv) fv.classList.toggle('is-hidden', provView !== 'form');
+  }
+
+  function updateLoadedMarkers() {
+    var loadedId = editorId && !isDraft ? String(editorId) : '';
+    Array.prototype.forEach.call(findEl('prov-list').querySelectorAll('.provider-row'), function (row) {
+      row.classList.toggle('is-loaded', !!loadedId && row.getAttribute('data-provider-id') === loadedId);
+    });
+  }
+
+  // Render rows from a freshly fetched list payload ({providers:[...], activeId}).
+  // Raw keys never appear here.
+  function renderProviders(data) {
+    // Keep the first-seen id order across reloads: the server re-inserts a row on PATCH, so its list order shifts on select.
+    var incoming = data && Array.isArray(data.providers) ? data.providers.slice() : [];
+    var seenOrder = providerOrder.slice();
+    incoming.forEach(function (p) { if (seenOrder.indexOf(p.id) < 0) seenOrder.push(p.id); });
+    providerOrder = seenOrder.filter(function (id) { return incoming.some(function (p) { return p.id === id; }); });
+    providerRows = incoming.sort(function (a, b) { return providerOrder.indexOf(a.id) - providerOrder.indexOf(b.id); });
+    var list = findEl('prov-list');
+    var emptyEl = findEl('prov-empty');
+    if (!list) return;
+    list.textContent = '';
+    if (emptyEl) emptyEl.hidden = providerRows.length > 0;
+    providerRows.forEach(function (p) {
+      var d = formatProviderRow(p);
+      var li = el('li', 'provider-row' + (d.active ? ' is-active' : ''));
+      li.setAttribute('data-provider-id', d.id);
+
+      var radio = el('input', 'prov-radio');
+      radio.type = 'radio';
+      radio.name = ACTIVE_RADIO_NAME;
+      radio.value = d.id;
+      radio.checked = d.active;                       // mirrors server invariant: at most one checked
+      radio.setAttribute('aria-label', t('providers.activeAria', { name: d.name }));
+
+      var info = el('div', 'provider-info');
+      info.appendChild(el('span', 'provider-name', d.name));
+      info.appendChild(el('span', 'provider-meta', (d.baseUrl || '\u2014') + ' \u00B7 ' + (d.model || '\u2014')));
+
+      var aux = el('span', 'prov-aux');
+      var chipClass = d.typeId === 'copilot' ? 'proto-copilot' : (d.typeId === 'generic-anthropic' ? 'proto-anthropic' : 'proto-openai');
+      var chip = el('span', 'badge proto-chip ' + chipClass, d.typeLabel);
+      var delBtn = el('button', 'btn-ghost prov-del', '\u00D7');
+      delBtn.type = 'button';
+      delBtn.title = t('providers.deleteTitle');
+      delBtn.setAttribute('aria-label', t('providers.deleteAria', { name: d.name }));
+      aux.appendChild(chip); aux.appendChild(delBtn);
+
+      li.appendChild(radio); li.appendChild(info); li.appendChild(aux);
+      list.appendChild(li);
+    });
+    updateLoadedMarkers();
+  }
+
+  async function refreshList() {
+    setProvError(null);
+    setStatus(rtMsg('providers.loading'));
+    try {
+      var data = await fetchJson(PROVIDERS_BASE);
+      renderProviders(data);
+    } catch (e) {
+      setProvError(rtMsg('providers.error.load', { detail: errMsg(e) }));
+    } finally {
+      setStatus(null);
+    }
+  }
+
+  /* Radio selection => PATCH {isActive:true} IMMEDIATELY, then re-render from a
+     fresh GET so radios/activeId always mirror the server's single-active row. */
+  async function activateProvider(id) {
+    if (!rowById(id)) return;               // guard: only act on rows known from the last fetched list
+    if (busyActive) return;                 // prevent overlapping activations
+    busyActive = true;
+    try {
+      await fetchJson(detailUrl(id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: true })
+      });
+      await refreshList();                  // authoritative reload: mirrors the server's single-active row
+    } catch (e) {
+      setProvError(rtMsg('providers.error.activate', { detail: errMsg(e) }));
+      var r2 = findEl('prov-list')?.querySelector('input.prov-radio[value="' + id + '"]');
+      if (r2) r2.checked = false;           // revert optimistic UI state when the request fails
+    } finally { busyActive = false; }
+  }
+
+  async function deleteProvider(id) {
+    var p = rowById(id);
+    var label = p ? formatProviderRow(p).name : t('providers.unknownName');
+    if (!window.confirm(t('providers.confirmDelete', { name: label }))) return;
+    try {
+      var res = await doFetch(detailUrl(id), { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) {
+        var msg = 'HTTP ' + res.status;
+        try { var d = await res.json(); if (d && typeof d.error === 'string') msg = d.error; } catch (_e) {}
+        throw new Error(msg);
+      }
+      await refreshList(); // auto-promotion of a remaining provider is reflected here
+      if (String(editorId) === String(id)) discardEditor();
+    } catch (e) {
+      setProvError(rtMsg('providers.error.delete', { detail: errMsg(e) }));
+    }
+  }
+
+  /* ============================ editor form =========================== */
+  function clearForm() {
+    findEl('pf-name').value = '';
+    findEl('pf-base-url').value = '';
+    savedModel = '';
+    renderModelOptions([], '');
+    findEl('pf-api-key').value = '';
+    findEl('pf-type').value = 'generic-openai';   // default type for fresh drafts
+    renderLoginStatus(false);
+    ensureKeyHidden();
+    setPfError(null);
+    resetProbeState();
+  }
+
+  /* ============================ model + probe ========================= */
+  // Model select: From Request ('' value) first, then probed ids, then any concrete
+  // model that must survive (saved model or the previous selection) so edits never drop it.
+  function renderModelOptions(models, selected) {
+    var sel = findEl('pf-model');
+    var values = [''];
+    function add(v) { if (v && values.indexOf(v) === -1) values.push(v); }
+    (models || []).forEach(function (m) { add(String(m)); });
+    add(savedModel);
+    add(selected);
+    sel.textContent = '';
+    values.forEach(function (v) {
+      var o = el('option', null, v ? v : t('providers.model.fromRequest'));
+      o.value = v;
+      sel.appendChild(o);
+    });
+    sel.value = values.indexOf(selected) !== -1 ? selected : '';
+  }
+
+  // Key over the probe inputs; a result is applied only if this still matches at response time.
+  function inputsKey() {
+    return JSON.stringify([
+      probeProtocol(),
+      String(findEl('pf-base-url').value).trim(),
+      String(findEl('pf-api-key').value).trim(),
+      editorId
+    ]);
+  }
+
+  function resetProbeState() {
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = null;
+    probeSeq++;
+    resultKey = null;
+    setProbeResult(null);
+  }
+
+  function setProbeResult(m) { live.probe = m || null; paintProbe(); }
+  function paintProbe() {
+    var n = findEl('pf-test-result');
+    if (!n) return;
+    var m = live.probe;
+    n.textContent = trText(m);
+    n.className = 'probe-result' + (m && m.tone ? ' is-' + m.tone : '');
+    n.hidden = !m;
+  }
+
+  // Probe the current form values. manual=true (Test button) always runs; auto probes
+  // run only for a non-blank Base URL. Sends id (not a key) when the key field is blank on an
+  // existing provider so the server uses the stored key. Copilot rows have no inline endpoint.
+  async function runProbe(manual) {
+    if (isCopilotType()) return;
+    var baseUrl = String(findEl('pf-base-url').value).trim();
+    var apiKey = String(findEl('pf-api-key').value).trim();
+    if (!baseUrl) {
+      probeSeq++;
+      resultKey = null;
+      renderModelOptions([], findEl('pf-model').value);
+      setProbeResult(manual ? rtMsg('providers.probe.enterBaseUrl', null, 'fail') : null);
+      return;
+    }
+    var body = { protocol: probeProtocol(), baseUrl: baseUrl, apiKey: apiKey || null };
+    if (!apiKey && editorId) body.id = String(editorId);
+    requestProbe(body, inputsKey());
+  }
+
+  // Saved rows are probed by id only: the server resolves the stored credentials.
+  function probeSavedModels(id) {
+    requestProbe({ id: String(id) }, inputsKey());
+  }
+
+  // Sends one probe. Its result applies only while the inputs key and probe sequence are still current.
+  async function requestProbe(body, key) {
+    var seq = ++probeSeq;
+    setProbeResult(rtMsg('providers.probe.probing', null, 'probing'));
+    try {
+      var data = await fetchJson(PROBE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (seq !== probeSeq || key !== inputsKey()) return;   // stale: inputs or a newer probe superseded this one
+      resultKey = key;
+      applyProbeData(data);
+    } catch (e) {
+      if (seq !== probeSeq || key !== inputsKey()) return;
+      renderModelOptions([], findEl('pf-model').value);
+      setProbeResult(rtMsg('providers.probe.failedFetch', { detail: errMsg(e) }, 'fail'));
+    }
+  }
+
+  function applyProbeData(data) {
+    var ms = Math.round(Number(data && data.latencyMs) || 0);
+    if (data && data.ok) {
+      var models = Array.isArray(data.models) ? data.models : [];
+      renderModelOptions(models, findEl('pf-model').value);
+      setProbeResult(models.length === 1
+        ? rtMsg('providers.probe.connectedOne', { ms: ms }, 'ok')
+        : rtMsg('providers.probe.connectedMany', { count: models.length, ms: ms }, 'ok'));
+    } else {
+      renderModelOptions([], findEl('pf-model').value);
+      var detail = data && typeof data.error === 'string' && data.error ? data.error : '';
+      var http = data && data.status ? data.status : '';
+      var key = detail
+        ? (http ? 'providers.probe.failedHttp' : 'providers.probe.failed')
+        : (http ? 'providers.probe.failedNoDetailHttp' : 'providers.probe.failedNoDetail');
+      setProbeResult(rtMsg(key, { detail: detail, status: http, ms: ms }, 'fail'));
+    }
+  }
+
+  // Debounced auto-probe on Base URL / type / API key input.
+  function onProbeInput() {
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = setTimeout(function () { probeTimer = null; runProbe(false); }, 600);
+  }
+
+  // Blur probes immediately, but only when the inputs differ from the last applied result.
+  function onProbeBlur() {
+    if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
+    if (inputsKey() !== resultKey) runProbe(false);
+  }
+
+  function ensureKeyHidden() {
+    var key = findEl('pf-api-key');
+    key.type = 'password';
+    findEl('pf-key-toggle').textContent = t('providers.key.reveal');
+  }
+  function toggleKeyVisibility() {
+    var key = findEl('pf-api-key');
+    var showing = key.type === 'text';
+    key.type = showing ? 'password' : 'text';
+    findEl('pf-key-toggle').textContent = t(showing ? 'providers.key.reveal' : 'providers.key.hide');
+    if (!showing) key.focus();
+  }
+
+  function updateEditorTitle(name) {
+    titleName = name || '';
+    paintEditorTitle();
+  }
+  function paintEditorTitle() {
+    var node = findEl('prov-editor-title');
+    if (!node) return;
+    node.textContent = isDraft
+      ? t('providers.editor.titleNew')
+      : titleName ? t('providers.editor.titleEdit', { name: titleName }) : t('providers.editor.titleDefault');
+  }
+  function showReset(show) { findEl('pf-reset').hidden = !show; }
+
+  function populateForm(rec, asExisting) {
+    findEl('pf-name').value = String(rec.name == null ? '' : rec.name);
+    findEl('pf-base-url').value = String(rec.baseUrl == null ? '' : rec.baseUrl);
+    savedModel = rec.model == null ? '' : String(rec.model).trim();   // null => From Request
+    renderModelOptions([], savedModel);
+    var typeId = providerTypeOf(rec);
+    var device = typeId === 'copilot';
+    findEl('pf-type').value = typeId;
+    // Device-login rows never show a key in the form, even if the server returned one.
+    findEl('pf-api-key').value = !device && typeof rec.apiKey === 'string' ? rec.apiKey : '';
+    ensureKeyHidden();
+    setPfError(null);
+    resetProbeState();
+    if (asExisting) {
+      editorId = String(rec.id != null ? rec.id : '');
+      isDraft = false;
+      showReset(true);
+    }
+    updateEditorTitle(formatProviderRow(rec).name);
+    syncAdapterView();
+    renderLoginStatus(!!asExisting && device);
+    updateLoadedMarkers();
+    if (asExisting && editorId) probeSavedModels(editorId);
+  }
+
+  // Clicking a row body loads that provider's FULL record (raw apiKey included)
+  // via the GET detail endpoint and switches the form to existing-record mode.
+  async function loadEditorFor(id) {
+    cancelDeviceFlow();
+    try {
+      var rec = await fetchJson(detailUrl(id));
+      populateForm(rec, true);
+      showFormView();                        // enter the FORM sub-view (edit mode, prefilled)
+    } catch (e) {
+      if (e && e.status === 404) {
+        setPfError(rtMsg('providers.error.notFound'));
+        refreshList();                       // resync the list with the server
+      } else {
+        setPfError(rtMsg('providers.error.loadRecord', { detail: errMsg(e) }));
+      }
+    }
+  }
+
+  function startDraft() {
+    cancelDeviceFlow();
+    clearForm();
+    editorId = '';                           // unsaved draft until Save succeeds
+    isDraft = true;
+    showReset(false);
+    updateEditorTitle('');
+    syncAdapterView();
+    showFormView();                          // enter the FORM sub-view (new / unsaved-draft mode)
+    findEl('prov-editor').scrollIntoView({ block: 'nearest' });
+    findEl('pf-name').focus();
+  }
+
+  // Cancel: discard any unsaved draft/edits locally — no network call.
+  function discardEditor() {
+    cancelDeviceFlow();
+    clearForm();
+    editorId = '';
+    isDraft = false;
+    showReset(false);
+    updateEditorTitle('');
+    syncAdapterView();
+    updateLoadedMarkers();
+    showListView();                          // return to the LIST sub-view, discarding the draft
+  }
+
+  async function resetToSaved() {
+    if (!editorId) return;                   // only meaningful while editing an existing record
+    try {
+      var rec = await fetchJson(detailUrl(editorId));
+      populateForm(rec, true);               // latest saved values win, in-progress edits discarded
+    } catch (e) {
+      if (e && e.status === 404) {
+        setPfError(rtMsg('providers.error.notFound'));
+        discardEditor();
+        refreshList();
+      } else {
+        setPfError(rtMsg('providers.error.reset', { detail: errMsg(e) }));
+      }
+    }
+  }
+
+  // Read form values (trimmed), validate client-side FIRST (mirrors server rules),
+  // then POST a brand-new draft or PATCH the existing record being edited.
+  function readValues() {
+    return {
+      name: String(findEl('pf-name').value).trim(),
+      baseUrl: String(findEl('pf-base-url').value).trim(),
+      model: findEl('pf-model').value || null,            // From Request ('') => null
+      apiKey: String(findEl('pf-api-key').value).trim(),   // '' => unset/null per contract
+      adapterId: selectedType()
+    };
+  }
+
+  async function saveFromForm() {
+    var copilot = isCopilotType();
+    if (busySave || (copilot && !isSavedRecord())) return;   // copilot adds persist only via the confirm step
+    var v = readValues();
+    var errors = validateClientSide(v).errors;               // inline errors before ANY submit attempt
+    if (copilot) delete errors.baseUrl;                      // copilot rows have no base URL input
+    var errKeys = { name: 'providers.validate.nameRequired', baseUrl: 'providers.validate.baseUrlRequired' };
+    var msgs = Object.keys(errors).map(function (k) { return rtMsg(errKeys[k]); });
+    if (msgs.length) {
+      setPfError(msgs);
+      return;
+    }
+    // model null => From Request; copilot (deviceOAuth) rows never send apiKey
+    var payload = copilot
+      ? { name: v.name, baseUrl: v.baseUrl, model: v.model, adapterId: v.adapterId }
+      : { name: v.name, baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey, adapterId: v.adapterId };
+    busySave = true;
+    try {
+      var creating = !editorId;              // brand-new unsaved draft => create
+      var url = creating ? PROVIDERS_BASE : detailUrl(editorId);
+      var method = creating ? 'POST' : 'PATCH';
+      var rec = await fetchJson(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!rec || typeof rec.id !== 'string') throw new Error(t('providers.error.unexpected'));
+      populateForm(rec, true);               // created/updated full record: edit state now tracks its id
+      await refreshList();                   // list + radios reflect the change immediately (hot-apply)
+      showListView();                        // return to the LIST sub-view (refreshed)
+    } catch (e) {
+      setPfError(creating
+        ? rtMsg('providers.error.create', { detail: errMsg(e) })
+        : rtMsg('providers.error.update', { detail: errMsg(e) }));
+    } finally {
+      busySave = false;
+    }
+  }
+
+  // Copilot confirm step: persists the pending login once with the chosen model (null = From Request).
+  async function confirmCopilotLogin() {
+    if (busySave || !pendingId) return;
+    busySave = true;
+    try {
+      var payload = { pendingId: pendingId, model: findEl('pf-model').value || null };
+      var typedName = String(findEl('pf-name').value).trim();
+      if (typedName) payload.name = typedName;   // blank => omit, server default applies
+      if (isSavedRecord()) payload.providerId = String(editorId);   // re-login on a saved row updates only that row; add creates a new one
+      var data = await fetchJson(DEVICE_CONFIRM_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!data || !data.provider) throw new Error(t('providers.error.unexpected'));
+      clearPendingLogin();
+      await refreshList();                   // the saved copilot row is now in the list
+      discardEditor();                       // back to the list view (clears the draft)
+    } catch (e) {
+      if (e.status === 404 || e.status === 410) {
+        clearPendingLogin();
+        setDeviceStatus(rtMsg('providers.error.sessionExpired', null, 'fail'));
+      } else {
+        setPfError(rtMsg('providers.error.save', { detail: errMsg(e) }));
+      }
+    } finally {
+      busySave = false;
+    }
+  }
+
+  /* ======================= adapter + copilot login ==================== */
+  function setHiddenEl(id, hide) {
+    var n = findEl(id);
+    if (n) n.hidden = !!hide;
+  }
+
+  function selectedType() {
+    var v = String(findEl('pf-type').value);
+    return PROVIDER_TYPES.some(function (t) { return t.adapterId === v; }) ? v : 'generic-openai';
+  }
+  function isCopilotType() { return selectedType() === 'copilot'; }
+  function isSavedRecord() { return !!editorId && !isDraft; }
+  // Wire protocol for inline probes: only generic-anthropic speaks Anthropic; the rest use openai.
+  function probeProtocol() { return selectedType() === 'generic-anthropic' ? 'anthropic' : 'openai'; }
+
+  // The type select is editable for NEW drafts only; saved rows show their stored type.
+  // The copilot type hides the generic base URL/API key inputs and Save/Test (login creates the row).
+  function syncAdapterView() {
+    var copilot = isCopilotType();
+    var sel = findEl('pf-type');
+    if (sel) sel.disabled = !isDraft;
+    setHiddenEl('pf-base-url-field', copilot);
+    setHiddenEl('pf-api-key-field', copilot);
+    setHiddenEl('pf-copilot', !copilot);
+    setHiddenEl('pf-save', copilot && !isSavedRecord());   // copilot Save only for saved rows; adds use the confirm step
+    setHiddenEl('pf-test', copilot);
+    var login = findEl('pf-copilot-login');
+    if (login) login.textContent = t(isSavedRecord() ? 'providers.copilot.relogin' : 'providers.copilot.login');
+    placeModelRow();
+  }
+
+  // Copilot: the model select sits under the login block and shows once signed in (pending confirm)
+  // or for a saved row. Other types keep it above the API key field.
+  function placeModelRow() {
+    var row = findEl('pf-model-row');
+    if (!row) return;
+    if (isCopilotType()) {
+      var box = findEl('pf-copilot');
+      var anchor = findEl('pf-copilot-confirm');
+      if (box && anchor) box.insertBefore(row, anchor);
+      row.hidden = !(pendingId || isSavedRecord());
+    } else {
+      var keyField = findEl('pf-api-key-field');
+      if (keyField && keyField.parentNode) keyField.parentNode.insertBefore(row, keyField);
+      row.hidden = false;
+    }
+  }
+
+  // Signed-in state of the add flow: the login button gives way to a tick + label.
+  function renderLoginSuccess(signedIn) {
+    setHiddenEl('pf-copilot-login', signedIn);
+    setHiddenEl('pf-copilot-success', !signedIn);
+  }
+
+  // Model list for the confirm step: fetched once per successful login via the probe route with pendingId.
+  // Failure is non-blocking: the select keeps "From Request" only and Save stays enabled.
+  async function loadCopilotModels(pid) {
+    try {
+      var data = await fetchJson(PROBE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingId: pid })
+      });
+      if (pid !== pendingId) return;                  // login cancelled or replaced while probing
+      renderModelOptions(data && Array.isArray(data.models) ? data.models : [], findEl('pf-model').value);
+    } catch (e) {
+      if (pid !== pendingId) return;
+      renderModelOptions([], findEl('pf-model').value);
+      setDeviceStatus(rtMsg('providers.copilot.modelsFailed', { detail: errMsg(e) }, 'fail'));
+    }
+  }
+
+  function renderLoginStatus(signedIn) {
+    var n = findEl('pf-copilot-auth');
+    if (!n) return;
+    n.textContent = signedIn ? t('providers.copilot.signedInAuth') : '';
+    n.hidden = !signedIn;
+  }
+
+  // Changing the type keeps the name and base URL; generic types re-probe their endpoint.
+  function onTypeChange() {
+    cancelDeviceFlow();
+    syncAdapterView();
+    if (!isCopilotType()) onProbeInput();
+  }
+
+  function setDeviceStatus(m) { live.deviceStatus = m || null; paintDeviceStatus(); }
+  function paintDeviceStatus() {
+    var n = findEl('pf-copilot-status');
+    if (!n) return;
+    var m = live.deviceStatus;
+    n.textContent = trText(m);
+    n.className = 'small copilot-status' + (m && m.tone ? ' is-' + m.tone : ' muted');
+    n.hidden = !m;
+  }
+
+  function setLoginEnabled(on) {
+    var b = findEl('pf-copilot-login');
+    if (b) b.disabled = !on;
+  }
+
+  // Drops any in-flight login: stale poll callbacks see a bumped deviceSeq and return.
+  function cancelDeviceFlow() {
+    deviceSeq++;
+    if (deviceTimer) clearTimeout(deviceTimer);
+    deviceTimer = null;
+    deviceBusy = false;
+    clearPendingLogin();
+    setLoginEnabled(true);
+    setHiddenEl('pf-copilot-popup', true);
+    setDeviceStatus(null);
+  }
+
+  // Forgets the pending confirm token and hides the model/save step.
+  function clearPendingLogin() {
+    pendingId = '';
+    setHiddenEl('pf-copilot-confirm', true);
+    renderLoginSuccess(false);
+    placeModelRow();
+  }
+
+  // Terminal state of a login attempt: keeps the message visible, re-enables the button.
+  function finishDeviceFlow(m) {
+    deviceSeq++;
+    if (deviceTimer) clearTimeout(deviceTimer);
+    deviceTimer = null;
+    deviceBusy = false;
+    setLoginEnabled(true);
+    setHiddenEl('pf-copilot-popup', true);          // error/expired/denied: popup closes, message shows on the add screen
+    setDeviceStatus(m);
+  }
+
+// Device-code popup: the user code + verification link live only here (never inline on the add screen).
+  function devicePopupOpen() {
+    var p = findEl('pf-copilot-popup');
+    return !!p && !p.hidden;
+  }
+
+  function openDevicePopup() {
+    setCopyMessage(null);
+    setHiddenEl('pf-copilot-popup', false);
+  }
+
+  function setCopyMessage(m) { live.copyMsg = m || null; paintCopyMsg(); }
+  function paintCopyMsg() {
+    var n = findEl('pf-copilot-copy-msg');
+    if (!n) return;
+    var m = live.copyMsg;
+    n.textContent = trText(m);
+    n.className = 'device-copy-msg' + (m && m.tone ? ' is-' + m.tone : '');
+    n.hidden = !m;
+  }
+
+  // Close (button, backdrop, Esc) is the same as Cancel: stops polling and restores the login button.
+  function closeDevicePopup() {
+    cancelDeviceFlow();
+  }
+
+  function onPopupKeydown(ev) {
+    if (ev.key !== 'Escape' || !devicePopupOpen()) return;
+    ev.stopPropagation();                  // Esc closes only the popup, not the Settings modal behind it
+    closeDevicePopup();
+  }
+
+  function copyDeviceCode() {
+    var code = String(findEl('pf-copilot-code').textContent);
+    var clip = globalThis.navigator && globalThis.navigator.clipboard;
+    if (!clip || typeof clip.writeText !== 'function') {
+      setCopyMessage(rtMsg('providers.copilot.copyUnavailable', null, 'fail'));
+      return;
+    }
+    Promise.resolve().then(function () { return clip.writeText(code); }).then(function () {
+      if (devicePopupOpen()) setCopyMessage(rtMsg('providers.copilot.copied', null, 'ok'));
+    }, function (e) {
+      if (devicePopupOpen()) setCopyMessage(rtMsg('providers.copilot.copyFailed', { detail: errMsg(e) }, 'fail'));
+    });
+  }
+
+  function renderDeviceCode(data) {
+    var code = findEl('pf-copilot-code');
+    if (code) code.textContent = String(data.userCode == null ? '' : data.userCode);
+    var link = findEl('pf-copilot-link');
+    if (link) {
+      link.href = String(data.verificationUri == null ? '' : data.verificationUri);
+      link.textContent = link.href;
+    }
+    openDevicePopup();
+  }
+
+  function deviceIntervalMs(seconds) {
+    var n = Number(seconds);
+    return (n > 0 ? n : DEVICE_DEFAULT_INTERVAL_S) * 1000;
+  }
+
+  function schedulePoll(flow) {
+    deviceTimer = setTimeout(function () { deviceTimer = null; pollDevice(flow); }, flow.ms);
+  }
+
+  // One poll tick. flow = {flowId, seq, ms}; ms is the current server-given interval.
+  async function pollDevice(flow) {
+    if (flow.seq !== deviceSeq) return;
+    var data;
+    try {
+      data = await fetchJson(DEVICE_POLL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flowId: flow.flowId })
+      });
+    } catch (e) {
+      if (flow.seq !== deviceSeq) return;
+      if (e.status === 502) {                          // transient GitHub error: keep polling until TTL
+        setDeviceStatus(rtMsg('providers.copilot.retrying', null, 'probing'));
+        schedulePoll(flow);
+        return;
+      }
+      if (e.status === 404) finishDeviceFlow(rtMsg('providers.error.sessionExpired', null, 'fail'));
+      else finishDeviceFlow(rtMsg('providers.error.loginFailed', { detail: errMsg(e) }, 'fail'));
+      return;
+    }
+    if (flow.seq !== deviceSeq) return;
+    var status = data && data.status;
+    if (status === 'pending') {
+      schedulePoll(flow);
+    } else if (status === 'slow_down') {
+      flow.ms = deviceIntervalMs(data.interval);
+      schedulePoll(flow);
+    } else if (status === 'expired') {
+      finishDeviceFlow(rtMsg('providers.error.loginCodeExpired', null, 'fail'));
+    } else if (status === 'denied') {
+      finishDeviceFlow(rtMsg('providers.error.accessDenied', null, 'fail'));
+    } else if (status === 'done') {
+      cancelDeviceFlow();                              // stop polling; nothing is saved until the user confirms
+      if (!data || typeof data.pendingId !== 'string' || !data.pendingId) {
+        finishDeviceFlow(rtMsg('providers.error.unexpectedLogin', null, 'fail'));
+        return;
+      }
+      pendingId = data.pendingId;
+      renderLoginSuccess(true);                        // tick + label replace the login button
+      setHiddenEl('pf-copilot-confirm', false);        // model step: the model select below the login block + Save provider
+      placeModelRow();
+      setDeviceStatus(rtMsg('providers.copilot.signedInChoose', null, 'ok'));
+      loadCopilotModels(pendingId);                    // one fetch per successful login
+    } else {
+      finishDeviceFlow(rtMsg('providers.error.unexpectedLogin', null, 'fail'));
+    }
+  }
+
+  async function startCopilotLogin() {
+    if (deviceBusy) return;
+    deviceBusy = true;
+    var seq = ++deviceSeq;
+    clearPendingLogin();                               // a new login replaces any unconfirmed one
+    setLoginEnabled(false);
+    setHiddenEl('pf-copilot-popup', true);
+    setDeviceStatus(rtMsg('providers.copilot.starting', null, 'probing'));
+    try {
+      var data = await fetchJson(DEVICE_START_URL, { method: 'POST' });
+      if (seq !== deviceSeq) return;                   // cancelled while starting
+      if (!data || typeof data.flowId !== 'string' || !data.flowId) throw new Error(t('providers.error.unexpected'));
+      renderDeviceCode(data);
+      setDeviceStatus(rtMsg('providers.copilot.waiting', null, 'probing'));
+      schedulePoll({ flowId: data.flowId, seq: seq, ms: deviceIntervalMs(data.interval) });
+    } catch (e) {
+      if (seq !== deviceSeq) return;
+      finishDeviceFlow(rtMsg('providers.error.loginFailed', { detail: errMsg(e) }, 'fail'));
+    }
+  }
+
+  /* ============================ event wiring ========================== */
+  function bindProvidersEvents(pane) {
+    ['prov-add-btn', 'prov-list', 'prov-empty', 'prov-status', 'prov-error',
+     'prov-editor-title', 'prov-form', 'pf-name', 'pf-base-url', 'pf-model',
+     'pf-api-key', 'pf-key-toggle', 'pf-save', 'pf-test', 'pf-test-result', 'pf-cancel', 'pf-reset', 'pf-error',
+     'prov-list-view', 'prov-form-view',
+     'pf-type', 'pf-base-url-field', 'pf-api-key-field', 'pf-copilot', 'pf-copilot-login', 'pf-copilot-auth',
+     'pf-copilot-device', 'pf-copilot-code', 'pf-copilot-link', 'pf-copilot-status', 'pf-copilot-confirm', 'pf-copilot-confirm-btn',
+     'pf-model-row', 'pf-copilot-success',
+     'pf-copilot-popup', 'pf-copilot-copy', 'pf-copilot-copy-msg', 'pf-copilot-popup-close']
+      .forEach(function (id) { els[id] = pane.querySelector('#' + id); });
+
+    // Copilot-only controls are bound null-safely so the generic form wiring never depends on them.
+    var onOptional = function (id, type, fn) { var n = findEl(id); if (n) n.addEventListener(type, fn); };
+    onOptional('pf-type', 'change', onTypeChange);
+    onOptional('pf-copilot-login', 'click', startCopilotLogin);
+    onOptional('pf-copilot-confirm-btn', 'click', confirmCopilotLogin);
+    onOptional('pf-copilot-copy', 'click', copyDeviceCode);
+    onOptional('pf-copilot-popup-close', 'click', closeDevicePopup);
+    onOptional('pf-copilot-popup', 'click', function (ev) { if (ev.target === findEl('pf-copilot-popup')) closeDevicePopup(); });
+    document.addEventListener('keydown', onPopupKeydown, true);   // capture: Esc closes the popup before the Settings modal sees it
+
+    findEl('prov-add-btn').addEventListener('click', startDraft);
+    findEl('pf-cancel').addEventListener('click', discardEditor);
+    findEl('pf-reset').addEventListener('click', resetToSaved);
+    findEl('pf-key-toggle').addEventListener('click', toggleKeyVisibility);
+    findEl('pf-test').addEventListener('click', function () { runProbe(true); });
+    findEl('pf-base-url').addEventListener('input', onProbeInput);
+    findEl('pf-api-key').addEventListener('input', onProbeInput);
+    ['pf-base-url', 'pf-api-key'].forEach(function (id) {
+      findEl(id).addEventListener('blur', onProbeBlur);
+    });
+    findEl('prov-form').addEventListener('submit', function (ev) { ev.preventDefault(); saveFromForm(); });
+
+    // Delegated row interactions — survive every list re-render. Row BODY clicks
+    // load the editor; radio checks and delete buttons are handled separately.
+    var list = findEl('prov-list');
+    var RADIO_HALO_PX = 12;                         // click slop around the radio that still counts as a radio click
+    var nearRadio = function (radio, ev) {
+      if (typeof radio.getBoundingClientRect !== 'function' || typeof ev.clientX !== 'number') return false;
+      var r = radio.getBoundingClientRect();
+      return ev.clientX >= r.left - RADIO_HALO_PX && ev.clientX <= r.right + RADIO_HALO_PX &&
+             ev.clientY >= r.top - RADIO_HALO_PX && ev.clientY <= r.bottom + RADIO_HALO_PX;
+    };
+    list.addEventListener('click', function (ev) {
+      var delBtn = ev.target.closest ? ev.target.closest('.prov-del') : null;
+      if (delBtn) {
+        var dRow = delBtn.closest('.provider-row');
+        if (dRow) deleteProvider(dRow.getAttribute('data-provider-id'));
+        return;
+      }
+      if (ev.target.tagName === 'INPUT') return;   // radio activation goes through `change`
+      var row = ev.target.closest ? ev.target.closest('.provider-row') : null;
+      if (!row) return;
+      var infoHit = ev.target.closest ? ev.target.closest('.provider-info') : null;
+      var rowRadio = row.querySelector('input.prov-radio');
+      if (!infoHit && rowRadio && nearRadio(rowRadio, ev)) { rowRadio.click(); return; }   // halo around the radio = radio click (one `change`)
+      loadEditorFor(row.getAttribute('data-provider-id'));
+    });
+    list.addEventListener('change', function (ev) {
+      var target = ev.target;
+      if (target && target.type === 'radio' && target.name === ACTIVE_RADIO_NAME) activateProvider(target.value);
+    });
+  }
+
+  return {
+    buildPane: providersPane,
+    onShow: function () { cancelDeviceFlow(); showListView(); refreshList(); }
+  };
+}

@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="css/settings.css" />
   </head>
   <body>
-    <!-- app-header-slot is replaced at runtime by js/layout.mjs with the markup from
+    <!-- app-header-slot is replaced at runtime by js/ui/layout.mjs with the markup from
          html/header.html (the entire <header> block). -->
     <div id="app-header-slot"></div>
 
@@ -50,7 +50,7 @@
     <main class="app-main">
             <!-- Dashboard view (live tool calls + counts/top tools + intervention log): static
            markup kept inline in this shell so the stream header's column cells are present
-           before JS runs; app.js self-heals #stream-head via live-view.mjs
+           before JS runs; app.js self-heals #stream-head via live/view.mjs
            normalizeStreamHead() to guarantee the canonical 10-cell layout. -->
 <div id="view-dashboard" class="view is-active">
         <div class="dash-grid">
@@ -143,7 +143,7 @@
       </section>
         </div>
       </div>
-      <!-- view-rules-slot is replaced at runtime by js/layout.mjs with the markup from
+      <!-- view-rules-slot is replaced at runtime by js/ui/layout.mjs with the markup from
            html/rules-view.html (the entire <div id="view-rules"> page view). -->
       <div id="view-rules-slot"></div>
     </main>

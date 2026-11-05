@@ -94,7 +94,7 @@
   --ok-tint-soft: rgba(63, 185, 80, 0.07);
 }
 
-/* Light palette: selected by <html data-theme="light"> (see js/theme.mjs). Overrides only; dark values above are the default. */
+/* Light palette: selected by <html data-theme="light"> (see js/ui/theme.mjs). Overrides only; dark values above are the default. */
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f6f8fa;

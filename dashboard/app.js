@@ -1,16 +1,16 @@
 // Dashboard entrypoint: all logic lives in ./js/*.mjs; this module only performs
 // initial startup wiring. Loaded as an ES module (see index.html <script type="module">).
-import { STATS_POLL_MS } from './js/constants.mjs';
-import { state } from './js/state.mjs';
-import { refreshStats, initTopTools, initClearStats } from './js/stats.mjs';
-import { bindFormEvents, renderMatcherFields, renderActionFields, updateFormMode, refreshRules } from './js/rules.mjs';
-import { bindFilterEvents, normalizeStreamHead } from './js/live-view.mjs';
-import { connectWS, syncConnectivity, startEventsPolling } from './js/transport.mjs';
-import { bindControlEvents } from './js/controls.mjs';
-import { initViews } from './js/views.mjs';
-import { initSettings } from './js/settings.mjs';
-import { mountLayout } from './js/layout.mjs';
-import { initTheme } from './js/theme.mjs';
+import { STATS_POLL_MS } from './js/core/constants.mjs';
+import { state } from './js/core/state.mjs';
+import { refreshStats, initTopTools, initClearStats } from './js/ui/stats.mjs';
+import { bindFormEvents, renderMatcherFields, renderActionFields, updateFormMode, refreshRules } from './js/rules/rules.mjs';
+import { bindFilterEvents, normalizeStreamHead } from './js/live/view.mjs';
+import { connectWS, syncConnectivity, startEventsPolling } from './js/data/transport.mjs';
+import { bindControlEvents } from './js/ui/controls.mjs';
+import { initViews } from './js/ui/views.mjs';
+import { initSettings } from './js/settings/settings.mjs';
+import { mountLayout } from './js/ui/layout.mjs';
+import { initTheme } from './js/ui/theme.mjs';
 
 function init() {
   bindFormEvents();
@@ -18,8 +18,8 @@ function init() {
   normalizeStreamHead();   // self-heal the stream header structure at init
   bindControlEvents();
   initViews();              // client-side page routing (hashchange between views)
-  initTheme();              // light/dark palette toggle (header button; see js/theme.mjs)
-  initSettings();           // settings popup modal: header gear icon -> API-providers manager (see js/settings.mjs)
+  initTheme();              // light/dark palette toggle (header button; see js/ui/theme.mjs)
+  initSettings();           // settings popup modal: header gear icon -> API-providers manager (see js/settings/settings.mjs)
   renderMatcherFields(state.curMatcherType);
   renderActionFields(state.curActionType);
   updateFormMode();

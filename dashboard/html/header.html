@@ -32,21 +32,21 @@
           </nav>
 
           <!-- Language switcher: options are populated and change-wired by js/i18n/index.mjs
-               (initLocaleSelect, called from js/layout.mjs). Persists in localStorage. -->
+               (initLocaleSelect, called from js/ui/layout.mjs). Persists in localStorage. -->
           <select id="lang-select" data-i18n-attr="aria-label:locale.label" aria-label="Language"></select>
 
-          <!-- Light/dark palette toggle: bound by delegated click in js/theme.mjs (#theme-toggle). aria-pressed=true means the light palette is active. -->
+          <!-- Light/dark palette toggle: bound by delegated click in js/ui/theme.mjs (#theme-toggle). aria-pressed=true means the light palette is active. -->
           <button type="button" id="theme-toggle" aria-label="Switch to light theme" aria-pressed="false" title="Switch to light theme" data-i18n-attr="aria-label:theme.toLight,title:theme.toLight">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>
           </button>
 
-          <!-- Settings popup trigger: opens the overlay built by js/settings.mjs (#open-settings). -->
+          <!-- Settings popup trigger: opens the overlay built by js/settings/settings.mjs (#open-settings). -->
           <button type="button" id="open-settings" title="Settings" aria-label="Open settings" data-i18n-attr="title:header.settings,aria-label:header.openSettings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
 
           <!-- Live stream status pill: green = connected, muted = polling fallback.
-               Class + label are driven at runtime by js/transport.mjs (setConnected /
+               Class + label are driven at runtime by js/data/transport.mjs (setConnected /
                syncConnectivity), which toggles .connected / .disconnected on #conn-status
                and sets #conn-label ("Live" / "Polling"). -->
           <div id="conn-status" class="conn disconnected" title="WebSocket connection status" data-i18n-attr="title:conn.title">
