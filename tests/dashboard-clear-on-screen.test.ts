@@ -22,6 +22,15 @@ import { createDomStub, FakeEl, DomStub } from './dom-stub';
    dist/tests/ -> ../../dashboard at runtime (identical trick to the reference specs). */
 const base = '../..' + '/dashboard';
 
+/* In-memory localStorage stub: the Clear cutoff is persisted here (state.mjs). */
+const LS = new Map<string, string>();
+const CUTOFF_KEY = 'aitoolgate.dashboard.clearedBefore';
+(globalThis as any).localStorage = {
+  getItem: (k: string) => (LS.has(k) ? LS.get(k)! : null),
+  setItem: (k: string, v: string) => { LS.set(k, String(v)); },
+  removeItem: (k: string) => { LS.delete(k); }
+};
+
 /* ---- shared DOM fixture (one process per test file) ------------------- */
 const S: DomStub = createDomStub();
 const SL = S.el('stream-list', 'ul');
@@ -134,6 +143,60 @@ test('Clear button click re-shows the empty-state placeholders and zeroes the li
   assert.equal(S.byId('live-calls')!.textContent, '0', 'live call counter zeroed');
   assert.equal(S.byId('live-results')!.textContent, '0', 'live result counter zeroed');
   assert.equal(S.byId('live-interventions')!.textContent, '0', 'live intervention counter zeroed');
+});
+
+test('Clear persists a durable cutoff: at/before ignored, later and at-less events render', async () => {
+  const ing: any = await import(base + '/js/ingest.mjs');
+  const t0 = Date.now();
+  BTN.click();
+  const cutoff = Number(LS.get(CUTOFF_KEY));
+  assert.ok(cutoff >= t0, 'cutoff persisted to localStorage at Clear time');
+  assert.equal(M.state.clearedBefore, cutoff, 'in-memory cutoff matches storage');
+  const n0 = M.state.localCounts.calls;
+  ing.ingestEvent({ type: 'tool.call', id: 'old', at: cutoff, sessionKey: 's', toolName: 'X' });
+  assert.equal(M.state.localCounts.calls, n0, 'event at cutoff is ignored (replay)');
+  ing.ingestEvent({ type: 'tool.call', id: 'new', at: cutoff + 1, sessionKey: 's', toolName: 'X' });
+  assert.equal(M.state.localCounts.calls, n0 + 1, 'event after cutoff renders');
+  ing.ingestEvent({ type: 'tool.call', id: 'noat', sessionKey: 's', toolName: 'X' });
+  assert.equal(M.state.localCounts.calls, n0 + 2, 'event without a valid at is not filtered');
+});
+
+test('cutoff survives state re-initialization (reload) and invalid storage falls back to 0', async () => {
+  const reloaded: any = await import(base + '/js/state.mjs?reload=1');
+  assert.equal(reloaded.state.clearedBefore, Number(LS.get(CUTOFF_KEY)), 'reloaded state restores cutoff');
+  LS.set(CUTOFF_KEY, 'garbage');
+  const bad: any = await import(base + '/js/state.mjs?reload=2');
+  assert.equal(bad.state.clearedBefore, 0, 'invalid stored value is ignored');
+});
+
+test('Clear resets session groups (context/usage/collapse), keeps group preference, and replayed pre-clear events stay hidden', async () => {
+  const ing: any = await import(base + '/js/ingest.mjs');
+  const LV: any = await import(base + '/js/live-view.mjs');
+  const headOf = (sk: string): FakeEl | undefined =>
+    SL.children.find((c) => c.classList.contains('stream-group-head') && c.dataset.session === sk);
+  const ctxAt = Math.max(Date.now(), M.state.clearedBefore + 1);
+  M.state.groupBySession = true;
+  ing.ingestEvent({ type: 'session.context', sessionKey: 'ctx-clear', systemPrompt: 'P1', tools: [], promptVersion: 1, at: ctxAt });
+  ing.ingestEvent({ type: 'turn.usage', sessionKey: 'ctx-clear', at: ctxAt, tokens: { total: 42, cacheHitInput: 7 } });
+  M.state.collapsedSessions.add('ctx-clear');
+  LV.regroupStream();
+  assert.ok(headOf('ctx-clear'), 'context-only group is shown before Clear');
+  assert.equal(M.state.turnUsageBySession.size, 1, 'turn usage recorded before Clear');
+
+  BTN.click();
+  assert.equal(headOf('ctx-clear'), undefined, 'context-only group is removed by Clear');
+  assert.equal(M.state.turnUsageBySession.size, 0, 'turn usage reset');
+  assert.equal(M.state.collapsedSessions.size, 0, 'collapse state reset');
+  assert.equal(M.state.groupBySession, true, 'group-by-session preference preserved');
+
+  // Reload simulation: the server ring replays the pre-clear context at/before the cutoff.
+  ing.ingestEvent({ type: 'session.context', sessionKey: 'ctx-clear', systemPrompt: 'P1', tools: [], promptVersion: 1, at: ctxAt });
+  LV.regroupStream();
+  assert.equal(headOf('ctx-clear'), undefined, 'replayed pre-clear context does not resurrect the group');
+
+  // A post-clear event is accepted.
+  ing.ingestEvent({ type: 'session.context', sessionKey: 'ctx-clear', systemPrompt: 'P2', tools: [], promptVersion: 2, at: M.state.clearedBefore + 1 });
+  assert.ok(headOf('ctx-clear'), 'post-clear context renders a group again');
 });
 
 test('Clear button click does not throw on an already-empty (client-side) state', () => {

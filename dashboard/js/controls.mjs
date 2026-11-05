@@ -11,9 +11,9 @@
  * live-view/time; time is a leaf).
  * ========================================================================== */
 import { $, fmtTime } from './dom.mjs';
-import { state } from './state.mjs';
+import { state, writeClearedBefore } from './state.mjs';
 import { TIME_PRESETS } from './constants.mjs';
-import { applyFilters, updateLiveCounters } from './live-view.mjs';
+import { applyFilters, resetSessionGroupState, updateLiveCounters } from './live-view.mjs';
 import { parseLocalDatetime, stamp } from './time.mjs';
 
 /* ---- CSV / serialization helpers ------------------------------------ */
@@ -196,9 +196,13 @@ export function clearInterventionLog() {
 // already-seen events are not re-rendered by polling; new events still stream
 // in. Server aggregates (stats panel) are NOT touched.
 export function clearOnScreenHistory() {
+  // Durable per-browser cutoff: replayed history at/before now is ignored by ingestEvent after reload.
+  state.clearedBefore = Date.now();
+  writeClearedBefore(state.clearedBefore);
   state.callRows.clear();
   state.orphanResultEntries.length = 0;
   state.localCounts.calls = 0; state.localCounts.results = 0;
+  resetSessionGroupState(); // session context / turn usage / collapse state (group preference kept)
   var sl = $('stream-list'); if (sl) sl.textContent = '';
   var se = $('stream-empty'); if (se) se.hidden = false;
   clearInterventionLog(); // also resets the intervention counter + re-renders

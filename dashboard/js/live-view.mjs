@@ -32,38 +32,33 @@ export function prependTrim(listEl, node, max) {
     if (last.classList.contains('stream-row')) rows--;
   }
 }
-// Append the four numeric cells (In (est) | Out (est) | Total | Size) to a row's .row-main.
+// Append the three numeric cells (In (est) | Out (est) | Size) to a row's .row-main.
 // In = the per-tool call-side token estimate (ev.callTokens, name + arguments, ~chars/4);
 // '—' on result rows, which carry no callTokens.
 // Out = the per-tool result-side token estimate (the paired tool.result's ev.tokens, a number
 // ~chars/4); call rows created before their result show '—' and are filled in-place by
 // updateCallRowWithResult; orphan result rows show their own value.
-// Total = the turn-level context size (see applyTurnUsageToRows): rendered exactly once per
-// turn on the last tool-call row, '—' elsewhere — NOT the sum of In and Out.
 // Size = the paired result payload size (chars) when known.
-// The three token cells are returned so the turn-usage application can update them in place.
+// In/Out are returned so result pairing can update them in place. Turn totals live in the
+// session group header (see buildGroupHead), not on rows.
 export function appendTokenAndSizeCells(main, ev) {
-  var tokens = ev.tokens && typeof ev.tokens === 'object' ? ev.tokens : null;
   var cells = {
     in: el('span', 's-tokens-in col-num', typeof ev.callTokens === 'number' ? formatCount(ev.callTokens) : '—'),
     out: el('span', 's-tokens-out col-num', typeof ev.tokens === 'number' ? formatCount(ev.tokens) : '—'),
-    total: el('span', 's-tokens-total col-num', tokens && typeof tokens.total === 'number' ? formatCount(tokens.total) : '—'),
     size: el('span', 's-size col-num', typeof ev.chars === 'number' ? formatSize(ev.chars) : '—')
   };
   applyTokenTitles(cells);
   main.appendChild(cells.in);
   main.appendChild(cells.out);
-  main.appendChild(cells.total);
   main.appendChild(cells.size);
-  // Return the token + size cells so callers (turn-usage application / result pairing) can
-  // update them in place by stored reference (the test stub's querySelector is a no-op).
+  // Return the token + size cells so callers (result pairing) can update them in place by
+  // stored reference (the test stub's querySelector is a no-op).
   return cells;
 }
-// Set the hover titles of the four numeric cells to the active locale.
+// Set the hover titles of the numeric cells to the active locale.
 function applyTokenTitles(cells) {
   cells.in.title = t('live.tokens.inTitle');
   cells.out.title = t('live.tokens.outTitle');
-  cells.total.title = t('live.tokens.totalTitle');
   cells.size.title = t('live.tokens.sizeTitle');
 }
 // Locale-formatted absolute time for a row's time tooltip ('' when absent).
@@ -91,18 +86,17 @@ var STREAM_HEAD_CELLS = [
   ['col.durMs', 'num-col'],
   ['col.inEst', 'num-col'],
   ['col.outEst', 'num-col'],
-  ['col.contextSize', 'num-col'],
   ['col.size', 'num-col'],
 ];
-// Rebuild the .stream-head so it contains exactly the canonical 10 cells,
+// Rebuild the .stream-head so it contains exactly the canonical 9 cells,
 // mirroring the .row-main layout. Container attributes are left intact; the
 // final empty cell carries aria-hidden instead of scope.
 export function normalizeStreamHead() {
   var head = $('stream-head');
   if (!head) return;
   while (head.firstChild) head.removeChild(head.firstChild);
-  // Unit suffix per cell index (In/Out/Context Size -> tok, Size -> ch); CSS ::after renders attr(data-unit).
-  var unitKeys = [null, null, null, null, null, 'units.tok', 'units.tok', 'units.tok', 'units.chars'];
+  // Unit suffix per cell index (In/Out -> tok, Size -> ch); CSS ::after renders attr(data-unit).
+  var unitKeys = [null, null, null, null, null, 'units.tok', 'units.tok', 'units.chars'];
   STREAM_HEAD_CELLS.forEach(function (c, i) {
     var th = el('th', c[1]);
     th.textContent = t(c[0]);
@@ -195,34 +189,55 @@ export function updateCallRowWithResult(rs, ev) {
 // Apply a whole-turn turn.usage event to the call rows of that turn (matched by sessionKey +
 // the shared turn-level `at` — every event of one turn shares ONE turn-level timestamp). Every
 // matching row gets `turnTokens` set (so its details panel surfaces the turn's reported
-// input / cache-hit input / output / total), but only the Total cell is rendered on the LAST
-// tool-call row of the turn: a batched turn's token mass is a single turn-level value (the
-// turn's context size), so showing it once — on the final row — keeps the earlier rows clean
-// instead of duplicating it. The per-tool In (call estimate) and Out (result estimate)
-// columns are NOT affected: every row keeps its own values. Rows of OTHER turns are untouched.
+// input / cache-hit input / output / total). The turn is also recorded per session (deduped by
+// `at`) so the session group header can show the latest turn total, the cumulative session
+// total and the cumulative cache hit. Per-row In / Out / Size columns are NOT affected.
 export function applyTurnUsageToRows(ev) {
   if (!ev || !ev.tokens || typeof ev.tokens !== 'object') return;
   var tokens = ev.tokens;
-  var lastRow = null;
+  recordTurnUsage(ev);
   state.callRows.forEach(function (rs) {
     var ce = rs.callEv;
     if (!ce || ce.sessionKey !== ev.sessionKey || ce.at !== ev.at) return;
     rs.turnTokens = tokens;
     if (rs.expanded) renderRowDetail(rs);
-    lastRow = rs;
   });
-  if (lastRow) {
-    var cells = lastRow.tokenCells;
-    if (cells) {
-      fillTokenCell(cells.total, tokens.total, formatCount);
-    }
-  }
+  if (state.groupBySession) regroupStream();
 }
-// Set a row's numeric token cell from `v`, but only when it still shows the '—' placeholder
-// (a row that already rendered its own token value keeps it).
-function fillTokenCell(cell, v, fmt) {
-  if (!cell || cell.textContent !== '—') return;
-  setNumCellText(cell, v, fmt);
+// Record one reported turn per (sessionKey, at). A duplicate of the same turn overwrites the
+// total but keeps a previously reported cache-hit when the duplicate omits it.
+function recordTurnUsage(ev) {
+  var tokens = ev.tokens;
+  if (typeof ev.at !== 'number' || !isFinite(ev.at) || typeof tokens.total !== 'number' || !isFinite(tokens.total)) return;
+  var sk = ev.sessionKey || '';
+  var turns = state.turnUsageBySession.get(sk);
+  if (!turns) { turns = new Map(); state.turnUsageBySession.set(sk, turns); }
+  var prev = turns.get(ev.at);
+  var cache = typeof tokens.cacheHitInput === 'number' && isFinite(tokens.cacheHitInput) ? tokens.cacheHitInput
+    : (prev ? prev.cacheHit : undefined);
+  turns.set(ev.at, { total: tokens.total, cacheHit: cache });
+}
+// Summary for a session group header: latest turn total (turn with the greatest `at`), cumulative
+// total over distinct turns, and cumulative reported cache-hit (null when no turn reports it).
+// Returns null when the session has no recorded turn.
+function sessionUsageSummary(key) {
+  var turns = state.turnUsageBySession.get(key);
+  if (!turns || !turns.size) return null;
+  var latestAt = -Infinity, latest = 0, total = 0, cache = 0, hasCache = false;
+  turns.forEach(function (turn, at) {
+    total += turn.total;
+    if (typeof turn.cacheHit === 'number') { cache += turn.cacheHit; hasCache = true; }
+    if (at > latestAt) { latestAt = at; latest = turn.total; }
+  });
+  return { latest: latest, total: total, cache: hasCache ? cache : null };
+}
+// Clear the on-screen session-group data (per-session context, prompt history, turn usage and
+// collapse state). The group-by-session preference and the dedup set are intentionally kept.
+export function resetSessionGroupState() {
+  contextBySession.clear();
+  promptHistoryBySession.clear();
+  state.turnUsageBySession.clear();
+  state.collapsedSessions.clear();
 }
 
 // Create a standalone row for a tool.result that could not be paired to any call.
@@ -808,6 +823,11 @@ export function bindFilterEvents() {
   if (sessionEl) sessionEl.addEventListener('input', applyFilters);
   var statusEl = $('filter-status');
   if (statusEl) statusEl.addEventListener('change', applyFilters);
+  var listEl = $('stream-list');
+  if (listEl && boundStreamList !== listEl) {
+    listEl.addEventListener('click', onStreamListClick);
+    boundStreamList = listEl;
+  }
   var groupEl = $('group-by-session');
   if (groupEl) {
     readGroupPref();
@@ -894,19 +914,54 @@ function buildGroupHead(key, visible) {
   btn.type = 'button';
   btn.title = t('stream.group.toggleTitle');
   btn.setAttribute('aria-expanded', String(!collapsed));
-  btn.addEventListener('click', function () {
-    if (state.collapsedSessions.has(key)) state.collapsedSessions.delete(key);
-    else state.collapsedSessions.add(key);
-    regroupStream();
-  });
+  // Clicks are handled by the stable #stream-list delegate (onStreamListClick), so
+  // rerendering/detaching this node cannot drop a click.
   var label = el('span', 'stream-group-label', name);
   label.title = name;
-  var count = el('span', 'stream-group-count muted small', t('stream.group.rows', { visible: visible }));
+  var count = el('span', 'stream-group-count muted small',
+    visible === 1 ? t('stream.group.execOne') : t('stream.group.execMany', { n: visible }));
   head.appendChild(btn);
   head.appendChild(label);
   head.appendChild(count);
+  var usage = sessionUsageSummary(key);
+  if (usage) {
+    var parts = { context: formatCount(usage.latest), total: formatCount(usage.total) };
+    var meta = el('span', 'stream-group-meta muted',
+      usage.cache == null ? t('stream.group.usage', parts)
+        : t('stream.group.usageCache', { context: parts.context, total: parts.total, cache: formatCount(usage.cache) }));
+    meta.title = meta.textContent;
+    head.appendChild(meta);
+  }
   if (!visible) head.style.display = 'none';
   return head;
+}
+// Delegated click for group headers on the stable #stream-list. Any click inside a
+// header (label, count, usage, or the keyboard-activated button) toggles it once.
+function onStreamListClick(e) {
+  var list = $('stream-list');
+  var n = e && e.target;
+  while (n && n !== list && !(n.classList && n.classList.contains('stream-group-head'))) n = n.parentNode;
+  if (!n || n === list) return;
+  var key = n.dataset.session || '';
+  if (state.collapsedSessions.has(key)) state.collapsedSessions.delete(key);
+  else state.collapsedSessions.add(key);
+  regroupStream();
+  focusGroupToggle(key);
+}
+var boundStreamList = null;
+
+// Restore keyboard focus on a group's toggle after regroupStream() rebuilt the header.
+function focusGroupToggle(key) {
+  var list = $('stream-list');
+  if (!list) return;
+  for (var i = 0; i < list.children.length; i++) {
+    var c = list.children[i];
+    if (c.classList.contains('stream-group-head') && c.dataset.session === key) {
+      var b = c.firstChild;
+      if (b && typeof b.focus === 'function') b.focus();
+      return;
+    }
+  }
 }
 
 // Append a policy.intervention row to the intervention log as distinct cells:

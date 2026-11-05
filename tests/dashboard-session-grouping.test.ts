@@ -131,6 +131,10 @@ function headFor(session: string): FakeEl {
 function rowIds(): string[] {
   return SL.children.filter((c) => c.classList.contains('stream-row')).map((c) => c.dataset.callId);
 }
+// Dispatch a click on `target` through the stable #stream-list delegate (the stub has no bubbling).
+function clickEl(target: FakeEl): void {
+  ((SL as any)._listeners.click || []).slice().forEach((fn: any) => fn.call(SL, { target }));
+}
 function toggleGroups(on: boolean): void {
   GROUP.checked = on;
   GROUP.emit('change');
@@ -154,12 +158,12 @@ test('grouping on: rows are contiguous per session, newest group first, with hea
 test('header count reflects filter-passing rows; hidden when none pass; not counted in showing N of M', () => {
   seed();
   toggleGroups(true);
-  assert.equal(headFor('a').children[2].textContent, '2 rows');
+  assert.equal(headFor('a').children[2].textContent, '2 executions');
   assert.equal(COUNT.textContent, '', 'no filter active -> no count text');
 
   FT.value = 'write';
   FT.emit('input');
-  assert.equal(headFor('a').children[2].textContent, '1 rows');
+  assert.equal(headFor('a').children[2].textContent, '1 execution');
   assert.equal(headFor('a').style.display, '');
   assert.equal(headFor('b').style.display, 'none', 'group with no passing rows hides its header');
   assert.equal(headFor('').style.display, 'none');
@@ -169,14 +173,14 @@ test('header count reflects filter-passing rows; hidden when none pass; not coun
 test('clicking a header toggles collapse: rows hidden (kept in DOM) and restored on second click', () => {
   seed();
   toggleGroups(true);
-  headFor('a').children[0].click();
+  clickEl(headFor('a').children[1]);
   assert.ok(ST.collapsedSessions.has('a'));
   const a = SL.children.filter((c) => c.classList.contains('stream-row') && c.dataset.session === 'a');
   assert.equal(a.length, 2, 'collapsed rows are still in the list');
   assert.ok(a.every((r) => r.classList.contains('is-collapsed')));
   assert.equal(headFor('a').children[0].getAttribute('aria-expanded'), 'false');
 
-  headFor('a').children[0].click();
+  clickEl(headFor('a').children[1]);
   assert.ok(!ST.collapsedSessions.has('a'));
   assert.ok(a.every((r) => !r.classList.contains('is-collapsed')));
 });
@@ -184,7 +188,7 @@ test('clicking a header toggles collapse: rows hidden (kept in DOM) and restored
 test('toggling off removes headers, clears collapse, and restores newest-first flat order', () => {
   seed();
   toggleGroups(true);
-  headFor('a').children[0].click();
+  clickEl(headFor('a').children[1]);
   toggleGroups(false);
   assert.equal(heads().length, 0, 'no headers remain');
   assert.deepEqual(rowIds(), ['c4', 'c3', 'c2', 'c1'], 'flat newest-first order restored');
@@ -205,7 +209,7 @@ test('new rows arriving while grouped are placed into their session group', () =
   addCall('c5', 'b', 'read');
   const seq = SL.children.map((c) => (c.classList.contains('stream-group-head') ? 'H:' + c.dataset.session : c.dataset.callId));
   assert.deepEqual(seq, ['H:b', 'c5', 'c2', 'H:', 'c4', 'H:a', 'c3', 'c1']);
-  assert.equal(headFor('b').children[2].textContent, '2 rows');
+  assert.equal(headFor('b').children[2].textContent, '2 executions');
 });
 
 test('a brand-new session call while grouped creates a group placed before all existing groups', () => {
@@ -214,7 +218,7 @@ test('a brand-new session call while grouped creates a group placed before all e
   addCall('c0', 'z', 'read');
   const seq = SL.children.map((c) => (c.classList.contains('stream-group-head') ? 'H:' + c.dataset.session : c.dataset.callId));
   assert.deepEqual(seq, ['H:z', 'c0', 'H:', 'c4', 'H:a', 'c3', 'c1', 'H:b', 'c2']);
-  assert.equal(headFor('z').children[2].textContent, '1 rows');
+  assert.equal(headFor('z').children[2].textContent, '1 execution');
 });
 
 test('context-only session (zero tool rows) gets a group with its prompt/tools; a later row does not duplicate it', async () => {
@@ -224,7 +228,7 @@ test('context-only session (zero tool rows) gets a group with its prompt/tools; 
   assert.equal(ST.collapsedSessions.has('ctx-only'), false);
   assert.equal(heads().filter((h) => h.dataset.session === 'ctx-only').length, 1);
   assert.equal(headFor('ctx-only').style.display, '', 'zero-row group header is visible');
-  assert.equal(headFor('ctx-only').children[2].textContent, '0 rows');
+  assert.equal(headFor('ctx-only').children[2].textContent, '0 executions');
   const ctx = () => SL.children.filter((c) => c.classList.contains('stream-group-context') && c.dataset.session === 'ctx-only');
   assert.equal(ctx().length, 1, 'session-level context block rendered');
   const html = (ctx()[0] as any).innerHTML as string;
@@ -239,7 +243,57 @@ test('context-only session (zero tool rows) gets a group with its prompt/tools; 
 
   addCall('c9', 'ctx-only', 'read');
   assert.equal(heads().filter((h) => h.dataset.session === 'ctx-only').length, 1, 'no duplicate group after a tool row');
-  assert.equal(headFor('ctx-only').children[2].textContent, '1 rows');
+  assert.equal(headFor('ctx-only').children[2].textContent, '1 execution');
   assert.equal(ctx().length, 1, 'context block still rendered once');
   assert.deepEqual(rowIds().filter((id) => id === 'c9'), ['c9']);
+});
+
+test('clicking the header label toggles collapse once; clicking the toggle button toggles once', () => {
+  seed();
+  toggleGroups(true);
+  clickEl(headFor('b').children[1]);
+  assert.ok(ST.collapsedSessions.has('b'));
+  assert.equal(headFor('b').children[0].getAttribute('aria-expanded'), 'false');
+  clickEl(headFor('b').children[1]);
+  assert.ok(!ST.collapsedSessions.has('b'));
+  clickEl(headFor('b').children[0]);
+  assert.ok(ST.collapsedSessions.has('b'), 'button click toggles exactly once');
+  assert.equal(headFor('b').children[0].getAttribute('aria-expanded'), 'false');
+  assert.equal(headFor('b').children[2].textContent, '1 execution');
+});
+
+test('header singular/plural count: "1 execution" for one row, "N executions" otherwise', () => {
+  seed();
+  toggleGroups(true);
+  assert.equal(headFor('b').children[2].textContent, '1 execution');
+  assert.equal(headFor('a').children[2].textContent, '2 executions');
+});
+
+test('group usage summary: latest turn, distinct-turn session total, cache only when reported', async () => {
+  const ingest: any = await import(base + '/js/ingest.mjs');
+  const LV: any = await import(base + '/js/live-view.mjs');
+  const F: any = await import(base + '/js/format.mjs');
+  const fc = (n: number): string => F.formatCount(n);
+  seed();
+  toggleGroups(true);
+  // session a: turns at 100 and 200 (cache 400 + 600); duplicate of turn 200 without cache keeps 600.
+  ingest.ingestEvent({ type: 'turn.usage', sessionKey: 'a', at: 100, tokens: { total: 1000, cacheHitInput: 400 } });
+  ingest.ingestEvent({ type: 'turn.usage', sessionKey: 'a', at: 200, tokens: { total: 1500, cacheHitInput: 600 } });
+  LV.applyTurnUsageToRows({ type: 'turn.usage', sessionKey: 'a', at: 200, tokens: { total: 1500 } });
+  // session b: one turn with no cache field -> no Cache Hit metric.
+  ingest.ingestEvent({ type: 'turn.usage', sessionKey: 'b', at: 50, tokens: { total: 700 } });
+  // session '' : reported cache 0 is valid and shown.
+  ingest.ingestEvent({ type: 'turn.usage', sessionKey: '', at: 60, tokens: { total: 0, cacheHitInput: 0 } });
+  assert.equal(
+    headFor('a').children[3].textContent,
+    'Latest turn: ' + fc(1500) + ' · Session total: ' + fc(2500) + ' · Cache Hit: ' + fc(1000)
+  );
+  assert.equal(
+    headFor('b').children[3].textContent,
+    'Latest turn: ' + fc(700) + ' · Session total: ' + fc(700)
+  );
+  assert.equal(
+    headFor('').children[3].textContent,
+    'Latest turn: ' + fc(0) + ' · Session total: ' + fc(0) + ' · Cache Hit: ' + fc(0)
+  );
 });

@@ -7,7 +7,31 @@
  * Pure data container — no imports.
  * ========================================================================== */
 
+// Per-browser "Clear" cutoff (epoch ms). Events with `at <= clearedBefore` are never
+// rendered, so the server event ring replayed by /api/events cannot restore cleared rows
+// after a reload. Stored only in this dashboard's localStorage key; storage errors fall back to 0.
+const CLEARED_BEFORE_KEY = 'aitoolgate.dashboard.clearedBefore';
+
+export function readClearedBefore() {
+  try {
+    const v = Number(localStorage.getItem(CLEARED_BEFORE_KEY));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+export function writeClearedBefore(ms) {
+  try {
+    localStorage.setItem(CLEARED_BEFORE_KEY, String(ms));
+  } catch (_e) {
+    /* storage unavailable: cutoff applies for this page only */
+  }
+}
+
 export const state = {
+  // Events at or before this epoch-ms cutoff are ignored by ingestEvent (see readClearedBefore).
+  clearedBefore: readClearedBefore(),
   // The open WebSocket (or null).
   ws: null,
   // Pending setTimeout handle for the WS reconnect retry.
@@ -66,6 +90,9 @@ export const state = {
   groupBySession: true,
   // sessionKey -> true when that group's rows are collapsed (rows kept, hidden)
   collapsedSessions: new Set(),
+  // sessionKey -> Map(turn `at` -> { total, cacheHit? }) of reported turn.usage, deduped per turn
+  // so repeated call rows of one turn never double-count. Feeds the group header summary.
+  turnUsageBySession: new Map(),
   // monotonically increasing insertion counter; rows carry it as a JS property
   // (li.streamSeq) so flat newest-first order can be restored after grouping
   streamSeq: 0

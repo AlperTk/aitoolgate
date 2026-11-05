@@ -18,11 +18,9 @@
      like "122.3k". Full values stay available by expanding a row
      (Arguments / Response / Details). */
   .row-main .s-duration,
-  .row-main .s-tokens-total,
   .row-main .s-size,
   #stream-head .num-col:nth-child(5),
-  #stream-head .num-col:nth-child(8),
-  #stream-head .num-col:nth-child(9) { display: none; }
+  #stream-head .num-col:nth-child(8) { display: none; }
   /* Let the two revealed In (est) / Out (est) header labels wrap to two lines so
      "In (est) tok" / "Out (est) tok" stay legible in the narrow 3.5rem tracks. */
   #stream-head th:nth-child(6),
@@ -50,6 +48,17 @@
 @media (max-width: 600px) {
   .stream-head,
   .row-main { min-width: 31.5rem; }
+  /* Group header on narrow screens: title + count on the first line, usage summary
+     reflowed onto its own full-width line (wrapped, not clipped), still >= 12px. */
+  .stream-group-head { gap: 0.4rem 0.6rem; }
+  .stream-group-meta {
+    flex: 1 0 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: var(--lh-snug);
+  }
 }
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }

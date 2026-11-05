@@ -48,6 +48,9 @@ export function ingestEvent(raw) {
   var ev = raw;
   if (typeof raw === 'string') { try { ev = JSON.parse(raw); } catch (_e) { return; } }
   if (!isPlainObject(ev)) return;
+  // Cleared-history cutoff: replayed (polled) or late events at/before the Clear time stay hidden.
+  // Missing/invalid `at` is not filtered so live telemetry is never dropped.
+  if (state.clearedBefore > 0 && typeof ev.at === 'number' && Number.isFinite(ev.at) && ev.at <= state.clearedBefore) return;
   var key = eventKey(ev);
   if (state.seenEventKeys.has(key)) return; // already rendered (cross-source or replay)
   state.seenEventKeys.add(key);
