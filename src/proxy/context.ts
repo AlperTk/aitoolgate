@@ -2,7 +2,7 @@ import type http from 'node:http';
 import type { Transform } from 'node:stream';
 import type { ClientConfig, ModelConfig, SessionKey, ToolCall } from '../ports/domain';
 import type { ChatMessage, Pipeline, RequestContext, ResponseContext } from '../ports/pipeline';
-import type { TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
+import type { SessionContextEvent, TelemetryEmitter, ToolCallEvent, ToolResultEvent, TurnUsageEvent } from '../telemetry/events';
 import type {
   SseExtractorFactory,
   TelemetryEventBus,
@@ -192,6 +192,8 @@ export async function runThroughPipeline(
   // Tool telemetry has two phases (request + response), both run unconditionally so observation is identical with or without a policy stage.
   // Request-phase tool-RESULT detection: pair incoming results against previously-issued calls and emit one `tool.result` per resolved entry (a no-op when nothing matches).
   resolveAndEmitToolResults(opts?.tracker, opts?.bus, requestCtx, opts?.now, opts?.toolResultStore, opts?.usage, opts?.toolErrorPatterns);
+  // Latest client context (system prompt + tool definitions) for the session, from the client's own request body.
+  emitSessionContext(opts?.bus, requestCtx, opts?.now, opts?.usage);
 
   const result = await forward(processedRequest.raw);
   const summary = summarizeResponse(result.body);
@@ -239,6 +241,8 @@ export async function streamSameProtocolRequest<TRaw>(
   syncRequestMessages(processed);
   // Request-phase tool-RESULT detection runs on every proxied request (a no-op when nothing matches).
   resolveAndEmitToolResults(deps.tracker, deps.bus, requestCtx, undefined, deps.toolResultStore, deps.usage, deps.toolErrorPatterns);
+  // Latest client context (system prompt + tool definitions) for the session, from the client's own request body.
+  emitSessionContext(deps.bus, requestCtx, undefined, deps.usage);
   // Telemetry extractor: non-throwing; a factory failure only disables the tap, never the stream.
   let extractor: Transform | undefined;
   try {
@@ -272,6 +276,45 @@ export function toSessionKeyString(sessionKey: SessionKey): string {
 export function toClientId(client: ClientConfig): string | undefined {
   if (typeof client.apiKey === 'string' && client.apiKey !== '' && client.apiKey !== 'anonymous') return client.apiKey;
   return undefined;
+}
+
+/** Extract the client's system-prompt text and raw tool definitions (OpenAI Chat `role:'system'` messages + `tools`; Anthropic top-level `system` + `tools`). Read-only; the request is not modified. */
+export function extractSessionContext(raw: unknown): { systemPrompt: string; tools: unknown[] } {
+  if (!isRecord(raw)) return { systemPrompt: '', tools: [] };
+  const parts: string[] = [];
+  if (Array.isArray(raw.messages)) {
+    for (const message of raw.messages) {
+      if (isRecord(message) && message.role === 'system') parts.push(textOfContent(message.content));
+    }
+  }
+  if (raw.system !== undefined) parts.push(textOfContent(raw.system));
+  const tools = Array.isArray(raw.tools) ? raw.tools : [];
+  return { systemPrompt: parts.filter((p) => p !== '').join('\n\n'), tools };
+}
+
+/** Text of a system/content field: a plain string, or the concatenated `text` of text blocks; otherwise ''. */
+function textOfContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) => (isRecord(block) && typeof block.text === 'string' ? block.text : ''))
+    .filter((text) => text !== '')
+    .join('\n');
+}
+
+/** Emit one latest-context `session.context` event for the request (no-op without a bus or a session key). */
+function emitSessionContext(
+  bus: TelemetryEmitter | undefined,
+  requestCtx: RequestContext,
+  now?: () => number,
+  helpers?: TelemetryHelpers,
+): void {
+  const sessionKey = toSessionKeyString(requestCtx.sessionKey);
+  if (bus === undefined || sessionKey === '') return;
+  const { systemPrompt, tools } = extractSessionContext(requestCtx.raw);
+  const clientId = toClientId(requestCtx.client);
+  const at = (now ?? helpers?.now ?? Date.now)();
+  safeEmit(bus, { type: 'session.context', sessionKey, ...(clientId !== undefined ? { clientId } : {}), systemPrompt, tools, at });
 }
 
 /** Re-exported from `telemetry/protocol-common` (the single source of truth for this shape). */
@@ -529,7 +572,7 @@ function extractUsage(body: unknown): NormalizedUsage | undefined {
 }
 
 /** Emit an event through an optional bus without ever letting a failure surface. */
-function safeEmit(bus: TelemetryEmitter, event: ToolCallEvent | ToolResultEvent | TurnUsageEvent): void {
+function safeEmit(bus: TelemetryEmitter, event: ToolCallEvent | ToolResultEvent | TurnUsageEvent | SessionContextEvent): void {
   try {
     const maybe = bus.emit(event);
     if (maybe !== null && typeof maybe === 'object' && typeof (maybe as { catch?: unknown }).catch === 'function') {

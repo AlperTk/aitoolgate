@@ -49,6 +49,9 @@ before(async () => {
   const ctl = await import(base + '/js/controls.mjs');
   const st = await import(base + '/js/state.mjs');
   M = { ctl, state: st.state };
+  // Legacy flat-mode semantics: session grouping now defaults on; opt out explicitly.
+  S.el('group-by-session', 'input').checked = false;
+  M.state.groupBySession = false;
   M.ctl.bindControlEvents(); // binds the guarded click handler on #btn-clear-interventions
 });
 

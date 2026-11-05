@@ -155,5 +155,25 @@ export type TurnUsageEvent = {
   at: number;
 };
 
+/**
+ * The latest client-supplied context of one proxied request (debugging view): the system prompt
+ * text and the full client tool definitions. Memory-only (ring + live bus); never persisted.
+ * The dashboard keeps only the most recent one per session.
+ */
+export type SessionContextEvent = {
+  /** Discriminator. */
+  type: 'session.context';
+  /** Session the request belongs to. */
+  sessionKey: string;
+  /** Client identity, if known. */
+  clientId?: string;
+  /** Client system prompt as text (OpenAI `role:'system'` messages / Anthropic top-level `system`); empty when absent. */
+  systemPrompt: string;
+  /** Full raw client tool definitions (OpenAI `tools` / Anthropic `tools`); empty when absent. */
+  tools: unknown[];
+  /** When the request was observed (epoch milliseconds). */
+  at: number;
+};
+
 /** Any event published through the telemetry {@link TelemetryEventBus}. */
-export type TelemetryEvent = ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent;
+export type TelemetryEvent = ToolCallEvent | ToolResultEvent | InterventionEvent | TurnUsageEvent | SessionContextEvent;

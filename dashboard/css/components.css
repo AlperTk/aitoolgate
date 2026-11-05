@@ -39,6 +39,11 @@
   width: 100%;
   align-self: stretch;
 }
+/* Grouped mode: the session column (3rd cell) is removed entirely, track included. */
+.stream-head.is-grouped,
+#stream-list.is-grouped .row-main {
+  grid-template-columns: 4.5rem minmax(8.0rem, 1fr) 4.5rem 3.5rem 4.8rem 4.8rem 4.8rem 4.8rem 1.2rem;
+}
 .stream-head th { padding: 0; font-weight: var(--fw-semibold); text-align: left; white-space: normal; overflow-wrap: anywhere; line-height: var(--lh-snug); }
 /* Numeric headers (Dur / In / Out / Context Size / Size) keep a floor so their labels wrap instead of collapsing. */
 .stream-head th.num-col { min-width: 3.5rem; }
@@ -150,7 +155,34 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
   white-space: pre-wrap;
   word-break: break-all;
 }
-.rd-value { word-break: break-all; }
+.rd-value {
+  word-break: break-all;
+  margin: 0.25rem 0 0;
+  padding: 0.4rem 0.6rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 240px;
+  overflow: auto;
+  max-width: 100%;
+  white-space: pre-wrap;
+  font-size: var(--fs-sm);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+/* Session context block (system prompt + tools): collapsed by default, bounded */
+.stream-group-context {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.4rem 0.75rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.ctx-section { max-width: 100%; min-width: 0; }
+.ctx-disclosure > summary { cursor: pointer; }
+.ctx-disclosure > summary.rd-label { display: inline-block; margin-bottom: 0.2rem; }
+.ctx-tool { margin: 0.2rem 0 0 0.5rem; max-width: 100%; }
+.ctx-tool > summary { cursor: pointer; font-family: "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
 
 /* Tab strip inside row detail */
 .rd-tabs {
@@ -226,6 +258,68 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 #stream-count { margin-left: auto; white-space: nowrap; }
+/* "Group by session": opt-in toggle + per-session header rows (li.stream-group-head).
+   Headers are not .stream-row, so zebra striping, counts and export ignore them. */
+.stream-group-toggle-label { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.stream-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  margin-top: 0.35rem;
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-tint);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.stream-group-head:first-child { margin-top: 0; }
+/* Whole header is the click target: the toggle button stretches to the header's full height. */
+.stream-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+.stream-group-toggle:hover { background: var(--accent-tint-md); }
+.stream-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stream-group-label {
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-md);
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Compact pill sits directly after the session key. */
+.stream-group-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+/* Grouped mode only: the session is already shown in the header, so the per-row session cell is
+   blanked with visibility (not display) to keep the grid column tracks aligned with the header. */
+#stream-list.is-grouped .stream-row .s-session,
+.stream-head.is-grouped > th:nth-child(3) { display: none; }
+.stream-row.is-collapsed { display: none; }
 
 /* Badges (status + action type). */
 .badge {

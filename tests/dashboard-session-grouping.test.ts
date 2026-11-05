@@ -1,0 +1,218 @@
+/**
+ * DOM-stubbed behaviour tests for the opt-in "Group by session" stream mode
+ * (dashboard/js/live-view.mjs regroupStream + bindFilterEvents). Loads the real
+ * ES modules under the in-memory DOM (tests/dom-stub.ts) and drives them through
+ * the same change/click wiring the app uses. Covers: contiguous per-session
+ * groups with headers, header counts under filters, collapse hiding rows,
+ * toggling off restoring the flat newest-first list, headers excluded from the
+ * "showing N of M" count, and the "(no session)" label.
+ */
+import { test, before, beforeEach, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { createDomStub, FakeEl, DomStub } from './dom-stub';
+
+const base = '../..' + '/dashboard';
+
+const S: DomStub = createDomStub();
+const SL = S.el('stream-list', 'ul');
+S.el('intervention-list', 'ul');
+const COUNT = S.el('stream-count', 'span');
+S.el('stream-empty', 'div');
+const FT = S.el('filter-tool', 'input');
+S.el('filter-status', 'select');
+S.el('filter-session', 'input');
+const GROUP = S.el('group-by-session', 'input');
+const HEAD = S.el('stream-head', 'div');
+
+// localStorage stub, installed for this file only and restored in after().
+const KEY = 'aitoolgate.groupBySession';
+const store = new Map<string, string>();
+let throwing = false;
+const stubStorage = {
+  getItem(k: string): string | null {
+    if (throwing) throw new Error('denied');
+    return store.has(k) ? store.get(k)! : null;
+  },
+  setItem(k: string, v: string): void {
+    if (throwing) throw new Error('denied');
+    store.set(k, String(v));
+  },
+};
+const realDesc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+
+let LV: any;
+let ST: any;
+let INITIAL_CHECKED = false;
+let INITIAL_STATE = false;
+before(async () => {
+  Object.defineProperty(globalThis, 'localStorage', { value: stubStorage, configurable: true, writable: true });
+  ST = (await import(base + '/js/state.mjs')).state;
+  INITIAL_STATE = ST.groupBySession;
+  LV = await import(base + '/js/live-view.mjs');
+  LV.bindFilterEvents();
+  INITIAL_CHECKED = GROUP.checked;
+});
+after(() => {
+  if (realDesc) Object.defineProperty(globalThis, 'localStorage', realDesc);
+  else delete (globalThis as any).localStorage;
+});
+
+test('fresh load: grouping is enabled by default and the toggle is checked', () => {
+  assert.equal(INITIAL_STATE, true);
+  assert.equal(INITIAL_CHECKED, true);
+});
+
+beforeEach(() => {
+  SL.children.length = 0;
+  COUNT.textContent = '';
+  ST.callRows.clear();
+  ST.orphanResultEntries.length = 0;
+  ST.collapsedSessions.clear();
+  ST.groupBySession = false;
+  FT.value = '';
+  GROUP.checked = false;
+  store.clear();
+  throwing = false;
+});
+
+test('no saved value: bind defaults to grouped and checkbox reflects it', () => {
+  LV.bindFilterEvents();
+  assert.equal(ST.groupBySession, true);
+  assert.equal(GROUP.checked, true);
+  assert.ok(SL.classList.contains('is-grouped'));
+  assert.ok(HEAD.classList.contains('is-grouped'));
+});
+
+test('malformed saved value falls back to default true', () => {
+  store.set(KEY, 'garbage');
+  LV.bindFilterEvents();
+  assert.equal(ST.groupBySession, true);
+  assert.equal(GROUP.checked, true);
+});
+
+test('saved false is restored on bind: state, checkbox and classes reflect flat mode', () => {
+  store.set(KEY, 'false');
+  LV.bindFilterEvents();
+  assert.equal(ST.groupBySession, false);
+  assert.equal(GROUP.checked, false);
+  assert.ok(!SL.classList.contains('is-grouped'));
+  assert.ok(!HEAD.classList.contains('is-grouped'));
+});
+
+test('toggle persists true and false to storage', () => {
+  toggleGroups(false);
+  assert.equal(store.get(KEY), 'false');
+  toggleGroups(true);
+  assert.equal(store.get(KEY), 'true');
+  assert.ok(SL.classList.contains('is-grouped'));
+  assert.ok(HEAD.classList.contains('is-grouped'));
+});
+
+test('storage throwing does not break bind or toggle', () => {
+  throwing = true;
+  assert.doesNotThrow(() => LV.bindFilterEvents());
+  assert.equal(ST.groupBySession, true);
+  assert.doesNotThrow(() => toggleGroups(false));
+  assert.equal(ST.groupBySession, false);
+  assert.equal(GROUP.checked, false);
+});
+
+function addCall(id: string, session: string, tool: string): void {
+  LV.createCallRow({ type: 'tool.call', id, sessionKey: session, toolName: tool, at: 1000 + Number(id.slice(1)) });
+}
+function heads(): FakeEl[] {
+  return SL.children.filter((c) => c.classList.contains('stream-group-head'));
+}
+function headFor(session: string): FakeEl {
+  const h = heads().find((x) => x.dataset.session === session);
+  assert.ok(h, 'header exists for session ' + JSON.stringify(session));
+  return h!;
+}
+function rowIds(): string[] {
+  return SL.children.filter((c) => c.classList.contains('stream-row')).map((c) => c.dataset.callId);
+}
+function toggleGroups(on: boolean): void {
+  GROUP.checked = on;
+  GROUP.emit('change');
+}
+// Creates: c1 (sess a, read), c2 (sess b, read), c3 (sess a, write), c4 (no session, read).
+// Newest-first flat order is therefore c4, c3, c2, c1.
+function seed(): void {
+  addCall('c1', 'a', 'read');
+  addCall('c2', 'b', 'read');
+  addCall('c3', 'a', 'write');
+  addCall('c4', '', 'read');
+}
+
+test('grouping on: rows are contiguous per session, newest group first, with headers', () => {
+  seed();
+  toggleGroups(true);
+  const seq = SL.children.map((c) => (c.classList.contains('stream-group-head') ? 'H:' + c.dataset.session : c.dataset.callId));
+  assert.deepEqual(seq, ['H:', 'c4', 'H:a', 'c3', 'c1', 'H:b', 'c2']);
+});
+
+test('header count reflects filter-passing rows; hidden when none pass; not counted in showing N of M', () => {
+  seed();
+  toggleGroups(true);
+  assert.equal(headFor('a').children[2].textContent, '2 rows');
+  assert.equal(COUNT.textContent, '', 'no filter active -> no count text');
+
+  FT.value = 'write';
+  FT.emit('input');
+  assert.equal(headFor('a').children[2].textContent, '1 rows');
+  assert.equal(headFor('a').style.display, '');
+  assert.equal(headFor('b').style.display, 'none', 'group with no passing rows hides its header');
+  assert.equal(headFor('').style.display, 'none');
+  assert.equal(COUNT.textContent, 'showing 1 of 4', 'headers are not counted in the total');
+});
+
+test('clicking a header toggles collapse: rows hidden (kept in DOM) and restored on second click', () => {
+  seed();
+  toggleGroups(true);
+  headFor('a').children[0].click();
+  assert.ok(ST.collapsedSessions.has('a'));
+  const a = SL.children.filter((c) => c.classList.contains('stream-row') && c.dataset.session === 'a');
+  assert.equal(a.length, 2, 'collapsed rows are still in the list');
+  assert.ok(a.every((r) => r.classList.contains('is-collapsed')));
+  assert.equal(headFor('a').children[0].getAttribute('aria-expanded'), 'false');
+
+  headFor('a').children[0].click();
+  assert.ok(!ST.collapsedSessions.has('a'));
+  assert.ok(a.every((r) => !r.classList.contains('is-collapsed')));
+});
+
+test('toggling off removes headers, clears collapse, and restores newest-first flat order', () => {
+  seed();
+  toggleGroups(true);
+  headFor('a').children[0].click();
+  toggleGroups(false);
+  assert.equal(heads().length, 0, 'no headers remain');
+  assert.deepEqual(rowIds(), ['c4', 'c3', 'c2', 'c1'], 'flat newest-first order restored');
+  assert.ok(SL.children.every((c) => !c.classList.contains('is-collapsed')));
+});
+
+test('rows without a session are grouped under the localized "(no session)" label', () => {
+  seed();
+  toggleGroups(true);
+  const h = headFor('');
+  assert.equal(h.children[1].textContent, '(no session)');
+  assert.equal(h.children[1].title, '(no session)');
+});
+
+test('new rows arriving while grouped are placed into their session group', () => {
+  seed();
+  toggleGroups(true);
+  addCall('c5', 'b', 'read');
+  const seq = SL.children.map((c) => (c.classList.contains('stream-group-head') ? 'H:' + c.dataset.session : c.dataset.callId));
+  assert.deepEqual(seq, ['H:b', 'c5', 'c2', 'H:', 'c4', 'H:a', 'c3', 'c1']);
+  assert.equal(headFor('b').children[2].textContent, '2 rows');
+});
+
+test('a brand-new session call while grouped creates a group placed before all existing groups', () => {
+  seed();
+  toggleGroups(true);
+  addCall('c0', 'z', 'read');
+  const seq = SL.children.map((c) => (c.classList.contains('stream-group-head') ? 'H:' + c.dataset.session : c.dataset.callId));
+  assert.deepEqual(seq, ['H:z', 'c0', 'H:', 'c4', 'H:a', 'c3', 'c1', 'H:b', 'c2']);
+  assert.equal(headFor('z').children[2].textContent, '1 rows');
+});

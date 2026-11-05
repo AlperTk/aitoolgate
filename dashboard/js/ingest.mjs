@@ -19,6 +19,7 @@ import {
   createCallRow,
   matchAndRenderResult,
   storeInterventionForDrillDown,
+  storeContextForDrillDown,
   updateLiveCounters
 } from './live-view.mjs';
 
@@ -63,6 +64,9 @@ export function ingestEvent(raw) {
       applyTurnUsageToRows(ev); break;
     case 'policy.intervention':
       state.localCounts.interventions += 1; addInterventionRow(ev); storeInterventionForDrillDown(ev); updateLiveCounters(); applyFilters(); break;
+    case 'session.context':
+      // Latest client context per session (system prompt + tools): shown in the session details, no row/counter.
+      storeContextForDrillDown(ev); break;
     default:
       break; // echo / unknown frame — nothing to render
   }

@@ -34,6 +34,11 @@
   .row-main {
     grid-template-columns: minmax(0, 4.6rem) minmax(6.5rem, 1fr) minmax(4rem, 1fr) minmax(0, 4.4rem) minmax(3.5rem, 1fr) minmax(3.5rem, 1fr) 1.2rem;
   }
+  /* Grouped mode: drop the session track (same selectors/specificity as the base grouped rule, later so it wins). */
+  .stream-head.is-grouped,
+  #stream-list.is-grouped .row-main {
+    grid-template-columns: minmax(0, 4.6rem) minmax(6.5rem, 1fr) minmax(0, 4.4rem) minmax(3.5rem, 1fr) minmax(3.5rem, 1fr) 1.2rem;
+  }
   /* Tool/Session/In/Out keep a readable minimum (instead of collapsing to 0); the call list
      scrolls sideways inside its card when the row is wider than the viewport. */
   .list-wrap { overflow-x: auto; }

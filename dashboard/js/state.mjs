@@ -57,5 +57,16 @@ export const state = {
   // trimCallData) and clearOnScreenHistory clears the map. Unlike
   // interventionsBySession (which appends EVERY event for drill-down + the
   // 'intervention' status filter), this map holds one row per session for display.
-  interventionRowBySession: new Map()
+  interventionRowBySession: new Map(),
+
+  /* ---- "Group by session" stream mode (opt-in, not persisted) -------
+   * When on, live-view.mjs regroupStream() inserts a header row per session
+   * (li.stream-group-head) above that session's stream rows. Off = flat list.
+   * On by default; bindFilterEvents syncs #group-by-session to this value. */
+  groupBySession: true,
+  // sessionKey -> true when that group's rows are collapsed (rows kept, hidden)
+  collapsedSessions: new Set(),
+  // monotonically increasing insertion counter; rows carry it as a JS property
+  // (li.streamSeq) so flat newest-first order can be restored after grouping
+  streamSeq: 0
 };

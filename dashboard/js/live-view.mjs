@@ -20,8 +20,16 @@ import { t, getLocale, onLocaleChange } from './i18n/index.mjs';
 // Prepend a row to a <ul>, keeping at most `max` children (newest-first).
 export function prependTrim(listEl, node, max) {
   listEl.insertBefore(node, listEl.firstChild);
-  while (listEl.children.length > max) {
-    listEl.removeChild(listEl.lastChild);
+  // Cap counts only data rows: session group headers (li.stream-group-head) are
+  // not rows, and any header trimmed here is rebuilt by regroupStream().
+  var rows = 0;
+  for (var i = 0; i < listEl.children.length; i++) {
+    if (listEl.children[i].classList.contains('stream-row')) rows++;
+  }
+  while (rows > max) {
+    var last = listEl.lastChild;
+    listEl.removeChild(last);
+    if (last.classList.contains('stream-row')) rows--;
   }
 }
 // Append the four numeric cells (In (est) | Out (est) | Total | Size) to a row's .row-main.
@@ -122,6 +130,7 @@ export function createCallRow(ev) {
   li.dataset.session = ev.sessionKey || '';
   li.dataset.status = 'pending';
   li.dataset.at = ev.at;
+  li.streamSeq = ++state.streamSeq;
 
   var main = el('div', 'row-main');
   main.appendChild(el('span', 'badge badge-pending', t('live.badge.pending')));
@@ -223,6 +232,7 @@ export function createOrphanResultRow(ev) {
   li.dataset.session = ev.sessionKey || '';
   li.dataset.status = ev.ok === false ? 'fail' : 'ok';
   li.dataset.at = ev.at;
+  li.streamSeq = ++state.streamSeq;
 
   var isErr = ev.ok === false;
   var main = el('div', 'row-main');
@@ -297,6 +307,51 @@ export function storeInterventionForDrillDown(ev) {
   if (!sk) return;
   if (!state.interventionsBySession.has(sk)) state.interventionsBySession.set(sk, []);
   state.interventionsBySession.get(sk).push({ ruleId: ev.ruleId, action: ev.action, at: ev.at, detail: ev.detail });
+}
+
+// Latest client context (system prompt + tool definitions) per session key. Only the most recent
+// session.context event per session is kept; an older (replayed) event never overwrites a newer one.
+const contextBySession = new Map();
+export function storeContextForDrillDown(ev) {
+  var sk = ev.sessionKey || '';
+  if (!sk) return;
+  var prev = contextBySession.get(sk);
+  if (prev && typeof ev.at === 'number' && typeof prev.at === 'number' && ev.at < prev.at) return;
+  contextBySession.set(sk, { systemPrompt: ev.systemPrompt, tools: ev.tools, at: ev.at });
+  if (state.groupBySession) regroupStream();
+}
+
+// Render one details <pre> block of text (escaped; never injected as HTML).
+function contextPre(text) {
+  return '<pre class="rd-value">' + esc(text) + '</pre>';
+}
+
+// Session-level context block (system prompt + client tools) for a group's expanded body.
+// Returns '' when the session has no context. Text is escaped via contextPre/esc.
+export function buildSessionContextHtml(key) {
+  var ctx = contextBySession.get(key || '');
+  if (!ctx) return '';
+  var toolsList = Array.isArray(ctx.tools) ? ctx.tools : [];
+  var prompt = ctx.systemPrompt || '';
+  var html = '<div class="rd-section ctx-section"><details class="ctx-disclosure">';
+  html += '<summary class="rd-label">System prompt' + (prompt ? ' (' + prompt.length + ' chars)' : '') + '</summary>';
+  html += prompt ? contextPre(prompt) : '<div class="muted small">No system prompt in the latest request</div>';
+  html += '</details></div>';
+  html += '<div class="rd-section ctx-section"><details class="ctx-disclosure">';
+  html += '<summary class="rd-label">Client tools (' + toolsList.length + ')</summary>';
+  if (toolsList.length === 0) {
+    html += '<div class="muted small">No tools in the latest request</div>';
+  } else {
+    toolsList.forEach(function (tool) {
+      var json;
+      try { json = JSON.stringify(tool, null, 2); } catch (_e) { json = String(tool); }
+      var name = (tool && (tool.name || (tool.function && tool.function.name))) || 'tool';
+      html += '<details class="ctx-disclosure ctx-tool"><summary class="small">' + esc(String(name)) + '</summary>';
+      html += contextPre(json) + '</details>';
+    });
+  }
+  html += '</details></div>';
+  return html;
 }
 
 // Wire the click-to-drill-down handler on a row.
@@ -511,6 +566,7 @@ export function buildDetailsPanel(rs) {
   var fullSession = (ev && ev.sessionKey) || '';
   if (fullSession) {
     html += '<div class="rd-section"><div class="rd-label">' + esc(t('live.details.session')) + '</div><div class="rd-value">' + esc(fullSession) + '</div></div>';
+    // System prompt / client tools are shown per session group (buildSessionContextHtml), not here.
     var ivs = state.interventionsBySession.get(fullSession);
     if (ivs && ivs.length) {
       html += '<div class="rd-section"><div class="rd-label">' + esc(t('live.details.intervention')) + '</div>';
@@ -679,6 +735,8 @@ export function applyFilters() {
     countEl.textContent = anyFilter ? t('live.count.showing', { visible: visible, total: total }) : '';
   }
 
+  regroupStream();
+
   // The intervention log has no tool/status, so it is constrained only by the
   // session filter (when present) and the shared time-window.
   var ivList = $('intervention-list');
@@ -697,6 +755,24 @@ export function applyFilters() {
 // control funnels through the single applyFilters() re-render above, so live-
 // appended rows and manual re-renders both honor the active filters. Each
 // binding is guarded so a missing control can never abort app boot.
+// Persisted "Group by session" preference (same try/catch pattern as theme.mjs).
+// Only the exact string 'false' turns grouping off; anything else (missing, malformed) is the default true.
+var GROUP_KEY = 'aitoolgate.groupBySession';
+function readGroupPref() {
+  try {
+    state.groupBySession = localStorage.getItem(GROUP_KEY) !== 'false';
+  } catch (e) {
+    state.groupBySession = true; /* storage unavailable: keep default */
+  }
+}
+function writeGroupPref(on) {
+  try {
+    localStorage.setItem(GROUP_KEY, on ? 'true' : 'false');
+  } catch (e) {
+    /* storage unavailable: preference applies for this page only */
+  }
+}
+
 export function bindFilterEvents() {
   var toolEl = $('filter-tool');
   if (toolEl) toolEl.addEventListener('input', applyFilters);
@@ -704,6 +780,92 @@ export function bindFilterEvents() {
   if (sessionEl) sessionEl.addEventListener('input', applyFilters);
   var statusEl = $('filter-status');
   if (statusEl) statusEl.addEventListener('change', applyFilters);
+  var groupEl = $('group-by-session');
+  if (groupEl) {
+    readGroupPref();
+    groupEl.checked = !!state.groupBySession;
+    groupEl.addEventListener('change', function () {
+      state.groupBySession = !!groupEl.checked;
+      writeGroupPref(state.groupBySession);
+      applyFilters();
+    });
+    regroupStream();
+  }
+}
+
+// "Group by session" layout. Rebuilds the whole list from the rows' own state
+// (session key + streamSeq), so it is cheap at the MAX_LIST_ITEMS cap. With the
+// mode off and no headers present it returns without touching the DOM, keeping
+// the default flat newest-first list byte-identical.
+export function regroupStream() {
+  var list = $('stream-list');
+  if (!list) return;
+  list.classList.toggle('is-grouped', !!state.groupBySession);
+  var head = $('stream-head');
+  if (head) head.classList.toggle('is-grouped', !!state.groupBySession);
+  var rows = [], heads = 0;
+  for (var i = 0; i < list.children.length; i++) {
+    var c = list.children[i];
+    if (c.classList.contains('stream-group-head')) heads++;
+    else if (c.classList.contains('stream-row')) rows.push(c);
+  }
+  if (!state.groupBySession && !heads) return;
+
+  rows.sort(function (a, b) { return (b.streamSeq || 0) - (a.streamSeq || 0); });
+  while (list.firstChild) list.removeChild(list.firstChild);
+
+  if (!state.groupBySession) {
+    rows.forEach(function (row) { row.classList.remove('is-collapsed'); list.appendChild(row); });
+    return;
+  }
+
+  // Map insertion order = first (most recent) appearance of each session.
+  var groups = new Map();
+  rows.forEach(function (row) {
+    var key = row.dataset.session || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+  groups.forEach(function (groupRows, key) {
+    var visible = groupRows.filter(function (r) { return r.style.display !== 'none'; }).length;
+    list.appendChild(buildGroupHead(key, visible));
+    var collapsed = state.collapsedSessions.has(key);
+    var ctxHtml = buildSessionContextHtml(key);
+    if (ctxHtml && !collapsed && visible > 0) {
+      var ctxLi = el('li', 'stream-group-context');
+      ctxLi.dataset.session = key;
+      ctxLi.innerHTML = ctxHtml;
+      list.appendChild(ctxLi);
+    }
+    groupRows.forEach(function (row) {
+      row.classList.toggle('is-collapsed', collapsed);
+      list.appendChild(row);
+    });
+  });
+}
+
+function buildGroupHead(key, visible) {
+  var collapsed = state.collapsedSessions.has(key);
+  var head = el('li', 'stream-group-head');
+  head.dataset.session = key;
+  var name = key || t('stream.group.noSession');
+  var btn = el('button', 'stream-group-toggle', collapsed ? '\u25B8' : '\u25BE');
+  btn.type = 'button';
+  btn.title = t('stream.group.toggleTitle');
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  btn.addEventListener('click', function () {
+    if (state.collapsedSessions.has(key)) state.collapsedSessions.delete(key);
+    else state.collapsedSessions.add(key);
+    regroupStream();
+  });
+  var label = el('span', 'stream-group-label', name);
+  label.title = name;
+  var count = el('span', 'stream-group-count muted small', t('stream.group.rows', { visible: visible }));
+  head.appendChild(btn);
+  head.appendChild(label);
+  head.appendChild(count);
+  if (!visible) head.style.display = 'none';
+  return head;
 }
 
 // Append a policy.intervention row to the intervention log as distinct cells:
