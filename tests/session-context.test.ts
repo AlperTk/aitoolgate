@@ -6,7 +6,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDomStub } from './dom-stub';
-import { extractSessionContext, nextPromptVersion } from '../src/proxy/context';
+import { emitSessionContext, extractSessionContext, nextPromptVersion } from '../src/proxy/context';
 
 const base = '../..' + '/dashboard';
 
@@ -61,6 +61,31 @@ test('prompt version: tool definitions are not part of the fingerprint (version 
   const otherTools = extractSessionContext({ system: 'same', tools: [{ name: 'b' }] });
   assert.equal(nextPromptVersion('pv-tools', withTools.systemPrompt), 1);
   assert.equal(nextPromptVersion('pv-tools', otherTools.systemPrompt), 1);
+});
+
+test('emitted prompt version: reused x-session-id starts a new conversation at v1; continuation increments; sessionKey unchanged', () => {
+  type Ctx = Parameters<typeof emitSessionContext>[1];
+  const events: any[] = [];
+  const bus = { emit: (e: unknown) => { events.push(e); } } as any;
+  const req = (system: string, messages: any[]) => ({
+    client: { apiKey: 'k' },
+    sessionKey: { token: 'reused-sid' },
+    messages,
+    raw: { system, messages, tools: [] },
+  }) as unknown as Ctx;
+  const user = { role: 'user', content: 'hi' };
+  const asst = { role: 'assistant', content: 'hello' };
+  const at = () => 1;
+
+  emitSessionContext(bus, req('A', [user]), at);
+  emitSessionContext(bus, req('A', [user, asst, { role: 'user', content: 'more' }]), at);
+  emitSessionContext(bus, req('B', [user, asst, { role: 'user', content: 'more' }]), at);
+  // Genuinely new conversation under the same reused id: no assistant/tool history → back to v1.
+  emitSessionContext(bus, req('B', [user]), at);
+  emitSessionContext(bus, req('C', [user, { role: 'tool', content: 'r', tool_call_id: 'x' }]), at);
+
+  assert.deepEqual(events.map((e) => e.promptVersion), [1, 1, 2, 1, 2]);
+  assert.ok(events.every((e) => e.sessionKey === 'reused-sid'));
 });
 
 test('dashboard: prompt versions render v-current with prior prompts inspectable; replay dedupes', () => {

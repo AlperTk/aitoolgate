@@ -325,7 +325,7 @@ export function nextPromptVersion(sessionKey: string, systemPrompt: string): num
   return version;
 }
 
-function emitSessionContext(
+export function emitSessionContext(
   bus: TelemetryEmitter | undefined,
   requestCtx: RequestContext,
   now?: () => number,
@@ -336,6 +336,8 @@ function emitSessionContext(
   const { systemPrompt, tools } = extractSessionContext(requestCtx.raw);
   const clientId = toClientId(requestCtx.client);
   const at = (now ?? helpers?.now ?? Date.now)();
+  // A request with no assistant/tool turn starts a new conversation (a reused x-session-id may carry an older one): restart its prompt versioning at v1.
+  if (!requestCtx.messages.some((m) => m.role === 'assistant' || m.role === 'tool')) promptVersionBySession.delete(sessionKey);
   const promptVersion = nextPromptVersion(sessionKey, systemPrompt);
   safeEmit(bus, { type: 'session.context', sessionKey, ...(clientId !== undefined ? { clientId } : {}), systemPrompt, tools, promptVersion, at });
 }
