@@ -787,7 +787,7 @@ export function regroupStream() {
   while (list.firstChild) list.removeChild(list.firstChild);
 
   if (!state.groupBySession) {
-    rows.forEach(function (row) { row.classList.remove('is-collapsed'); list.appendChild(row); });
+    rows.forEach(function (row) { row.classList.remove('is-collapsed', 'session-child'); list.appendChild(row); });
     layoutBatchHeads(list);
     return;
   }
@@ -825,6 +825,7 @@ export function regroupStream() {
     }
     groupRows.forEach(function (row) {
       row.classList.toggle('is-collapsed', collapsed);
+      row.classList.add('session-child');
       list.appendChild(row);
     });
   });

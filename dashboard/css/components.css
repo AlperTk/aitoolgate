@@ -330,42 +330,72 @@ li[data-status="pending"] > .row-main { margin-left:-4px; }
 #stream-list.is-grouped .stream-row .s-session,
 .stream-head.is-grouped > th:nth-child(3) { display: none; }
 .stream-row.is-collapsed { display: none; }
+/* Session tree: one continuous guide line down the left of every session content row
+   (rows, batch headers, context), drawn as a pseudo-element so grid columns stay aligned.
+   The guide starts below the session header because the header row is not a guided element. */
+#stream-list.is-grouped .stream-row.session-child,
+#stream-list.is-grouped .stream-batch-head,
+#stream-list.is-grouped .stream-group-context {
+  position: relative;
+}
+#stream-list.is-grouped .stream-row.session-child::before,
+#stream-list.is-grouped .stream-batch-head::before,
+#stream-list.is-grouped .stream-group-context::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-strong);
+  pointer-events: none;
+}
 
-/* Same-turn call batch: one header row (li.stream-batch-head) above its member rows.
-   Members get a connector bar via inset shadow, so grid columns stay aligned. */
+/* Same-turn call batch: a subordinate tree node (li.stream-batch-head) above its member rows.
+   No tinted band or accent bar, so it does not read as another session header. */
 .stream-batch-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.3rem 0.6rem;
-  border-left: 3px solid var(--accent);
-  background: var(--accent-tint);
+  padding: 0.25rem 0.6rem 0.25rem 0.75rem;
   font-size: var(--fs-sm);
   min-width: 0;
 }
 .stream-batch-head.is-collapsed { display: none; }
+/* Existing toggle button doubles as the tree arrow: borderless, no box, so it reads as a marker. */
 .stream-batch-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.4rem;
-  height: 1.4rem;
+  width: 1.2rem;
+  height: 1.2rem;
   flex: 0 0 auto;
   padding: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--accent);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
   font-size: var(--fs-sm);
   line-height: 1;
   cursor: pointer;
 }
+.stream-batch-toggle:hover { background: var(--accent-tint); color: var(--accent); }
 .stream-batch-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.stream-batch-label { font-weight: var(--fw-semibold); white-space: nowrap; }
-.stream-row.batch-child { box-shadow: inset 3px 0 0 var(--accent); }
+.stream-batch-label { font-weight: var(--fw-semibold); color: var(--muted); white-space: nowrap; }
 .stream-row.batch-child.is-batch-collapsed { display: none; }
-/* Inset only the tool-name cell (grid item padding), so every column track stays aligned. */
-.stream-row.batch-child .s-tool { padding-left: 0.75rem; }
+/* Tool-call rows: small leading tree arrow drawn in the tool cell's padding (absolute, so no column shift). */
+.stream-row.batch-child .s-tool { position: relative; padding-left: 1.1rem; }
+.stream-row.batch-child .s-tool::before {
+  content: "\25B8";
+  position: absolute;
+  left: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 0.7em;
+  line-height: 1;
+  pointer-events: none;
+}
 
 /* Badges (status + action type). */
 .badge {
