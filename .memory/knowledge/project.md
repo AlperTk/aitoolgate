@@ -1,26 +1,46 @@
 ---
 name: project
-description: Purpose, scope, and principal use cases of aitoolgate. Read first when onboarding or when a change affects what the product does.
+description: Purpose, stack, commands and verification for the aitoolgate repository (local tool-observability LLM proxy), verified from committed HEAD.
 ---
+
 # aitoolgate — project overview
 
-Snapshot: 9a2fbb5b684093c9197a81929d7741a91c9718ec (bootstrap).
+- **Type:** single-package TypeScript/Node.js application (`package.json` name `aitoolgate`, v0.1.2, Apache-2.0). Not a monorepo.
+- **Purpose:** local proxy for OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`) traffic. It records tool calls, results, token usage and latency, and applies live policy rules (`hideTool`, `addDescription`, `rewriteArgs`, `injectMessage`). Evidence: `README.md`, `src/policy/`, `src/telemetry/`.
+- **Runtime:** Node.js `>=22.5` (`engines`), relies on built-in `node:sqlite`, `node:http` and a custom RFC 6455 WebSocket. No third-party runtime dependencies. Dev deps: `typescript ^7.0.2`, `@types/node`.
+- **Frontend:** vanilla JS dashboard in `dashboard/` (ES modules under `dashboard/js/`, i18n `en`/`tr`), served statically by the server. No framework.
 
-## Purpose
-Single-process TypeScript HTTP proxy that sits between AI clients and upstream LLM providers. It accepts OpenAI Chat Completions and Anthropic Messages requests, forwards them to a configured upstream (translating protocol when client and upstream differ), and applies a policy engine to tool calls and messages. It also collects telemetry and serves a live dashboard.
+## Commands (from `package.json`)
 
-## Principal use cases
-- Route `POST /v1/chat/completions` and Anthropic messages requests to the active upstream provider (streaming and non-streaming).
-- Apply user-defined or built-in policy rules to tool definitions, tool-call arguments, and messages (request and response phases).
-- Record telemetry events (tool calls, tool results, token usage, policy interventions) and expose stats, recent events, and a live WebSocket stream.
-- Manage rules and upstream providers via REST (`/api/*`) and a browser dashboard.
-- Optionally persist rules, providers, and tool results in SQLite.
+| Task | Command |
+| --- | --- |
+| Compile src, config, tests to `dist/` | `npm run build` (`tsc -p tsconfig.build.json`) |
+| Run tests | `npm test` (`node --test 'dist/tests/**/*.test.js'`, requires build first) |
+| Type-check without emit | `npm run typecheck` |
+| Start server | `npm start` (`node dist/src/server/index.js`) |
+| Build + start | `npm run dev` |
 
-## Scope and packaging
-- Package `aitoolgate` 0.1.1, Apache-2.0, `engines.node >=22.5`, zero runtime dependencies.
-- Binary entry: `dist/src/server/index.js`.
-- Dashboard is static assets served by the same HTTP server.
+Default port `8787`, overridable with `PORT`. `GET /health` is the liveness endpoint.
 
-## Related
-- Structure and cross-module flows: `knowledge/architecture.md`.
-- Commands and env vars: `knowledge/commands.md`.
+## Verification
+
+- Primary checks: `npm run build`, `npm run typecheck`, `npm test`.
+- Tests live in `tests/` (`api`, `dashboard`, `e2e`, `policy`, `protocols`, `providers`, `proxy`, `storage`, `telemetry`) and use `node:test` plus `node:assert/strict`. Integration tests use a mock upstream.
+- README states there is no lint, format, or CI/CD configuration. Verified: no `.github/` workflow files are tracked at HEAD.
+
+## Conventions
+
+- Source is `.ts` under `src/`; dashboard uses `.mjs` modules. Test files are named `*.test.ts`.
+- Relative imports omit file extensions in TS source (e.g. `'./policy/ruleEngine'`).
+- Many modules are headed by JSDoc comments describing the port they satisfy. Keep that style.
+- Empty placeholder `.gitkeep` files mark directories in `src/`.
+- `.gitignore` excludes `dist/`, `data/`, `node_modules/`, `.serena/`, and `.memory/tmp/`.
+
+## Gaps / notes
+
+- `.serena/project.yml` at HEAD still has `project_name: "mcp-manager"` and Python/Java language servers. Treat it as stale config. It is not authoritative for this project.
+- Some tests (e.g. `tests/dashboard/*`) exercise `dashboard/js` through `tests/dom-stub.ts`. There is no browser test runner.
+
+## Related memories
+
+- [development-guide](development-guide.md): read before changing code (investigation, DRY/SOLID, i18n workflow, verification).
