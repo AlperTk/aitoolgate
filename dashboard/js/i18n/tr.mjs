@@ -43,6 +43,8 @@ export default {
   'stream.group.execMany': '{n} çalıştırma',
   'stream.group.usage': 'Son tur: {context} · Oturum toplamı: {total}',
   'stream.group.usageCache': 'Son tur: {context} · Oturum toplamı: {total} · Cache Hit: {cache}',
+  'stream.batch.one': 'Toplu çağrı · 1 araç',
+  'stream.batch.many': 'Toplu çağrı · {n} araç',
   'col.status': 'Durum',
   'col.tool': 'Araç',
   'col.session': 'Oturum',

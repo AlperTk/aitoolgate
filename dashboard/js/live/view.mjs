@@ -219,7 +219,7 @@ function buildBatchHead(key, visible) {
   var collapsed = collapsedBatches.has(key);
   var head = el('li', 'stream-batch-head');
   head.dataset.batch = key;
-  var label = 'Toplu çağrı · ' + visible + ' araç';
+  var label = visible === 1 ? t('stream.batch.one') : t('stream.batch.many', { n: visible });
   var btn = el('button', 'stream-batch-toggle', collapsed ? '\u25B8' : '\u25BE');
   btn.type = 'button';
   btn.title = label;

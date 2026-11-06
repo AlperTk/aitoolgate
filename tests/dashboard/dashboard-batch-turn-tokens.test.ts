@@ -41,12 +41,14 @@ S.el('live-interventions', 'span');
 let LV: any;
 let ING: any;
 let ST: any;
+let I18N: any;
 before(async () => {
   (globalThis as any).fetch = (url: string): Promise<unknown> =>
     Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
   LV = await import(base + '/js/live/view.mjs');
   ING = await import(base + '/js/data/ingest.mjs');
   ST = (await import(base + '/js/core/state.mjs')).state;
+  I18N = await import(base + '/js/i18n/index.mjs');
   LV.bindFilterEvents();
 });
 
@@ -303,10 +305,12 @@ test('same-turn calls render under exactly one batch header with the count; no p
   assert.equal(batchHeadsIn().length, 0, 'a lone call has no header');
   ING.ingestEvent(callEv('b2', 5000, 'write_file'));
   assert.equal(batchHeadsIn().length, 1, 'the second member creates exactly one header');
-  assert.equal(headAt(5000).children[1].textContent, 'Toplu çağrı · 2 araç', 'header shows the count');
+  assert.equal(headAt(5000).children[1].textContent, 'Batch call · 2 tools', 'header shows the count');
   ING.ingestEvent(callEv('b3', 5000, 'list_dir'));
   assert.equal(batchHeadsIn().length, 1, 'later siblings do not add headers');
-  assert.equal(headAt(5000).children[1].textContent, 'Toplu çağrı · 3 araç', 'count updates on every sibling');
+  assert.equal(headAt(5000).children[1].textContent, 'Batch call · 3 tools', 'count updates on every sibling');
+  assert.equal(headAt(5000).children[0].title, 'Batch call · 3 tools', 'toggle title is localized');
+  assert.equal(headAt(5000).children[0].getAttribute('aria-label'), 'Batch call · 3 tools', 'toggle aria-label is localized');
   const idx = listEl().children.indexOf(headAt(5000));
   for (const id of ['b1', 'b2', 'b3']) {
     const li = ST.callRows.get(id).li;
@@ -321,7 +325,7 @@ test('an unrelated turn gets its own header; a standalone call gets none', () =>
   ING.ingestEvent(callEv('u2', 6000, 'write_file'));
   ING.ingestEvent(callEv('u3', 7000, 'list_dir'));
   assert.equal(batchHeadsIn().length, 1, 'only the two-call turn has a header');
-  assert.equal(headAt(6000).children[1].textContent, 'Toplu çağrı · 2 araç');
+  assert.equal(headAt(6000).children[1].textContent, 'Batch call · 2 tools');
   assert.equal(ST.callRows.get('u1').li.classList.contains('batch-child'), true);
   assert.equal(ST.callRows.get('u2').li.classList.contains('batch-child'), true);
   assert.equal(ST.callRows.get('u3').li.classList.contains('batch-child'), false, 'standalone row is not a batch child');
@@ -360,6 +364,25 @@ test('a reset list does not keep a stale collapsed batch for a new batch with th
   ING.ingestEvent(callEv('r4', 9500, 'write_file'));
   assert.equal(headAt(9500).children[0].getAttribute('aria-expanded'), 'true', 'new batch with the same key starts expanded');
   assert.ok([ST.callRows.get('r3').li, ST.callRows.get('r4').li].every((k: any) => !k.classList.contains('is-batch-collapsed')));
+});
+
+test('batch header relabels on locale change (tr/en) across label, title and aria-label', () => {
+  ING.ingestEvent(callEv('l1', 9800, 'read_file'));
+  ING.ingestEvent(callEv('l2', 9800, 'write_file'));
+  const doc = (globalThis as any).document;
+  if (!doc.documentElement) doc.documentElement = { lang: '' };
+  try {
+    I18N.setLocale('tr');
+    assert.equal(headAt(9800).children[1].textContent, 'Toplu çağrı · 2 araç', 'Turkish label');
+    assert.equal(headAt(9800).children[0].title, 'Toplu çağrı · 2 araç', 'Turkish title');
+    assert.equal(headAt(9800).children[0].getAttribute('aria-label'), 'Toplu çağrı · 2 araç', 'Turkish aria-label');
+    assert.equal(I18N.t('stream.batch.one'), 'Toplu çağrı · 1 araç', 'Turkish singular catalog value');
+    I18N.setLocale('en');
+    assert.equal(headAt(9800).children[1].textContent, 'Batch call · 2 tools', 'English label');
+    assert.equal(I18N.t('stream.batch.one'), 'Batch call · 1 tool', 'English singular catalog value');
+  } finally {
+    I18N.setLocale('en');
+  }
 });
 
 test('calls missing sessionKey or at never group accidentally', () => {

@@ -43,6 +43,8 @@ export default {
   'stream.group.execMany': '{n} executions',
   'stream.group.usage': 'Latest turn: {context} · Session total: {total}',
   'stream.group.usageCache': 'Latest turn: {context} · Session total: {total} · Cache Hit: {cache}',
+  'stream.batch.one': 'Batch call · 1 tool',
+  'stream.batch.many': 'Batch call · {n} tools',
   'col.status': 'Status',
   'col.tool': 'Tool',
   'col.session': 'Session',
